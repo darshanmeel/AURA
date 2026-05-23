@@ -73,7 +73,7 @@ export default function SessionsPage() {
               <tr key={s.session_id}>
                 <td className="mono muted">{fmt.time(s.start_ts)}</td>
                 <td>{s.person_name ?? '—'}</td>
-                <td className="mono muted" title={s.cwd}>{s.cwd?.split('/').pop() ?? '—'}</td>
+                <td className="mono muted" title={s.cwd}>{s.cwd?.split(/[/\\]/).pop() ?? '—'}</td>
                 <td>{s.agent ? <AgentLink name={s.agent} /> : '—'}</td>
                 <td><a href={`/sessions/${s.session_id}`}>{s.session_title ?? s.session_id?.slice(0, 12)}</a></td>
                 <td>{s.model ? <ModelPill model={s.model} /> : '—'}</td>

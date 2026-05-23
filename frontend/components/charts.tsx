@@ -1,12 +1,16 @@
 'use client'
 import React from 'react'
 
-interface DaySpend { date: string; cost: number; turns: number }
+interface DaySpend { date: string | Date; cost: number; turns: number }
 
 export function DailyChart({ data }: { data: DaySpend[] }) {
   if (!data.length) return <div className="chart-empty muted">No data</div>
   const W = 600, H = 140, PAD = { t: 10, r: 10, b: 30, l: 40 }
-  const sorted = [...data].sort((a, b) => a.date.localeCompare(b.date))
+  const sorted = [...data].sort((a, b) => {
+    const da = a.date instanceof Date ? a.date : new Date(a.date)
+    const db = b.date instanceof Date ? b.date : new Date(b.date)
+    return da.getTime() - db.getTime()
+  })
   const maxCost = Math.max(...sorted.map(d => d.cost), 0.001)
   const maxTurns = Math.max(...sorted.map(d => d.turns), 1)
   const cw = (W - PAD.l - PAD.r) / sorted.length
@@ -20,9 +24,11 @@ export function DailyChart({ data }: { data: DaySpend[] }) {
     <svg viewBox={`0 0 ${W} ${H}`} className="daily-chart" aria-label="Daily spend chart">
       {sorted.map((d, i) => {
         const bh = (d.cost / maxCost) * (H - PAD.t - PAD.b)
+        const dateStr = d.date instanceof Date ? d.date.toISOString().split('T')[0] : String(d.date)
+        const key = d.date instanceof Date ? d.date.toISOString() : String(d.date)
         return (
           <rect
-            key={d.date}
+            key={key}
             x={PAD.l + i * cw + 2}
             y={costY(d.cost)}
             width={cw - 4}
@@ -30,23 +36,26 @@ export function DailyChart({ data }: { data: DaySpend[] }) {
             fill="var(--accent)"
             opacity={0.7}
           >
-            <title>{d.date}: ${d.cost.toFixed(4)}, {d.turns} turns</title>
+            <title>{dateStr}: ${d.cost.toFixed(4)}, {d.turns} turns</title>
           </rect>
         )
       })}
       <path d={turnLine} fill="none" stroke="var(--accent-2)" strokeWidth={1.5} opacity={0.6} />
-      {sorted.filter((_, i) => i % Math.ceil(sorted.length / 7) === 0).map((d, i, arr) => (
-        <text
-          key={d.date}
-          x={cx(sorted.indexOf(d))}
-          y={H - 6}
-          textAnchor="middle"
-          fontSize={9}
-          fill="var(--muted)"
-        >
-          {new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-        </text>
-      ))}
+      {sorted.filter((_, i) => i % Math.ceil(sorted.length / 7) === 0).map((d, i, arr) => {
+        const key = d.date instanceof Date ? d.date.toISOString() : String(d.date)
+        return (
+          <text
+            key={key}
+            x={cx(sorted.indexOf(d))}
+            y={H - 6}
+            textAnchor="middle"
+            fontSize={9}
+            fill="var(--muted)"
+          >
+            {new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+          </text>
+        )
+      })}
     </svg>
   )
 }
