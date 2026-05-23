@@ -60,7 +60,7 @@ def write_session_meta(writer, session_id: str, file_path: str, tenant_id: str =
     person_id = getpass.getuser()
     people = _load_people_config()
     person_info = people.get(person_id, {})
-    person_name = person_info.get("name", person_id)
+    person_name = person_info.get("name", "Darshan Meel")
     session_title = _extract_session_title(file_path)
 
     with writer.get_connection() as conn:

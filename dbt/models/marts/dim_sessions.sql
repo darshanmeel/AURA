@@ -103,6 +103,12 @@ skills_per_session AS (
         array_agg(DISTINCT skill_name) AS skills_loaded
     FROM {{ ref('stg_session_skills') }}
     GROUP BY session_id
+),
+-- Raw session_meta table written by the watcher (person, commits, title).
+-- Not a ref() model yet — read directly from the DuckDB table.
+session_meta_lookup AS (
+    SELECT session_id, person_id, person_name, commits
+    FROM session_meta
 )
 SELECT
     s.tenant_id,
@@ -132,10 +138,10 @@ SELECT
     COALESCE(ag.agent_count, 1)                     AS agent_count,
     -- session_title fallback: prompt preview → session_id
     COALESCE(fp.first_prompt_200, s.session_id)     AS session_title,
-    -- person columns: no session_meta source yet; placeholders for back-compat
-    NULL::VARCHAR                                   AS person_id,
-    NULL::VARCHAR                                   AS person_name,
-    0                                               AS commits,
+    -- person columns from session_meta; fallback to current-user defaults
+    COALESCE(sm.person_id,   'darshan')             AS person_id,
+    COALESCE(sm.person_name, 'Darshan Meel')        AS person_name,
+    COALESCE(sm.commits, 0)                         AS commits,
     CASE WHEN s.end_ts IS NULL THEN 'active' ELSE 'completed' END AS status,
     CASE
         WHEN s.model LIKE 'claude%'  THEN 'Anthropic'
@@ -151,4 +157,5 @@ LEFT JOIN file_stats f          ON s.session_id = f.session_id
 LEFT JOIN agent_per_session ag  ON s.session_id = ag.session_id AND s.tenant_id = ag.tenant_id
 LEFT JOIN first_prompt fp       ON s.session_id = fp.session_id AND s.tenant_id = fp.tenant_id
 LEFT JOIN app_lookup al         ON al.cwd = s.cwd AND al.tenant_id = s.tenant_id
+LEFT JOIN session_meta_lookup sm ON sm.session_id = s.session_id
 LEFT JOIN skills_per_session sk ON s.session_id = sk.session_id
