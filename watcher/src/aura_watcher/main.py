@@ -123,7 +123,7 @@ def main():
     db_path = os.getenv("AURA_DB_PATH", "/data/aura.duckdb")
     read_db_path = os.getenv("AURA_READ_DB_PATH", "/data/aura_read.duckdb")
     snapshot_interval = int(os.getenv("AURA_SNAPSHOT_INTERVAL", "2"))
-    dbt_interval = int(os.getenv("AURA_DBT_RUN_INTERVAL_MINUTES", "60"))
+    dbt_interval = int(os.getenv("AURA_DBT_RUN_INTERVAL_MINUTES", "5"))
 
     print(f"Starting Aura Watcher...")
     print(f"Logs: {logs_dir}")

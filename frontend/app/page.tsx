@@ -39,6 +39,17 @@ export default async function DashboardPage() {
         {kpis.last_session && <span> · last ingest {fmt.time(kpis.last_session)}</span>}
       </div>
 
+      {/* Model Spend Breakdown on Top */}
+      <div className="model-spend-strip eyebrow muted" style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: '24px', alignItems: 'center', borderBottom: '1px solid var(--rule)', paddingBottom: '12px' }}>
+        <span style={{ textTransform: 'uppercase', letterSpacing: '0.1em' }}>Model Spend:</span>
+        {models.map((m: any) => (
+          <span key={m.model} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <ModelPill model={m.model} />
+            <b className="accent" style={{ fontWeight: '600' }}>{fmt.usd(m.cost)}</b>
+          </span>
+        ))}
+      </div>
+
       {/* Hero */}
       <section className="hero">
         <div className="hero-text">

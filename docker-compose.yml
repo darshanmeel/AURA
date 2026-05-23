@@ -16,7 +16,7 @@ services:
       - AURA_READ_DB_PATH=/data/aura_read.duckdb
       - AURA_LOGS_DIR=/logs/claude
       - AURA_SNAPSHOT_INTERVAL=2
-      - AURA_DBT_RUN_INTERVAL_MINUTES=60
+      - AURA_DBT_RUN_INTERVAL_MINUTES=5
     restart: unless-stopped
 
   frontend:

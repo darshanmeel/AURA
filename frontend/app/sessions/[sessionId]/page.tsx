@@ -7,19 +7,22 @@ import { ProfileBackRail, SideRail, SideSection } from '../../../components/pane
 import { fmt } from '../../../lib/fmt'
 import {
   getSession, getSessionTurns, getSessionErrors,
-  getSessionFiles, getSessionToolMix, getSessionGitCommands
+  getSessionFiles, getSessionToolMix, getSessionGitCommands,
+  getSessionToolExecutions
 } from '../../../lib/queries/sessions'
 
 export default async function SessionDetailPage({ params }: { params: { sessionId: string } }) {
   const id = params.sessionId
-  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = []
+  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = [], toolExecutions: any[] = []
   try {
-    const [sess, t, e, f, tm, gc] = await Promise.all([
+    const [sess, t, e, f, tm, gc, te] = await Promise.all([
       getSession(id), getSessionTurns(id), getSessionErrors(id),
-      getSessionFiles(id), getSessionToolMix(id), getSessionGitCommands(id)
+      getSessionFiles(id), getSessionToolMix(id), getSessionGitCommands(id),
+      getSessionToolExecutions(id)
     ])
     s = sess; turns = t as any[]; errors = e as any[]
     files = f as any[]; toolMix = tm as any[]; gitCommands = gc as any[]
+    toolExecutions = te as any[]
   } catch {}
   if (!s) notFound()
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
@@ -136,6 +139,48 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
                     <td>{g.is_error ? '✗' : '✓'}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </section>
+          <Rule />
+        </>
+      )}
+      {/* Tool executions (what was done on which file and for how long) */}
+      {toolExecutions?.length > 0 && (
+        <>
+          <section>
+            <Eyebrow>Tool Executions — detailed timeline ({toolExecutions.length})</Eyebrow>
+            <table className="ledger-table">
+              <thead>
+                <tr>
+                  <th>Started</th>
+                  <th>Ended</th>
+                  <th>Tool</th>
+                  <th>File acted on</th>
+                  <th className="num">Duration</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {toolExecutions.map((te: any, i: number) => {
+                  const fileName = te.file_path ? (te.file_path.split(/[/\\]/).pop()) : '—'
+                  return (
+                    <tr key={i}>
+                      <td className="mono muted">{fmt.time(te.tool_call_ts)}</td>
+                      <td className="mono muted">{fmt.time(te.tool_result_ts)}</td>
+                      <td><span className="mono strong" style={{ color: 'var(--accent)' }}>{te.tool_name}</span></td>
+                      <td className="mono muted" title={te.file_path}>{te.file_path ? fileName : '—'}</td>
+                      <td className="num mono">{te.execution_duration_seconds != null ? `${te.execution_duration_seconds.toFixed(2)}s` : '—'}</td>
+                      <td>
+                        {te.is_error ? (
+                          <span style={{ color: 'var(--warn)', fontWeight: '600' }}>✗ Fail</span>
+                        ) : (
+                          <span style={{ color: 'var(--accent)', opacity: 0.85 }}>✓ Success</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </section>
