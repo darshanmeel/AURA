@@ -12,7 +12,7 @@
     "next": "14.2.3",
     "react": "^18",
     "react-dom": "^18",
-    "@duckdb/node-api": "^1.0.0"
+    "@duckdb/node-api": "1.5.3-r.1"
   },
   "devDependencies": {
     "typescript": "^5",
