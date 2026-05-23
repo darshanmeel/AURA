@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 import { notFound } from 'next/navigation'
 import { Eyebrow, Rule, StatBlock, ModelPill, ProviderTag, SeverityTag, BarRow, AgentLink } from '../../../components/atoms'
 import { TurnChart } from '../../../components/charts'

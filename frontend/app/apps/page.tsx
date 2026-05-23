@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 import { Eyebrow, Rule, StatBlock } from '../../components/atoms'
 import { fmt } from '../../lib/fmt'
 

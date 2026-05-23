@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 import { notFound } from 'next/navigation'
 import { Eyebrow, Rule, StatBlock, Avatar, AgentLink, AppLink } from '../../../components/atoms'
 import { SessionMiniTable } from '../../../components/tables'

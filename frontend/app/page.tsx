@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 import { Eyebrow, Rule, StatBlock, BarRow, ProviderTag, ModelPill, AgentLink, PersonLink, SeverityTag } from '../components/atoms'
 import { DailyChart, Sparkline } from '../components/charts'
 import { SessionMiniTable } from '../components/tables'
