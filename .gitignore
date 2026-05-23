@@ -226,5 +226,14 @@ __marimo__/
 aura_data/
 dbt/target/
 dbt/logs/
+dbt/.user.yml
 
 .worktrees/
+*.stackdump
+
+# Node / Next.js
+frontend/.next/
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
+frontend/next-env.d.ts
+
