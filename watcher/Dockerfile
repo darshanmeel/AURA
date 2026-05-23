@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY . .
+COPY watcher/ .
+COPY dbt/ /app/dbt/
 
 RUN pip install -e .
 

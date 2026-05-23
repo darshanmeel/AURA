@@ -5,7 +5,9 @@ volumes:
 
 services:
   watcher:
-    build: ./watcher
+    build:
+      context: .
+      dockerfile: watcher/Dockerfile
     volumes:
       - aura_data:/data
       - ${CLAUDE_LOGS_DIR:-~/.claude/projects}:/logs/claude:ro
