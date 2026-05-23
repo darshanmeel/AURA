@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { notFound } from 'next/navigation'
-import { Eyebrow, Rule, StatBlock, ModelPill, ProviderTag, SeverityTag, BarRow, AgentLink } from '../../../components/atoms'
+import { Rule, StatBlock, ModelPill, ProviderTag, AgentLink } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
 import { SessionTabs } from '../../../components/SessionTabs'
 import { fmt } from '../../../lib/fmt'
@@ -29,8 +29,6 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
     filesWithAttribution = fa as any[]
   } catch {}
   if (!s) notFound()
-  const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
-  const maxEdits = Math.max(...(files ?? []).map((f: any) => f.edit_count ?? 0), 1)
 
   return (
     <div className="page-layout">

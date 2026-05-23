@@ -4,21 +4,6 @@ import React, { useState, useEffect } from 'react'
 import { Eyebrow, Rule, StatBlock, SeverityTag, AgentLink } from '../../components/atoms'
 import { fmt } from '../../lib/fmt'
 
-// ── Types ────────────────────────────────────────────────────────────────────
-interface ErrorSummary {
-  total_events: number
-  hard_errors: number
-  warnings: number
-  info_events: number
-  sessions_affected: number
-  tool_failures: number
-}
-
-interface KindCount {
-  kind: string
-  cnt: number
-}
-
 interface ErrorRow {
   ts: string
   severity: string
@@ -27,58 +12,58 @@ interface ErrorRow {
   message: string
   session_id: string
   turn_number: number | null
-  session_title: string
-  agent: string
+  // present when the API joins dim_sessions; may be absent in older response shape
+  session_title?: string
+  agent?: string
 }
 
-// ── Page ─────────────────────────────────────────────────────────────────────
 export default function ErrorsPage() {
-  const [summary, setSummary]     = useState<ErrorSummary | null>(null)
-  const [kinds, setKinds]         = useState<KindCount[]>([])
-  const [errors, setErrors]       = useState<ErrorRow[]>([])
-  const [activeKind, setActiveKind] = useState<string>('All')
+  const [allErrors, setAllErrors] = useState<ErrorRow[]>([])
   const [loading, setLoading]     = useState(true)
+  const [activeKind, setActiveKind] = useState<string>('All')
 
-  // Fetch summary + kinds once on mount
   useEffect(() => {
-    Promise.all([
-      fetch('/api/errors/summary').then(r => r.json()),
-      fetch('/api/errors/kinds').then(r => r.json()),
-    ]).then(([s, k]) => {
-      setSummary(s ?? null)
-      setKinds(Array.isArray(k) ? k : [])
-    }).catch(() => {})
+    fetch('/api/errors')
+      .then(r => r.json())
+      .then(d => {
+        // endpoint returns { errors: [...] } or a bare array
+        const rows = Array.isArray(d) ? d : (d.errors ?? [])
+        setAllErrors(rows)
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
   }, [])
 
-  // Fetch filtered errors whenever activeKind changes
-  useEffect(() => {
-    setLoading(true)
-    const qs = activeKind !== 'All' ? `?kind=${encodeURIComponent(activeKind)}` : ''
-    fetch(`/api/errors/filtered${qs}`)
-      .then(r => r.json())
-      .then(d => { setErrors(Array.isArray(d) ? d : []); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [activeKind])
+  // ── Derived counts ─────────────────────────────────────────────────────────
+  const bySev: Record<string, number> = {}
+  allErrors.forEach(e => { bySev[e.severity] = (bySev[e.severity] ?? 0) + 1 })
 
-  const totalSessions = summary?.sessions_affected ?? 0
+  const byKind: Record<string, number> = {}
+  allErrors.forEach(e => { byKind[e.kind] = (byKind[e.kind] ?? 0) + 1 })
+  const kinds = Object.keys(byKind).sort((a, b) => byKind[b] - byKind[a])
+
+  const sessionsAffected = new Set(allErrors.map(e => e.session_id)).size
+  const toolFailures = allErrors.filter(e => e.kind === 'tool_error').length
+
+  const filtered = activeKind === 'All'
+    ? allErrors
+    : allErrors.filter(e => e.kind === activeKind)
 
   return (
     <div className="page-layout">
       {/* ── MASTHEAD STRAP ───────────────────────────────────────────── */}
-      <section className="masthead-strap" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      <section style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <Eyebrow>Errors · across all sessions · 14 days</Eyebrow>
-        {summary && (
-          <span style={{
-            padding: '2px 10px',
-            border: '1px solid var(--rule-strong)',
-            borderRadius: 4,
-            fontSize: 12,
-            fontFamily: 'var(--mono)',
-            color: 'var(--muted)'
-          }}>
-            {fmt.n(summary.total_events)} events
-          </span>
-        )}
+        <span style={{
+          padding: '2px 10px',
+          border: '1px solid var(--rule-strong)',
+          borderRadius: 4,
+          fontSize: 12,
+          fontFamily: 'var(--mono)',
+          color: 'var(--muted)',
+        }}>
+          {fmt.n(allErrors.length)} events
+        </span>
       </section>
 
       {/* ── HERO ─────────────────────────────────────────────────────── */}
@@ -88,10 +73,10 @@ export default function ErrorsPage() {
           What went <em>wrong.</em>
         </h1>
         <p className="hero-lede" style={{ maxWidth: 560 }}>
-          {summary
-            ? `${summary.hard_errors} hard error${summary.hard_errors !== 1 ? 's' : ''} · ${summary.warnings} warning${summary.warnings !== 1 ? 's' : ''} · ${summary.info_events} info event${summary.info_events !== 1 ? 's' : ''}.`
-            : 'Loading…'}
-          {' '}Most agents recover and keep going; the table below is what to grep for in retros.
+          {bySev.error ?? 0} hard error{(bySev.error ?? 0) !== 1 ? 's' : ''}{' '}
+          · {bySev.warn ?? 0} warning{(bySev.warn ?? 0) !== 1 ? 's' : ''}{' '}
+          · {bySev.info ?? 0} info event{(bySev.info ?? 0) !== 1 ? 's' : ''}.{' '}
+          Most agents recover and keep going; the table below is what to grep for in retros.
         </p>
       </section>
 
@@ -101,28 +86,28 @@ export default function ErrorsPage() {
       <section className="kpi-strip" style={{ marginBottom: 24 }}>
         <StatBlock
           label="Total events"
-          value={fmt.n(summary?.total_events ?? 0)}
+          value={fmt.n(allErrors.length)}
           footnote="14 days"
         />
         <StatBlock
           label="Hard errors"
-          value={fmt.n(summary?.hard_errors ?? 0)}
+          value={fmt.n(bySev.error ?? 0)}
           footnote="severity = error"
           accent
         />
         <StatBlock
           label="Warnings"
-          value={fmt.n(summary?.warnings ?? 0)}
+          value={fmt.n(bySev.warn ?? 0)}
           footnote="severity = warn"
         />
         <StatBlock
           label="Affected sessions"
-          value={fmt.n(totalSessions)}
-          footnote={`of all sessions`}
+          value={fmt.n(sessionsAffected)}
+          footnote="unique sessions"
         />
         <StatBlock
           label="Tool failures"
-          value={fmt.n(summary?.tool_failures ?? 0)}
+          value={fmt.n(toolFailures)}
           footnote="Read / Bash / WebFetch"
         />
       </section>
@@ -131,33 +116,33 @@ export default function ErrorsPage() {
 
       {/* ── KIND CHIP FILTER ROW ─────────────────────────────────────── */}
       <section style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '16px 0' }}>
-        <button
-          className={`chip ${activeKind === 'All' ? 'is-active' : ''}`}
-          onClick={() => setActiveKind('All')}
-          style={activeKind === 'All' ? { background: 'var(--accent)', color: 'var(--bg)', borderColor: 'var(--accent)' } : {}}
-        >
-          All
-        </button>
-        {kinds.map(k => (
-          <button
-            key={k.kind}
-            className={`chip ${activeKind === k.kind ? 'is-active' : ''}`}
-            onClick={() => setActiveKind(k.kind)}
-            style={activeKind === k.kind ? { background: 'var(--accent)', color: 'var(--bg)', borderColor: 'var(--accent)' } : {}}
-          >
-            {k.kind}
-            <span style={{
-              marginLeft: 6,
-              padding: '0 5px',
-              borderRadius: 3,
-              background: activeKind === k.kind ? 'rgba(0,0,0,0.2)' : 'var(--rule)',
-              fontSize: 11,
-              fontFamily: 'var(--mono)',
-            }}>
-              {fmt.n(k.cnt)}
-            </span>
-          </button>
-        ))}
+        {(['All', ...kinds] as string[]).map(k => {
+          const isActive = activeKind === k
+          return (
+            <button
+              key={k}
+              className={`chip${isActive ? ' is-active' : ''}`}
+              onClick={() => setActiveKind(k)}
+              style={isActive
+                ? { background: 'var(--accent)', color: 'var(--bg)', borderColor: 'var(--accent)' }
+                : undefined}
+            >
+              {k}
+              {k !== 'All' && (
+                <span style={{
+                  marginLeft: 6,
+                  padding: '0 5px',
+                  borderRadius: 3,
+                  background: isActive ? 'rgba(0,0,0,0.2)' : 'var(--rule)',
+                  fontSize: 11,
+                  fontFamily: 'var(--mono)',
+                }}>
+                  {fmt.n(byKind[k])}
+                </span>
+              )}
+            </button>
+          )
+        })}
       </section>
 
       {/* ── ERROR TABLE ──────────────────────────────────────────────── */}
@@ -179,13 +164,13 @@ export default function ErrorsPage() {
               </tr>
             </thead>
             <tbody>
-              {errors.map((e, i) => (
+              {filtered.map((e, i) => (
                 <tr
                   key={i}
                   style={{ cursor: 'pointer' }}
-                  onClick={() => window.location.href = `/sessions/${e.session_id}`}
+                  onClick={() => { window.location.href = `/sessions/${e.session_id}` }}
                 >
-                  <td className="mono muted" style={{ whiteSpace: 'nowrap' }}>
+                  <td className="mono" style={{ whiteSpace: 'nowrap' }}>
                     <div style={{ fontSize: 12 }}>{fmt.date(e.ts)}</div>
                     <div style={{ fontSize: 11, color: 'var(--muted)' }}>{fmt.time(e.ts)}</div>
                   </td>
@@ -207,19 +192,26 @@ export default function ErrorsPage() {
                       ? <span className="mono" style={{ color: 'var(--accent)' }}>{e.tool}</span>
                       : <span className="muted">—</span>}
                   </td>
-                  <td className="mono" style={{ fontSize: 11, color: 'var(--muted)', maxWidth: 320 }}>
+                  {/* Message — truncation happens SQL-side; we do NOT slice here (200-char rule) */}
+                  <td className="mono" style={{ fontSize: 11, color: 'var(--muted)', maxWidth: 340 }}>
                     {e.message}
                   </td>
                   <td>
-                    <div style={{ fontSize: 13, color: 'var(--ink)' }}>
-                      {e.session_title !== e.session_id
-                        ? e.session_title
-                        : <span className="mono muted">{e.session_id?.slice(0, 8)}</span>}
-                    </div>
+                    {e.session_title && e.session_title !== e.session_id
+                      ? (
+                        <div style={{ fontSize: 13, color: 'var(--ink)', marginBottom: 2 }}>
+                          {e.session_title}
+                        </div>
+                      )
+                      : null}
                     <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                      <AgentLink name={e.agent ?? 'main'} />
+                      {e.agent
+                        ? <AgentLink name={e.agent} />
+                        : <span className="mono muted">main</span>}
                       {' · '}
-                      <span className="mono">{e.session_id?.slice(0, 8)}</span>
+                      <a href={`/sessions/${e.session_id}`} className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>
+                        {e.session_id?.slice(0, 8)}
+                      </a>
                     </div>
                   </td>
                   <td className="num mono" style={{ color: 'var(--muted)' }}>
@@ -228,7 +220,7 @@ export default function ErrorsPage() {
                   <td style={{ color: 'var(--muted)', textAlign: 'center' }}>→</td>
                 </tr>
               ))}
-              {errors.length === 0 && !loading && (
+              {filtered.length === 0 && !loading && (
                 <tr>
                   <td colSpan={8} style={{ padding: '32px 0', textAlign: 'center', color: 'var(--muted)' }}>
                     No errors matching this filter — a quiet day.
@@ -238,7 +230,7 @@ export default function ErrorsPage() {
             </tbody>
           </table>
         )}
-        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>{fmt.n(errors.length)} errors</div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>{fmt.n(filtered.length)} errors</div>
       </section>
     </div>
   )

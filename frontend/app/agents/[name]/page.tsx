@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import {
   Eyebrow, Rule, StatBlock,
-  AgentLink, AppLink, ModelPill, ProviderTag, TBar,
+  AppLink, ModelPill, ProviderTag,
 } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'

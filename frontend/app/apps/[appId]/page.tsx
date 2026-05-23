@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { notFound } from 'next/navigation'
-import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill, TBar } from '../../../components/atoms'
+import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'
 import { getApp, getAppSessions } from '../../../lib/queries/apps'
