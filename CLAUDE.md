@@ -1,13 +1,6 @@
 # Aura — project memory
 
-Local-first analytics for AI-coding-agent transcripts (Claude Code today,
-Gemini / Codex later). Real-time `watchdog` ingestion of `~/.claude/projects/**/*.jsonl`
-into DuckDB, hourly dbt rollups, Streamlit dashboard. OSS first, multi-tenant
-SaaS-ready (every table has `tenant_id`).
-
-**Read on every session:** the current design spec at
-[`docs/superpowers/specs/2026-05-23-aura-design.md`](docs/superpowers/specs/2026-05-23-aura-design.md).
-Architecture, schema, formulas, phasing — all there. This file is policy only.
+Aura is a local-first analytics tool for AI-coding-agent transcripts (Claude Code today, Gemini/Codex later). It ingests `~/.claude/projects/**/*.jsonl` in real-time via a `watchdog` process into DuckDB, and performs hourly dbt rollups. We will use Next.js for the dashboard UI rather than Streamlit.
 
 ---
 
@@ -112,6 +105,6 @@ done == pushed.
 | --- | --- | --- |
 | `watcher/` | data-engineer | JSONL adapters, DuckDB writer, checkpoint, snapshot, redaction |
 | `dbt/` | dbt-expert | models, seeds, pricing SCD, tests |
-| `streamlit/` | frontend-engineer | pages, fragments, charts |
-| (all diffs) | code-reviewer | diff vs spec §1–12 |
+| `frontend/` | frontend-engineer | Next.js dashboard, UI components |
+| (all diffs) | code-reviewer | general code review |
 | (orchestration) | runner | dispatch + bounded summary |
