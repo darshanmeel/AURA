@@ -56,6 +56,11 @@ file_stats AS (
     SELECT session_id, COUNT(DISTINCT file_path) AS files_touched
     FROM {{ ref('fact_session_files') }}
     GROUP BY session_id
+),
+agent_per_session AS (
+    SELECT session_id, ANY_VALUE(agent) AS agent
+    FROM {{ ref('stg_events') }}
+    GROUP BY session_id
 )
 SELECT
     s.tenant_id,
@@ -86,9 +91,11 @@ SELECT
         WHEN s.model LIKE 'claude%'  THEN 'Anthropic'
         WHEN s.model LIKE 'gemini%'  THEN 'Google'
         ELSE 'Other'
-    END                            AS provider
+    END                            AS provider,
+    ag.agent
 FROM aggregated_sessions s
 LEFT JOIN tool_stats t      ON s.session_id = t.session_id
 LEFT JOIN end_turn_stats e  ON s.session_id = e.session_id
 LEFT JOIN file_stats f      ON s.session_id = f.session_id
+LEFT JOIN agent_per_session ag ON s.session_id = ag.session_id
 LEFT JOIN session_meta sm   ON s.session_id = sm.session_id
