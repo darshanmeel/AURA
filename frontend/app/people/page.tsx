@@ -2,17 +2,11 @@ export const dynamic = 'force-dynamic'
 
 import { Eyebrow, Rule, Avatar } from '../../components/atoms'
 import { fmt } from '../../lib/fmt'
-
-async function getPeople() {
-  const base = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000'
-  const res = await fetch(`${base}/api/people`, { next: { revalidate: 30 } })
-  if (!res.ok) return []
-  const data = await res.json()
-  return data.people ?? []
-}
+import { getPeople } from '../../lib/queries/people'
 
 export default async function PeoplePage() {
-  const people = await getPeople()
+  let people: any[] = []
+  try { people = await getPeople() as any[] } catch {}
   return (
     <div className="page-layout">
       <div className="page-header">

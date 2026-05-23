@@ -5,26 +5,27 @@ import { DailyChart, Sparkline } from '../components/charts'
 import { SessionMiniTable } from '../components/tables'
 import { SideRail, SideSection } from '../components/panels'
 import { fmt } from '../lib/fmt'
-
-async function getDashboardData() {
-  const base = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000'
-  const res = await fetch(`${base}/api/dashboard`, { next: { revalidate: 30 } })
-  if (!res.ok) return null
-  return res.json()
-}
+import {
+  getDashboardKPIs, getDailySpend, getTopApps, getTopAgents,
+  getToolMix, getProviderSplit, getModelBreakdown,
+  getRecentErrors, getTopFiles, getTopPeople
+} from '../lib/queries/dashboard'
 
 export default async function DashboardPage() {
-  const data = await getDashboardData()
-  const kpis = data?.kpis ?? {}
-  const dailySpend = data?.dailySpend ?? []
-  const topApps = data?.topApps ?? []
-  const topAgents = data?.topAgents ?? []
-  const toolMix = data?.toolMix ?? []
-  const providers = data?.providers ?? []
-  const models = data?.models ?? []
-  const recentErrors = data?.recentErrors ?? []
-  const topFiles = data?.topFiles ?? []
-  const topPeople = data?.topPeople ?? []
+  let kpis: any = {}, dailySpend: any[] = [], topApps: any[] = [], topAgents: any[] = []
+  let toolMix: any[] = [], providers: any[] = [], models: any[] = [], recentErrors: any[] = []
+  let topFiles: any[] = [], topPeople: any[] = []
+  try {
+    const [kpisArr, ds, ta, tag, tm, prov, mod, re, tf, tp] = await Promise.all([
+      getDashboardKPIs(), getDailySpend(), getTopApps(), getTopAgents(),
+      getToolMix(), getProviderSplit(), getModelBreakdown(),
+      getRecentErrors(), getTopFiles(), getTopPeople()
+    ])
+    kpis = kpisArr ?? {}
+    dailySpend = ds as any[]; topApps = ta as any[]; topAgents = tag as any[]
+    toolMix = tm as any[]; providers = prov as any[]; models = mod as any[]
+    recentErrors = re as any[]; topFiles = tf as any[]; topPeople = tp as any[]
+  } catch { /* DB not ready yet — show empty state */ }
 
   const totalDays = dailySpend.length
   const maxCost = Math.max(...topApps.map((a: any) => a.total_cost ?? 0), 0.001)

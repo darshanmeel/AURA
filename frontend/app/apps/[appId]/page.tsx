@@ -5,18 +5,16 @@ import { Eyebrow, Rule, StatBlock, AgentLink } from '../../../components/atoms'
 import { SessionMiniTable } from '../../../components/tables'
 import { ProfileBackRail } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'
-
-async function getAppData(appId: string) {
-  const base = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000'
-  const res = await fetch(`${base}/api/apps/${encodeURIComponent(appId)}`, { next: { revalidate: 30 } })
-  if (!res.ok) return null
-  return res.json()
-}
+import { getApp, getAppSessions } from '../../../lib/queries/apps'
 
 export default async function AppProfilePage({ params }: { params: { appId: string } }) {
-  const data = await getAppData(decodeURIComponent(params.appId))
-  if (!data?.app) notFound()
-  const { app, sessions } = data
+  const appId = decodeURIComponent(params.appId)
+  let app: any = null, sessions: any[] = []
+  try {
+    const [a, s] = await Promise.all([getApp(appId), getAppSessions(appId)])
+    app = a; sessions = s as any[]
+  } catch {}
+  if (!app) notFound()
 
   return (
     <div className="page-layout">

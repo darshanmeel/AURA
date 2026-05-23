@@ -5,18 +5,16 @@ import { Eyebrow, Rule, StatBlock, ModelPill, BarRow } from '../../../components
 import { SessionMiniTable } from '../../../components/tables'
 import { ProfileBackRail, SideRail, SideSection } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'
-
-async function getAgentData(name: string) {
-  const base = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000'
-  const res = await fetch(`${base}/api/agents/${encodeURIComponent(name)}`, { next: { revalidate: 30 } })
-  if (!res.ok) return null
-  return res.json()
-}
+import { getAgent, getAgentSessions, getAgentFiles } from '../../../lib/queries/agents'
 
 export default async function AgentProfilePage({ params }: { params: { name: string } }) {
-  const data = await getAgentData(decodeURIComponent(params.name))
-  if (!data?.agent) notFound()
-  const { agent, sessions, files } = data
+  const name = decodeURIComponent(params.name)
+  let agent: any = null, sessions: any[] = [], files: any[] = []
+  try {
+    const [a, s, f] = await Promise.all([getAgent(name), getAgentSessions(name), getAgentFiles(name)])
+    agent = a; sessions = s as any[]; files = f as any[]
+  } catch {}
+  if (!agent) notFound()
   const maxEdits = Math.max(...(files ?? []).map((f: any) => f.edits ?? 0), 1)
 
   return (

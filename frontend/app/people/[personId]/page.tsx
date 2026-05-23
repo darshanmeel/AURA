@@ -5,18 +5,16 @@ import { Eyebrow, Rule, StatBlock, Avatar, AgentLink, AppLink } from '../../../c
 import { SessionMiniTable } from '../../../components/tables'
 import { ProfileBackRail } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'
-
-async function getPersonData(personId: string) {
-  const base = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000'
-  const res = await fetch(`${base}/api/people/${encodeURIComponent(personId)}`, { next: { revalidate: 30 } })
-  if (!res.ok) return null
-  return res.json()
-}
+import { getPerson, getPersonSessions } from '../../../lib/queries/people'
 
 export default async function PersonProfilePage({ params }: { params: { personId: string } }) {
-  const data = await getPersonData(decodeURIComponent(params.personId))
-  if (!data?.person) notFound()
-  const { person, sessions } = data
+  const personId = decodeURIComponent(params.personId)
+  let person: any = null, sessions: any[] = []
+  try {
+    const [p, s] = await Promise.all([getPerson(personId), getPersonSessions(personId)])
+    person = p; sessions = s as any[]
+  } catch {}
+  if (!person) notFound()
 
   return (
     <div className="page-layout">

@@ -2,17 +2,11 @@ export const dynamic = 'force-dynamic'
 
 import { Eyebrow, Rule, StatBlock } from '../../components/atoms'
 import { fmt } from '../../lib/fmt'
-
-async function getApps() {
-  const base = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000'
-  const res = await fetch(`${base}/api/apps`, { next: { revalidate: 30 } })
-  if (!res.ok) return []
-  const data = await res.json()
-  return data.apps ?? []
-}
+import { getApps } from '../../lib/queries/apps'
 
 export default async function AppsPage() {
-  const apps = await getApps()
+  let apps: any[] = []
+  try { apps = await getApps() as any[] } catch {}
   return (
     <div className="page-layout">
       <div className="page-header">

@@ -5,18 +5,23 @@ import { Eyebrow, Rule, StatBlock, ModelPill, ProviderTag, SeverityTag, BarRow, 
 import { TurnChart } from '../../../components/charts'
 import { ProfileBackRail, SideRail, SideSection } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'
-
-async function getSessionData(id: string) {
-  const base = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:3000'
-  const res = await fetch(`${base}/api/sessions/${id}`, { next: { revalidate: 30 } })
-  if (!res.ok) return null
-  return res.json()
-}
+import {
+  getSession, getSessionTurns, getSessionErrors,
+  getSessionFiles, getSessionToolMix, getSessionGitCommands
+} from '../../../lib/queries/sessions'
 
 export default async function SessionDetailPage({ params }: { params: { sessionId: string } }) {
-  const data = await getSessionData(params.sessionId)
-  if (!data?.session) notFound()
-  const { session: s, turns, errors, files, toolMix, gitCommands } = data
+  const id = params.sessionId
+  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = []
+  try {
+    const [sess, t, e, f, tm, gc] = await Promise.all([
+      getSession(id), getSessionTurns(id), getSessionErrors(id),
+      getSessionFiles(id), getSessionToolMix(id), getSessionGitCommands(id)
+    ])
+    s = sess; turns = t as any[]; errors = e as any[]
+    files = f as any[]; toolMix = tm as any[]; gitCommands = gc as any[]
+  } catch {}
+  if (!s) notFound()
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
   const maxEdits = Math.max(...(files ?? []).map((f: any) => f.edit_count ?? 0), 1)
 
