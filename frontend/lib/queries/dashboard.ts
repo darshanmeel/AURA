@@ -24,12 +24,12 @@ export async function getDashboardKPIs() {
 export async function getDailySpend() {
   return query(`
     SELECT
-      day,
-      SUM(total_cost)  AS cost,
+      date,
+      SUM(daily_cost)  AS cost,
       SUM(turn_count)  AS turns
     FROM fact_daily_spend
-    GROUP BY day
-    ORDER BY day DESC
+    GROUP BY date
+    ORDER BY date DESC
     LIMIT 14
   `)
 }
