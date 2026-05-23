@@ -9,11 +9,12 @@ services:
       - aura_data:/data
       - ~/.claude/projects:/logs/claude:ro
     environment:
-      - AURA_CONFIG=/data/aura.toml
+      - AURA_LOGS_DIR=/logs/claude
+      - AURA_DB_PATH=/data/aura.duckdb
+      - AURA_READ_DB_PATH=/data/aura_read.duckdb
+      - AURA_SNAPSHOT_INTERVAL=2
     networks:
       - aura
-    depends_on:
-      - streamlit
 
   streamlit:
     build:
@@ -24,9 +25,11 @@ services:
     volumes:
       - aura_data:/data
     environment:
-      - AURA_DATA_PATH=/data
+      - AURA_READ_DB=/data/aura_read.duckdb
     networks:
       - aura
+    depends_on:
+      - watcher
 
 volumes:
   aura_data:
