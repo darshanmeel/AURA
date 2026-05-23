@@ -1736,3 +1736,13 @@ em { font-style: italic; }
   letter-spacing: 0.04em;
   flex-shrink: 0;
 }
+
+/* Chip active state mapping */
+.chip--active {
+  background: var(--accent) !important;
+  color: #1a1208 !important;
+  border-color: var(--accent) !important;
+}
+.chip--active .chip-count {
+  background: rgba(0,0,0,0.18) !important;
+}
