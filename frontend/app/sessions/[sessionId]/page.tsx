@@ -2,8 +2,8 @@ export const dynamic = 'force-dynamic'
 
 import { notFound } from 'next/navigation'
 import { Eyebrow, Rule, StatBlock, ModelPill, ProviderTag, SeverityTag, BarRow, AgentLink } from '../../../components/atoms'
-import { TurnChart } from '../../../components/charts'
-import { ProfileBackRail, SideRail, SideSection } from '../../../components/panels'
+import { ProfileBackRail } from '../../../components/panels'
+import { SessionTabs } from '../../../components/SessionTabs'
 import { fmt } from '../../../lib/fmt'
 import {
   getSession, getSessionTurns, getSessionErrors,
@@ -67,149 +67,15 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
 
       <Rule />
 
-      {/* Per-turn chart */}
-      <section>
-        <Eyebrow>Per-turn tokens ({Math.min(turns?.length ?? 0, 60)} sampled)</Eyebrow>
-        <TurnChart data={turns ?? []} />
-      </section>
-
-      <Rule />
-
-      {/* Turn table */}
-      <section>
-        <Eyebrow>Turns (first 20)</Eyebrow>
-        <table className="ledger-table">
-          <thead><tr><th>#</th><th>Time</th><th>Model</th><th>Input</th><th>Output</th><th>Cost</th><th>Ctx%</th></tr></thead>
-          <tbody>
-            {(turns ?? []).slice(0, 20).map((t: any) => (
-              <tr key={t.turn_number}>
-                <td className="num muted">{t.turn_number}</td>
-                <td className="mono muted">{fmt.time(t.assistant_ts)}</td>
-                <td><ModelPill model={t.model} /></td>
-                <td className="num">{fmt.k(t.input_tokens)}</td>
-                <td className="num">{fmt.k(t.output_tokens)}</td>
-                <td className="num accent">{fmt.usd(t.calculated_cost)}</td>
-                <td className="num muted">{fmt.pct(t.context_pct)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <Rule />
-
-      {/* Errors */}
-      {errors?.length > 0 && (
-        <>
-          <section>
-            <Eyebrow>Errors ({errors.length})</Eyebrow>
-            <table className="ledger-table">
-              <thead><tr><th>Time</th><th>Severity</th><th>Kind</th><th>Tool</th><th>Message</th></tr></thead>
-              <tbody>
-                {errors.map((e: any, i: number) => (
-                  <tr key={i}>
-                    <td className="mono muted">{fmt.time(e.ts)}</td>
-                    <td><SeverityTag severity={e.severity} /></td>
-                    <td className="mono">{e.kind}</td>
-                    <td className="mono muted">{e.tool ?? '—'}</td>
-                    <td className="muted">{e.message?.slice(0, 80) ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-          <Rule />
-        </>
-      )}
-
-      {/* Git commands log */}
-      {gitCommands?.length > 0 && (
-        <>
-          <section>
-            <Eyebrow>Git commands ({gitCommands.length})</Eyebrow>
-            <table className="ledger-table">
-              <thead><tr><th>Time</th><th>Op</th><th>Command</th><th>Output</th><th>Status</th></tr></thead>
-              <tbody>
-                {gitCommands.map((g: any, i: number) => (
-                  <tr key={i}>
-                    <td className="mono muted">{fmt.time(g.ts)}</td>
-                    <td className="mono">{g.git_op}</td>
-                    <td className="mono">{g.raw_command?.slice(0, 60)}</td>
-                    <td className="muted">{g.output_text?.slice(0, 80)}</td>
-                    <td>{g.is_error ? '✗' : '✓'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-          <Rule />
-        </>
-      )}
-      {/* Tool executions (what was done on which file and for how long) */}
-      {toolExecutions?.length > 0 && (
-        <>
-          <section>
-            <Eyebrow>Tool Executions — detailed timeline ({toolExecutions.length})</Eyebrow>
-            <table className="ledger-table">
-              <thead>
-                <tr>
-                  <th>Started</th>
-                  <th>Ended</th>
-                  <th>Tool</th>
-                  <th>File acted on</th>
-                  <th className="num">Duration</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {toolExecutions.map((te: any, i: number) => {
-                  const fileName = te.file_path ? (te.file_path.split(/[/\\]/).pop()) : '—'
-                  return (
-                    <tr key={i}>
-                      <td className="mono muted">{fmt.time(te.tool_call_ts)}</td>
-                      <td className="mono muted">{fmt.time(te.tool_result_ts)}</td>
-                      <td><span className="mono strong" style={{ color: 'var(--accent)' }}>{te.tool_name}</span></td>
-                      <td className="mono muted" title={te.file_path}>{te.file_path ? fileName : '—'}</td>
-                      <td className="num mono">{te.execution_duration_seconds != null ? `${te.execution_duration_seconds.toFixed(2)}s` : '—'}</td>
-                      <td>
-                        {te.is_error ? (
-                          <span style={{ color: 'var(--warn)', fontWeight: '600' }}>✗ Fail</span>
-                        ) : (
-                          <span style={{ color: 'var(--accent)', opacity: 0.85 }}>✓ Success</span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </section>
-          <Rule />
-        </>
-      )}
-
-      <div className="main-with-rail">
-        <div className="main-col" />
-        <SideRail>
-          <SideSection title="Token breakdown">
-            <StatBlock label="Input" value={fmt.k(s.total_input_tokens)} />
-            <StatBlock label="Output" value={fmt.k(s.total_output_tokens)} />
-            <StatBlock label="Cache read" value={fmt.k(s.cache_read_total)} />
-            <StatBlock label="Cache 5m" value={fmt.k(s.ephemeral_5m_total)} />
-            <StatBlock label="Cache 1h" value={fmt.k(s.ephemeral_1h_total)} />
-          </SideSection>
-          <SideSection title="Files touched">
-            {(files ?? []).map((f: any) => (
-              <BarRow key={f.file_path} label={f.file_path?.split(/[/\\]/).pop()} value={f.edit_count} max={maxEdits} fmt={fmt.n} />
-            ))}
-          </SideSection>
-          <SideSection title="Tool mix">
-            {(toolMix ?? []).map((t: any) => (
-              <BarRow key={t.tool_name} label={t.tool_name} value={t.calls} max={maxToolCalls} fmt={fmt.n} />
-            ))}
-          </SideSection>
-        </SideRail>
-      </div>
+      <SessionTabs 
+        s={s}
+        turns={turns}
+        errors={errors}
+        toolExecutions={toolExecutions}
+        gitCommands={gitCommands}
+        files={files}
+        toolMix={toolMix}
+      />
     </div>
   )
 }

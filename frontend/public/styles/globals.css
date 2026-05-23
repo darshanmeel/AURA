@@ -485,6 +485,45 @@ html[data-density="compact"] .ledger th { padding: 8px 12px; }
 .severity-warn { background: rgba(234, 179, 8, 0.2); color: #eab308; } /* yellow-500 */
 .severity-error { background: rgba(239, 68, 68, 0.15); color: #ef4444; } /* red-500 */
 
+/* Tabs */
+.session-tabs-container {
+  margin-top: 32px;
+}
+.tab-nav {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 24px;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  padding: 0 0 12px 0;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s;
+}
+.tab-btn:hover { color: var(--ink-2); }
+.tab-btn.active {
+  color: var(--ink);
+}
+.tab-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+.tab-content {
+  min-height: 400px;
+}
+
 .status {
   display: inline-flex;
   align-items: center;

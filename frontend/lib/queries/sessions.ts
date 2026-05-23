@@ -96,7 +96,7 @@ export async function getSessionTurns(id: string) {
     SELECT turn_number, user_ts, assistant_ts, model,
            input_tokens, output_tokens, calculated_cost,
            cache_read_input_tokens, ephemeral_5m_input_tokens, ephemeral_1h_input_tokens,
-           context_pct
+           context_pct, user_prompt, assistant_response
     FROM fact_turns
     WHERE session_id = ?
     ORDER BY turn_number
@@ -118,7 +118,9 @@ export async function getSessionTurns(id: string) {
       COALESCE(cache_read_input_tokens, 0) as cache_read_input_tokens,
       COALESCE(ephemeral_5m_input_tokens, 0) as ephemeral_5m_input_tokens,
       COALESCE(ephemeral_1h_input_tokens, 0) as ephemeral_1h_input_tokens,
-      COALESCE(context_pct, 0.0) as context_pct
+      COALESCE(context_pct, 0.0) as context_pct,
+      input_message as user_prompt,
+      output_message as assistant_response
     FROM raw_events
     WHERE session_id = ? AND event_type = 'assistant'
     ORDER BY ts
