@@ -14,7 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Note: exclude only Python lib, not frontend/lib (Next.js source)
+/lib/
 lib64/
 parts/
 sdist/
