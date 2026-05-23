@@ -78,6 +78,6 @@ class DuckDBWriter:
         with self.get_connection() as conn:
             # Efficient batch insert
             conn.executemany(
-                f"INSERT OR IGNORE INTO raw_events ({cols}) VALUES ({placeholders})",
+                f"INSERT INTO raw_events ({cols}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
                 [list(e.values()) for e in events]
             )
