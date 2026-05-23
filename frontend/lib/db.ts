@@ -15,7 +15,7 @@ export async function query<T = Record<string, unknown>>(sql: string, params: un
   const db = await getInstance()
   const conn = await db.connect()
   try {
-    const result = await conn.runAndReadAll(sql, ...(params as DuckDBValue[]))
+    const result = await conn.runAndReadAll(sql, params as DuckDBValue[])
     const columnNames = result.columnNames()
     const rows = result.getRows()
     return rows.map(row => {
