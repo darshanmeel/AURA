@@ -8,6 +8,7 @@ services:
     volumes:
       - aura_data:/data
       - ~/.claude/projects:/logs/claude:ro
+      - ./dbt:/app/dbt
     environment:
       - AURA_LOGS_DIR=/logs/claude
       - AURA_DB_PATH=/data/aura.duckdb

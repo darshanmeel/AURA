@@ -18,7 +18,7 @@ def test_ingestion(tmp_path):
     
     # Write a dummy line
     log_file.write_text(json.dumps({
-        "type": "assistant", "uuid": "u1", "ts": "2024-05-23T12:00:00Z",
+        "type": "assistant", "uuid": "u1", "timestamp": "2024-05-23T12:00:00Z",
         "message": {"id": "m1", "usage": {"input_tokens": 10}}
     }) + "\n")
     

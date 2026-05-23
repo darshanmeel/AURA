@@ -1,1 +1,5 @@
 tenant_id,model,provider,cost_input_per_mtok,cost_output_per_mtok,cost_cache_write_5m_per_mtok,cost_cache_write_1h_per_mtok,cost_cache_read_per_mtok,cost_batch_input_per_mtok,cost_batch_output_per_mtok,context_window_tokens,context_window_beta_flag,tokenizer,valid_from,valid_to
+,claude-opus-4-7,anthropic,15.0,75.0,18.75,18.75,1.5,,,200000,,anthropic,2025-01-01,
+,claude-sonnet-4-6,anthropic,3.0,15.0,3.75,3.75,0.3,,,200000,,anthropic,2025-01-01,
+,claude-haiku-4-5-20251001,anthropic,0.8,4.0,1.0,1.0,0.08,,,200000,,anthropic,2025-01-01,
+,<synthetic>,anthropic,0.0,0.0,0.0,0.0,0.0,,,200000,,anthropic,2025-01-01,
