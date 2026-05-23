@@ -24,16 +24,20 @@ def process_file(file_path, writer, adapter, cp_manager):
             new_offset = f.tell()
             last_uuid = checkpoint["last_line_uuid"]
             
+            events = []
             for line in lines:
                 try:
                     if not line.strip(): continue
                     raw = json.loads(line.decode('utf-8'))
                     event = adapter.parse_line(raw, file_path, offset)
                     if event:
-                        writer.insert_event(event)
+                        events.append(event)
                         last_uuid = event["uuid"]
                 except Exception as e:
                     print(f"Error parsing line in {file_path}: {e}")
+            
+            if events:
+                writer.insert_events(events)
             
             if new_offset > offset:
                 cp_manager.update_checkpoint(file_path, new_offset, last_uuid)
@@ -60,8 +64,12 @@ def snapshot_worker(src, dst, interval):
         try:
             if os.path.exists(src):
                 take_snapshot(src, dst)
+            else:
+                # Still waiting for the first write to create the file
+                pass
         except Exception as e:
-            print(f"Snapshot error: {e}")
+            # Locking errors are expected if the backfill is busy
+            pass
         time.sleep(interval)
 
 def main():
@@ -78,15 +86,15 @@ def main():
     adapter = ClaudeAdapter()
     cp_manager = CheckpointManager(writer)
 
+    # Start Snapshot Worker BEFORE backfill so UI gets data ASAP
+    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval), daemon=True).start()
+
     # Initial Backfill
     print("Running initial backfill...")
     files = glob.glob(os.path.join(logs_dir, "**", "*.jsonl"), recursive=True)
     for f in files:
         process_file(f, writer, adapter, cp_manager)
     print(f"Backfill complete. Processed {len(files)} files.")
-
-    # Start Snapshot Worker
-    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval), daemon=True).start()
 
     # Start Watchdog
     handler = JSONLHandler(writer, adapter, cp_manager)

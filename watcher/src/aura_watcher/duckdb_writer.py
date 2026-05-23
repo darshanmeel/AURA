@@ -53,7 +53,19 @@ class DuckDBWriter:
             """)
 
     def insert_event(self, event: dict):
-        cols = ", ".join(event.keys())
-        placeholders = ", ".join(["?"] * len(event))
+        self.insert_events([event])
+
+    def insert_events(self, events: list[dict]):
+        if not events:
+            return
+        
+        # Use the keys from the first event as columns
+        cols = ", ".join(events[0].keys())
+        placeholders = ", ".join(["?"] * len(events[0]))
+        
         with self.get_connection() as conn:
-            conn.execute(f"INSERT OR IGNORE INTO raw_events ({cols}) VALUES ({placeholders})", list(event.values()))
+            # Efficient batch insert
+            conn.executemany(
+                f"INSERT OR IGNORE INTO raw_events ({cols}) VALUES ({placeholders})",
+                [list(e.values()) for e in events]
+            )
