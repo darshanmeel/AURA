@@ -35,13 +35,9 @@ export default async function DashboardPage() {
   const cache1h = kpis.cache_1h_total ?? 0
   const cacheR = kpis.cache_read_total ?? 0
 
-  const topModel = models[0]
-  const topModelShare = topModel && kpis.total_cost > 0 ? (topModel.cost / kpis.total_cost) * 100 : 0
-  const modelName = topModel?.model.includes('opus') ? 'Opus' : topModel?.model.includes('sonnet') ? 'Sonnet' : topModel?.model.includes('gemini-2.5-pro') ? 'Gemini Pro' : topModel?.model ?? 'This model'
-  
-  const heroLede = topModelShare > 20 
-    ? `${modelName} usage accounts for ${topModelShare.toFixed(0)}% of the bill — drill in to see why.`
-    : `${fmt.n(kpis.total_sessions)} sessions, ${fmt.n(kpis.total_people)} operators, ${fmt.n(kpis.total_apps)} apps, ${providers.length} providers — ${totalDays} days.`
+  const anthropicCost = providers.find(p => p.provider.toLowerCase() === 'anthropic')?.cost ?? 0
+  const googleCost = providers.find(p => p.provider.toLowerCase() === 'google')?.cost ?? 0
+  const heroLede = `${providers.length} providers — Anthropic (${fmt.usd(anthropicCost)}) vs Google (${fmt.usd(googleCost)}) over ${totalDays} days.`
 
   return (
     <div className="page page-layout">
