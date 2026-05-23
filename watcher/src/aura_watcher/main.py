@@ -37,6 +37,13 @@ def process_file(file_path, writer, adapter, cp_manager):
                         last_uuid = event["uuid"]
                 except Exception as e:
                     print(f"Error parsing line in {file_path}: {e}")
+                
+                try:
+                    skills = adapter.parse_skills(raw, file_path)
+                    if skills:
+                        writer.insert_session_skills(skills)
+                except Exception as e:
+                    pass
             
             if events:
                 writer.insert_events(events)

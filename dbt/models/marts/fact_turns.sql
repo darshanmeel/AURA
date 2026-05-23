@@ -20,6 +20,7 @@ SELECT
     t.user_prompt,
     t.assistant_response,
     t.cwd,
+    t.project_id,
     t.git_branch,
     t.claude_version,
     t.model,

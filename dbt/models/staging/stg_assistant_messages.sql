@@ -11,6 +11,7 @@ SELECT
     tenant_id,
     uuid,
     session_id,
+    project_id,
     agent,
     ts,
     file_path,

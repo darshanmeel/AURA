@@ -21,6 +21,7 @@ class DuckDBWriter:
                     tenant_id        TEXT NOT NULL DEFAULT 'local',
                     uuid             TEXT NOT NULL,
                     session_id       TEXT NOT NULL,
+                    project_id       TEXT,
                     agent            TEXT NOT NULL,
                     event_type       TEXT NOT NULL,
                     ts               TIMESTAMP NOT NULL,
@@ -62,6 +63,13 @@ class DuckDBWriter:
                     session_title TEXT,
                     ingested_at   TIMESTAMP DEFAULT now()
                 );
+                CREATE TABLE IF NOT EXISTS raw_session_skills (
+                    tenant_id     TEXT NOT NULL DEFAULT 'local',
+                    session_id    TEXT NOT NULL,
+                    skill_name    TEXT NOT NULL,
+                    is_initial    BOOLEAN DEFAULT FALSE,
+                    PRIMARY KEY (tenant_id, session_id, skill_name)
+                );
             """)
 
     def insert_event(self, event: dict):
@@ -80,4 +88,17 @@ class DuckDBWriter:
             conn.executemany(
                 f"INSERT INTO raw_events ({cols}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
                 [list(e.values()) for e in events]
+            )
+
+    def insert_session_skills(self, skills: list[dict]):
+        if not skills:
+            return
+        
+        cols = ", ".join(skills[0].keys())
+        placeholders = ", ".join(["?"] * len(skills[0]))
+        
+        with self.get_connection() as conn:
+            conn.executemany(
+                f"INSERT INTO raw_session_skills ({cols}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
+                [list(s.values()) for s in skills]
             )

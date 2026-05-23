@@ -1,27 +1,28 @@
 export const dynamic = 'force-dynamic'
 
+import React from 'react'
 import { Eyebrow, Rule, StatBlock, BarRow, ProviderTag, ModelPill, AgentLink, PersonLink, SeverityTag, TBar, StackBar, StatusDot } from '../components/atoms'
 import { DailyChart } from '../components/charts'
 import { SideRail, SideSection } from '../components/panels'
 import { fmt } from '../lib/fmt'
 import {
-  getDashboardKPIs, getDailySpend, getTopApps, getTopAgents,
+  getDashboardKPIs, getDailySpend, getTopApps, getTopProjects, getTopAgents,
   getToolMix, getProviderSplit, getModelBreakdown,
   getRecentErrors, getTopFiles, getTopPeople
 } from '../lib/queries/dashboard'
 
 export default async function DashboardPage() {
-  let kpis: any = {}, dailySpend: any[] = [], topApps: any[] = [], topAgents: any[] = []
+  let kpis: any = {}, dailySpend: any[] = [], topApps: any[] = [], topProjects: any[] = [], topAgents: any[] = []
   let toolMix: any[] = [], providers: any[] = [], models: any[] = [], recentErrors: any[] = []
   let topFiles: any[] = [], topPeople: any[] = []
   try {
-    const [kpisArr, ds, ta, tag, tm, prov, mod, re, tf, tp] = await Promise.all([
-      getDashboardKPIs(), getDailySpend(), getTopApps(), getTopAgents(),
+    const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp] = await Promise.all([
+      getDashboardKPIs(), getDailySpend(), getTopApps(), getTopProjects(), getTopAgents(),
       getToolMix(), getProviderSplit(), getModelBreakdown(),
       getRecentErrors(), getTopFiles(), getTopPeople()
     ])
     kpis = kpisArr ?? {}
-    dailySpend = ds as any[]; topApps = ta as any[]; topAgents = tag as any[]
+    dailySpend = ds as any[]; topApps = ta as any[]; topProjects = tproj as any[]; topAgents = tag as any[]
     toolMix = tm as any[]; providers = prov as any[]; models = mod as any[]
     recentErrors = re as any[]; topFiles = tf as any[]; topPeople = tp as any[]
   } catch { /* DB not ready yet — show empty state */ }
@@ -94,16 +95,17 @@ export default async function DashboardPage() {
 
       <section className="cols">
         <div className="col-main">
-          {/* Apps ledger */}
+          {/* Projects ledger */}
           <div className="section-head">
-            <h2 className="h-section">Apps — by cost</h2>
-            <span className="section-meta">{topApps.length} projects · click any row →</span>
+            <h2 className="h-section">Projects — by cost</h2>
+            <span className="section-meta">{topProjects.length} projects · click any row →</span>
           </div>
           <table className="ledger">
             <thead>
               <tr>
                 <th>#</th>
-                <th>App</th>
+                <th>Project</th>
+                <th className="num">Apps</th>
                 <th className="num">Sessions</th>
                 <th className="num">Turns</th>
                 <th className="num">Cost</th>
@@ -111,28 +113,50 @@ export default async function DashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {topApps.map((app: any, i: number) => (
-                <tr key={app.app_id} className="clickable" onClick={() => {}}>
-                  <td className="muted">{String(i + 1).padStart(2, "0")}</td>
-                  <td>
-                    {/* TODO: Add app_glyph to watcher parsed data and DBT dim_apps. Wait for package.json parsing. */}
-                    <div className="app-cell" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                      <span className="app-glyph-s" style={{ width: 24, height: 24, background: 'var(--rule)', borderRadius: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{app.app_glyph ?? null}</span>
-                      <div>
-                        <div className="strong"><a href={`/apps/${encodeURIComponent(app.app_id)}`} style={{ textDecoration: 'none', color: 'inherit' }}>{app.app_name}</a></div>
-                        {/* TODO: Add app_desc to DBT dim_apps via package.json extraction in aura_watcher/adapters/claude.py */}
-                        <div className="tiny muted" style={{ fontStyle: 'italic' }}>{app.app_desc ?? '—'}</div>
+              {topProjects.map((proj: any, i: number) => (
+                <React.Fragment key={proj.project_id}>
+                  <tr className="clickable" onClick={() => {}}>
+                    <td className="muted">{String(i + 1).padStart(2, "0")}</td>
+                    <td>
+                      <div className="app-cell" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                        <span className="app-glyph-s" style={{ width: 24, height: 24, background: 'var(--rule)', borderRadius: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{proj.project_name[0]?.toUpperCase() ?? '?'}</span>
+                        <div>
+                          <div className="strong">{proj.project_name}</div>
+                          <div className="tiny muted">{proj.project_id}</div>
+                        </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="num">{fmt.n(app.session_count)}</td>
-                  <td className="num">{fmt.n(app.total_turns)}</td>
-                  <td className="num strong">{fmt.usd(app.total_cost)}</td>
-                  <td style={{ width: 100 }}><TBar pct={(app.total_cost / maxCost) * 100} /></td>
-                </tr>
+                    </td>
+                    <td className="num">{fmt.n(proj.app_count)}</td>
+                    <td className="num">{fmt.n(proj.session_count)}</td>
+                    <td className="num">{fmt.n(proj.total_turns)}</td>
+                    <td className="num strong">{fmt.usd(proj.total_cost)}</td>
+                    <td style={{ width: 100 }}><TBar pct={(proj.total_cost / Math.max(0.001, topProjects[0]?.total_cost ?? 1)) * 100} /></td>
+                  </tr>
+                  {proj.apps && proj.apps.map((app: any, idx: number) => (
+                    <tr key={app.app_id} className="sub-row clickable" style={{ background: 'var(--surface-raised)' }}>
+                      <td></td>
+                      <td style={{ paddingLeft: '36px' }}>
+                        <div className="app-cell" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--muted)', fontSize: 14 }}>↳</span>
+                          <div>
+                            <div className="strong"><a href={`/apps/${encodeURIComponent(app.app_id)}`} style={{ textDecoration: 'none', color: 'inherit' }}>{app.app_name}</a></div>
+                            <div className="tiny muted">{app.app_id}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td></td>
+                      <td className="num">{fmt.n(app.session_count)}</td>
+                      <td className="num">{fmt.n(app.total_turns)}</td>
+                      <td className="num">{fmt.usd(app.total_cost)}</td>
+                      <td style={{ width: 100 }}><TBar pct={(app.total_cost / Math.max(0.001, topProjects[0]?.total_cost ?? 1)) * 100} /></td>
+                    </tr>
+                  ))}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
+
+
 
           <Rule />
 

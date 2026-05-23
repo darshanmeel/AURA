@@ -65,7 +65,7 @@ export default function SessionsPage() {
           <thead>
             <tr>
               <th>Started</th><th>Person</th><th>App</th><th>Agent</th>
-              <th>Title</th><th>Model</th><th>Turns</th><th>Commits</th><th>Cost</th>
+              <th>Title</th><th>Model</th><th>Skills</th><th>Turns</th><th>Commits</th><th>Cost</th>
             </tr>
           </thead>
           <tbody>
@@ -77,6 +77,7 @@ export default function SessionsPage() {
                 <td>{s.agent ? <AgentLink name={s.agent} /> : '—'}</td>
                 <td><a href={`/sessions/${s.session_id}`}>{s.session_title ?? s.session_id?.slice(0, 12)}</a></td>
                 <td>{s.model ? <ModelPill model={s.model} /> : '—'}</td>
+                <td className="num">{fmt.n(s.skill_count ?? 0)}</td>
                 <td className="num">{fmt.n(s.turn_count)}</td>
                 <td className="num">{fmt.n(s.commits ?? 0)}</td>
                 <td className="num accent">{fmt.usd(s.total_cost)}</td>

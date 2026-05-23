@@ -26,11 +26,26 @@ class ClaudeAdapter:
         usage = message.get("usage", {}) or {}
         model = message.get("model") or raw.get("model")
         
-        # Extract session_id from sessionId or fallback to file_path (assuming .../session_id/log.jsonl)
+        # Extract session_id from sessionId or fallback to file_path
         session_id = raw.get("sessionId")
         if not session_id:
             parts = file_path.split(os.sep)
             session_id = parts[-2] if len(parts) >= 2 else "unknown"
+
+        project_id = "unknown"
+        parts = file_path.replace('/', os.sep).split(os.sep)
+        try:
+            if "projects" in parts:
+                idx = parts.index("projects")
+                if len(parts) > idx + 1:
+                    encoded_proj = parts[idx + 1]
+                    decoded_proj = encoded_proj.replace("--", ":\\").replace("-", "\\")
+                    project_id = decoded_proj
+            elif len(parts) >= 2:
+                # Fallback: if not in a "projects" folder, try to use the parent directory
+                project_id = parts[-2]
+        except Exception:
+            pass
 
         context_pct = None
         if usage and model:
@@ -47,6 +62,7 @@ class ClaudeAdapter:
         return {
             "uuid": uuid,
             "session_id": session_id,
+            "project_id": project_id,
             "agent": "claude",
             "event_type": event_type,
             "ts": ts,
@@ -70,4 +86,31 @@ class ClaudeAdapter:
             "context_pct": context_pct,
             "payload": json.dumps(raw)
         }
+
+    def parse_skills(self, raw: dict, file_path: str) -> list[dict]:
+        if raw.get("type") != "attachment":
+            return []
+        
+        attachment = raw.get("attachment")
+        if not attachment or attachment.get("type") != "skills":
+            return []
+        
+        session_id = raw.get("sessionId")
+        if not session_id:
+            parts = file_path.split(os.sep)
+            session_id = parts[-2] if len(parts) >= 2 else "unknown"
+
+        names = attachment.get("names", [])
+        is_initial = attachment.get("isInitial", False)
+        
+        skills = []
+        for name in names:
+            skills.append({
+                "tenant_id": "local",
+                "session_id": session_id,
+                "skill_name": name,
+                "is_initial": is_initial
+            })
+            
+        return skills
 
