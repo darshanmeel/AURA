@@ -24,7 +24,7 @@ export async function query<T = Record<string, unknown>>(sql: string, params: un
       return obj as T
     })
   } finally {
-    await conn.close()
+    conn.closeSync()
   }
 }
 
