@@ -1,41 +1,31 @@
 version: '3.8'
 
-services:
-  watcher:
-    build:
-      context: ./watcher
-    container_name: aura-watcher
-    volumes:
-      - aura_data:/data
-      - ~/.claude/projects:/logs/claude:ro
-      - ./dbt:/app/dbt
-    environment:
-      - AURA_LOGS_DIR=/logs/claude
-      - AURA_DB_PATH=/data/aura.duckdb
-      - AURA_READ_DB_PATH=/data/aura_read.duckdb
-      - AURA_SNAPSHOT_INTERVAL=2
-    networks:
-      - aura
-
-  streamlit:
-    build:
-      context: ./streamlit
-    container_name: aura-streamlit
-    ports:
-      - "8501:8501"
-    volumes:
-      - aura_data:/data
-    environment:
-      - AURA_READ_DB=/data/aura_read.duckdb
-    networks:
-      - aura
-    depends_on:
-      - watcher
-
 volumes:
   aura_data:
-    driver: local
 
-networks:
-  aura:
-    driver: bridge
+services:
+  watcher:
+    build: ./watcher
+    volumes:
+      - aura_data:/data
+      - ${CLAUDE_LOGS_DIR:-~/.claude/projects}:/logs/claude:ro
+    environment:
+      - AURA_DB_PATH=/data/aura.duckdb
+      - AURA_READ_DB_PATH=/data/aura_read.duckdb
+      - AURA_LOGS_DIR=/logs/claude
+      - AURA_SNAPSHOT_INTERVAL=2
+      - AURA_DBT_RUN_INTERVAL_MINUTES=60
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - aura_data:/data:ro
+    environment:
+      - AURA_READ_DB_PATH=/data/aura_read.duckdb
+      - NODE_ENV=production
+    depends_on:
+      - watcher
+    restart: unless-stopped
