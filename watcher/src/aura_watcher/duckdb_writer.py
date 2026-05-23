@@ -53,6 +53,15 @@ class DuckDBWriter:
                     last_seen_at     TIMESTAMP NOT NULL,
                     PRIMARY KEY (tenant_id, file_path)
                 );
+                CREATE TABLE IF NOT EXISTS session_meta (
+                    session_id    TEXT PRIMARY KEY,
+                    tenant_id     TEXT NOT NULL DEFAULT 'local',
+                    person_id     TEXT,
+                    person_name   TEXT,
+                    commits       INTEGER DEFAULT 0,
+                    session_title TEXT,
+                    ingested_at   TIMESTAMP DEFAULT now()
+                );
             """)
 
     def insert_event(self, event: dict):
