@@ -1,12 +1,40 @@
 # AURA (Agent Usage & Resource Analytics)
 
-Aura is a local, Dockerized analytics pipeline designed to monitor, analyze, and replay local AI agent sessions (Claude Code, Gemini, etc.). The system decouples data extraction, transformation, and presentation to support both high-level BI reporting and granular, interactive session replays.
+Aura is a local, Dockerized analytics pipeline designed to monitor, analyze, and replay local AI agent sessions (Claude Code, Gemini, etc.). The system decouples data extraction, transformation, and presentation to support both high-level BI reporting and granular, interactive session replays. 
+
+It provides an out-of-the-box solution for teams and individual developers who rely heavily on AI coding assistants, offering transparency into the real cost, duration, and efficiency of every single agent interaction.
 
 ## What it does
-- **Ingests Data:** Continuously watches for local AI agent logs (`.jsonl` files) via a Python `watcher` process.
-- **Stores Data:** Loads ingested data into DuckDB for fast and efficient analytical querying.
-- **Transforms Data:** Uses `dbt` to run hourly rollups, build star schemas, and calculate pricing metrics based on usage.
-- **Visualizes:** Provides a Next.js-based dashboard UI to explore agent sessions, monitor token usage, track costs, and review transcripts in real-time.
+- **Ingests Data:** Continuously watches for local AI agent logs (`.jsonl` files) via a Python `watcher` process. It gracefully handles large files and real-time updates without locking up your machine.
+- **Stores Data:** Loads ingested data into DuckDB for fast and efficient analytical querying, ensuring all your data stays strictly local.
+- **Transforms Data:** Uses `dbt` to run hourly rollups, build star schemas, and calculate pricing metrics based on usage, giving you accurate ROI indicators.
+- **Visualizes:** Provides a Next.js-based dashboard UI to explore agent sessions, monitor token usage, track costs, and review transcripts in real-time. The frontend makes it easy to search through historical chats or jump straight to a specific code modification.
+
+## Screenshots
+
+Here is a look at the Next.js dashboard you'll be using to monitor your agents:
+
+### Dashboard Overview
+The main dashboard gives a high-level view of token usage, total active sessions, and overall cost metrics over time.
+![Dashboard Overview](docs/screenshots/01-dashboard.png)
+
+### App Usage & Agent Profiles
+See detailed token spending broken down by application and individual agent roles.
+![App Profile](docs/screenshots/03-app-profile.png)
+![Agent Profile](docs/screenshots/06-agent-profile.png)
+
+### People & Team Tracking
+For multi-user setups, track metrics across different team members.
+![People Profile](docs/screenshots/05-person-profile.png)
+
+### Sessions & Deep Dives
+Dive deep into individual sessions. Replay exact conversational transcripts and code edits side-by-side.
+![Sessions List](docs/screenshots/07-sessions.png)
+![Session Detail](docs/screenshots/08-session-detail.png)
+
+### Error Tracking
+Monitor failure rates and agent errors to see when and why your assistant is struggling.
+![Error Tracking](docs/screenshots/09-errors.png)
 
 ## What it is for
 Aura is built for individuals and teams using AI coding agents locally. It provides insights into:
