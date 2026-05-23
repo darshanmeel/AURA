@@ -10,6 +10,7 @@ from aura_watcher.duckdb_writer import DuckDBWriter
 from aura_watcher.adapters.claude import ClaudeAdapter
 from aura_watcher.checkpoint import CheckpointManager
 from aura_watcher.snapshot import take_snapshot
+from aura_watcher.session_meta import write_session_meta
 
 def process_file(file_path, writer, adapter, cp_manager):
     try:
@@ -57,6 +58,8 @@ class JSONLHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('.jsonl'):
+            session_id = os.path.basename(os.path.dirname(event.src_path))
+            write_session_meta(self.writer, session_id, event.src_path)
             process_file(event.src_path, self.writer, self.adapter, self.cp_manager)
 
 dbt_active = False
