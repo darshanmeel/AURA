@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  watcher:
+    build:
+      context: ./watcher
+    container_name: aura-watcher
+    volumes:
+      - aura_data:/data
+      - ~/.claude/projects:/logs/claude:ro
+    environment:
+      - AURA_CONFIG=/data/aura.toml
+    networks:
+      - aura
+    depends_on:
+      - streamlit
+
+  streamlit:
+    build:
+      context: ./streamlit
+    container_name: aura-streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      - aura_data:/data
+    environment:
+      - AURA_DATA_PATH=/data
+    networks:
+      - aura
+
+volumes:
+  aura_data:
+    driver: local
+
+networks:
+  aura:
+    driver: bridge

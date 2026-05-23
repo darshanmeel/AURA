@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Aura-specific
+*.duckdb
+*.duckdb.wal
+aura_data/
+dbt/target/
+dbt/logs/
+aura.toml
