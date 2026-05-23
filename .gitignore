@@ -224,3 +224,5 @@ aura_data/
 dbt/target/
 dbt/logs/
 aura.toml
+
+.worktrees/
