@@ -9,7 +9,14 @@ class ClaudeAdapter:
         "claude-3-5-haiku-20241022": 200000,
     }
 
-    def parse_line(self, raw: dict, file_path: str, byte_offset: int) -> dict:
+    def parse_line(self, raw: dict, file_path: str, byte_offset: int) -> dict | None:
+        uuid = raw.get("uuid")
+        ts = raw.get("ts")
+        
+        # Schema requires uuid and ts to be NOT NULL
+        if not uuid or not ts:
+            return None
+
         event_type = raw.get("type", "unknown")
         usage = raw.get("message", {}).get("usage", {})
         model = raw.get("model")
@@ -29,11 +36,11 @@ class ClaudeAdapter:
             context_pct = tokens / window
 
         return {
-            "uuid": raw.get("uuid"),
+            "uuid": uuid,
             "session_id": session_id,
             "agent": "claude",
             "event_type": event_type,
-            "ts": raw.get("ts"),
+            "ts": ts,
             "file_path": file_path,
             "byte_offset": byte_offset,
             "model": model,
