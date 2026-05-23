@@ -3,6 +3,7 @@
 SELECT
     a.tenant_id,
     a.session_id,
+    ROW_NUMBER() OVER (PARTITION BY a.tenant_id, a.session_id ORDER BY a.ts) AS turn_number,
     a.message_id as turn_id,
     u.uuid as user_event_uuid,
     a.uuid as assistant_event_uuid,

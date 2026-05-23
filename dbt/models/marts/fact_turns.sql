@@ -11,6 +11,7 @@ WITH tool_counts AS (
 SELECT
     t.tenant_id,
     t.session_id,
+    t.turn_number,
     t.turn_id,
     t.user_event_uuid,
     t.assistant_event_uuid,
