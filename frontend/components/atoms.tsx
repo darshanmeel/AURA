@@ -55,7 +55,8 @@ export function ProviderTag({ provider }: { provider: string }) {
 }
 
 export function SeverityTag({ severity }: { severity: string }) {
-  return <span className={`severity-tag severity-${severity}`}>{severity}</span>
+  const sev = (severity || 'info').toLowerCase()
+  return <span className={`severity-tag severity-${sev}`}>{severity}</span>
 }
 
 export function BarRow({ label, value, max, fmt }: { label: string; value: number; max: number; fmt: (v: number) => string }) {
@@ -133,9 +134,22 @@ export function Colophon() {
         </div>
       </div>
       <div className="colophon-meta">
-        <span>Anthropic: Opus $15/$75 · Sonnet $3/$15 · Haiku $1/$5 (per 1M in/out)</span>
-        <span>Google: Gemini 2.5 Pro $1.25/$10 · Flash $0.30/$2.50 (per 1M)</span>
-        <span>Cache: write 1.25× input · read 0.10× input · 1h cache 2× of 5m</span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'auto auto auto', gap: '4px 24px', textAlign: 'left', opacity: 0.8 }}>
+          <div className="strong" style={{ gridColumn: '1 / -1', color: 'var(--ink)' }}>Anthropic Pricing (per 1M tokens)</div>
+          <div>Opus: <span className="mono">$15.00 in / $75.00 out</span></div>
+          <div>Sonnet: <span className="mono">$3.00 in / $15.00 out</span></div>
+          <div>Haiku: <span className="mono">$1.00 in / $5.00 out</span></div>
+
+          <div className="strong" style={{ gridColumn: '1 / -1', marginTop: 12, color: 'var(--ink)' }}>Google Pricing (per 1M tokens)</div>
+          <div>Gemini 1.5 Pro: <span className="mono">$1.25 in / $10.00 out</span></div>
+          <div>Gemini 1.5 Flash: <span className="mono">$0.30 in / $2.50 out</span></div>
+          <div />
+
+          <div className="strong" style={{ gridColumn: '1 / -1', marginTop: 12, color: 'var(--ink)' }}>Cache Multipliers</div>
+          <div>Write: <span className="mono">1.25× input</span></div>
+          <div>Read: <span className="mono">0.10× input</span></div>
+          <div>1-Hour: <span className="mono">2× 5-min cost</span></div>
+        </div>
       </div>
     </footer>
   )

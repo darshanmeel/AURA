@@ -413,6 +413,12 @@ html[data-density="compact"] .ledger th { padding: 8px 12px; }
 .row-arr { color: var(--muted-2); text-align: right; font-size: 16px; }
 .warn { color: var(--warn); }
 
+/* Errors Ledger */
+.ledger-errors th { font-size: 11px; }
+.ledger-errors td { padding: 12px 16px; border-bottom: 1px solid var(--rule); }
+.ledger-errors .err-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+.ledger-errors .session-cell { font-family: var(--mono); font-size: 11px; }
+
 .agent-name {
   font-family: var(--mono);
   font-size: 12px;
@@ -463,6 +469,21 @@ html[data-density="compact"] .ledger th { padding: 8px 12px; }
 .pill-stop   { font-size: 10px; padding: 2px 6px; }
 .pill-end    { color: var(--accent); border-color: rgba(129, 140, 248, 0.4); }
 .pill-tool   { color: var(--muted); border-color: var(--rule); }
+
+.severity-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  background: var(--rule);
+  color: var(--muted);
+}
+.severity-info { background: var(--rule); color: var(--ink-2); }
+.severity-warn { background: rgba(234, 179, 8, 0.2); color: #eab308; } /* yellow-500 */
+.severity-error { background: rgba(239, 68, 68, 0.15); color: #ef4444; } /* red-500 */
 
 .status {
   display: inline-flex;

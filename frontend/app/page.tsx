@@ -35,6 +35,14 @@ export default async function DashboardPage() {
   const cache1h = kpis.cache_1h_total ?? 0
   const cacheR = kpis.cache_read_total ?? 0
 
+  const topModel = models[0]
+  const topModelShare = topModel && kpis.total_cost > 0 ? (topModel.cost / kpis.total_cost) * 100 : 0
+  const modelName = topModel?.model.includes('opus') ? 'Opus' : topModel?.model.includes('sonnet') ? 'Sonnet' : topModel?.model.includes('gemini-2.5-pro') ? 'Gemini Pro' : topModel?.model ?? 'This model'
+  
+  const heroLede = topModelShare > 20 
+    ? `${modelName} usage accounts for ${topModelShare.toFixed(0)}% of the bill — drill in to see why.`
+    : `${fmt.n(kpis.total_sessions)} sessions, ${fmt.n(kpis.total_people)} operators, ${fmt.n(kpis.total_apps)} apps, ${providers.length} providers — ${totalDays} days.`
+
   return (
     <div className="page page-layout">
       {/* Masthead strap */}
@@ -53,10 +61,7 @@ export default async function DashboardPage() {
           <h1 className="display">
             Spend, <em>with receipts.</em>
           </h1>
-          <p className="hero-lede">
-            {fmt.n(kpis.total_sessions)} sessions, {fmt.n(kpis.total_people)} operators, {fmt.n(kpis.total_apps)} apps,
-            {" "}{providers.length} providers — {totalDays} days.
-          </p>
+          <p className="hero-lede">{heroLede}</p>
           <div className="hero-actions">
             <a href="/sessions" className="btn btn-primary">
               Sessions <span className="arr">→</span>
@@ -219,18 +224,19 @@ export default async function DashboardPage() {
             <div className="empty-block">No errors recorded — a quiet fortnight.</div>
           ) : (
             <table className="ledger ledger-errors">
-              <thead><tr><th>When</th><th>Severity</th><th>Kind</th><th>Tool</th><th>Message</th></tr></thead>
+              <thead><tr><th>When</th><th>Severity</th><th>Kind</th><th>Tool</th><th>Message</th><th>Session</th></tr></thead>
               <tbody>
                 {recentErrors.map((e: any, i: number) => (
                   <tr key={i} className="clickable">
-                    <td className="mono muted">
+                    <td className="mono muted" style={{ whiteSpace: 'nowrap' }}>
                       <div>{fmt.date(e.ts)}</div>
                       <div className="tiny">{fmt.time(e.ts)}</div>
                     </td>
                     <td><SeverityTag severity={e.severity} /></td>
                     <td><span className="kind-tag" style={{ background: 'var(--rule)', padding: '2px 6px', borderRadius: 2, fontSize: 11 }}>{e.kind}</span></td>
                     <td className="mono">{e.tool ?? '—'}</td>
-                    <td className="err-msg mono" style={{ opacity: 0.8 }}>{e.message?.slice(0, 60) ?? e.kind}</td>
+                    <td className="err-msg mono" style={{ opacity: 0.8, maxWidth: '280px' }} title={e.message}>{e.message?.slice(0, 60) ?? e.kind}</td>
+                    <td className="session-cell"><a href={`/sessions/${e.session_id}`} style={{ textDecoration: 'none', color: 'inherit' }}>{e.session_id?.slice(0, 8)} ↗</a></td>
                   </tr>
                 ))}
               </tbody>
