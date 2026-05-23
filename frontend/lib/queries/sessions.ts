@@ -36,7 +36,7 @@ export async function getSessions(filters: SessionFilters = {}) {
            ds.turn_count, ds.total_cost, ds.total_input_tokens, ds.total_output_tokens,
            ds.commits, ds.tools_used, ds.files_touched,
            da.app_id,
-           ds.first_prompt_200 AS prompt_preview
+           ds.session_title AS prompt_preview
     FROM dim_sessions ds
     LEFT JOIN dim_apps da ON da.cwd = ds.cwd
     ${where}

@@ -45,7 +45,7 @@ export async function getDailySpend() {
 
 export async function getTopApps() {
   return query(`
-    SELECT app_id, app_name, total_cost, session_count, total_turns, agents
+    SELECT app_id, app_name, total_cost, session_count, total_turns
     FROM dim_apps
     ORDER BY total_cost DESC
     LIMIT 10
@@ -54,7 +54,7 @@ export async function getTopApps() {
 
 export async function getTopProjects() {
   const projects = await query(`
-    SELECT project_id, project_name, total_cost, session_count, total_turns, agents
+    SELECT project_id, project_name, total_cost, session_count, total_turns
     FROM dim_projects
     ORDER BY total_cost DESC
     LIMIT 10
