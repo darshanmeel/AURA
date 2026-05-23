@@ -16,7 +16,12 @@ export async function query<T = Record<string, unknown>>(sql: string, params: un
   const conn = await db.connect()
   try {
     const result = await conn.runAndReadAll(sql, params as DuckDBValue[])
-    return result.getRowObjectsJS() as unknown as T[]
+    const rows = result.getRowObjectsJS()
+    return rows.map(row =>
+      Object.fromEntries(
+        Object.entries(row).map(([k, v]) => [k, typeof v === 'bigint' ? Number(v) : v])
+      )
+    ) as unknown as T[]
   } finally {
     conn.closeSync()
   }
