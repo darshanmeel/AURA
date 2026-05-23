@@ -12,11 +12,11 @@ export async function getSessions(filters: SessionFilters = {}) {
   const conditions: string[] = []
   const params: unknown[] = []
 
-  if (filters.provider) { conditions.push('provider = ?'); params.push(filters.provider) }
-  if (filters.agent)    { conditions.push('agent = ?');    params.push(filters.agent) }
-  if (filters.status)   { conditions.push('status = ?');   params.push(filters.status) }
+  if (filters.provider) { conditions.push('ds.provider = ?'); params.push(filters.provider) }
+  if (filters.agent)    { conditions.push('ds.agent = ?');    params.push(filters.agent) }
+  if (filters.status)   { conditions.push('ds.status = ?');   params.push(filters.status) }
   if (filters.q) {
-    conditions.push("(session_title ILIKE ? OR session_id ILIKE ? OR cwd ILIKE ?)")
+    conditions.push("(ds.session_title ILIKE ? OR ds.session_id ILIKE ? OR ds.cwd ILIKE ?)")
     params.push(`%${filters.q}%`, `%${filters.q}%`, `%${filters.q}%`)
   }
 
@@ -28,11 +28,17 @@ export async function getSessions(filters: SessionFilters = {}) {
   const orderBy = sortMap[filters.sort ?? ''] ?? 'start_ts DESC'
 
   return query(`
-    SELECT session_id, start_ts, end_ts, model, cwd, git_branch, agent,
-           person_id, person_name, session_title, status, provider,
-           turn_count, total_cost, total_input_tokens, total_output_tokens,
-           commits, tools_used, files_touched
-    FROM dim_sessions
+    SELECT ds.session_id, ds.start_ts, ds.end_ts, ds.model, ds.cwd, ds.git_branch,
+           ds.agent, ds.agents, ds.agent_count,
+           ds.person_id, ds.person_name,
+           COALESCE(ds.session_title, ds.session_id) AS session_title,
+           ds.status, ds.provider,
+           ds.turn_count, ds.total_cost, ds.total_input_tokens, ds.total_output_tokens,
+           ds.commits, ds.tools_used, ds.files_touched,
+           da.app_id,
+           ds.first_prompt_200 AS prompt_preview
+    FROM dim_sessions ds
+    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
     ${where}
     ORDER BY ${orderBy}
     LIMIT 200

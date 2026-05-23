@@ -11,7 +11,7 @@ SELECT
     tenant_id,
     uuid,
     session_id,
-    project_id,
+    project_id,   -- will be NULL (not in raw_events; derived via dim_apps)
     agent,
     ts,
     file_path,

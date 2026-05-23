@@ -10,19 +10,23 @@ import {
   getSessionFiles, getSessionToolMix, getSessionGitCommands,
   getSessionToolExecutions
 } from '../../../lib/queries/sessions'
+import { getSessionPrompts } from '../../../lib/queries/prompts'
+import { getSessionFilesWithAttribution } from '../../../lib/queries/files'
 
 export default async function SessionDetailPage({ params }: { params: { sessionId: string } }) {
   const id = params.sessionId
-  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = [], toolExecutions: any[] = []
+  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = [], toolExecutions: any[] = [], prompts: any[] = [], filesWithAttribution: any[] = []
   try {
-    const [sess, t, e, f, tm, gc, te] = await Promise.all([
+    const [sess, t, e, f, tm, gc, te, pr, fa] = await Promise.all([
       getSession(id), getSessionTurns(id), getSessionErrors(id),
       getSessionFiles(id), getSessionToolMix(id), getSessionGitCommands(id),
-      getSessionToolExecutions(id)
+      getSessionToolExecutions(id), getSessionPrompts(id),
+      getSessionFilesWithAttribution(id)
     ])
     s = sess; turns = t as any[]; errors = e as any[]
     files = f as any[]; toolMix = tm as any[]; gitCommands = gc as any[]
-    toolExecutions = te as any[]
+    toolExecutions = te as any[]; prompts = pr as any[]
+    filesWithAttribution = fa as any[]
   } catch {}
   if (!s) notFound()
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
@@ -67,7 +71,7 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
 
       <Rule />
 
-      <SessionTabs 
+      <SessionTabs
         s={s}
         turns={turns}
         errors={errors}
@@ -75,6 +79,8 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
         gitCommands={gitCommands}
         files={files}
         toolMix={toolMix}
+        prompts={prompts}
+        filesWithAttribution={filesWithAttribution}
       />
     </div>
   )

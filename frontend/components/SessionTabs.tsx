@@ -1,8 +1,7 @@
 'use client'
 
 import React, { useState } from 'react'
-import { Eyebrow, Rule, StatBlock, ModelPill, SeverityTag, BarRow } from './atoms'
-import { TurnChart } from './charts'
+import { Eyebrow, Rule, StatBlock, ModelPill, SeverityTag, BarRow, AgentLink } from './atoms'
 import { fmt } from '../lib/fmt'
 
 interface SessionTabsProps {
@@ -13,198 +12,612 @@ interface SessionTabsProps {
   gitCommands: any[]
   files: any[]
   toolMix: any[]
+  prompts?: any[]
+  filesWithAttribution?: any[]
 }
 
-export function SessionTabs({ s, turns, errors, toolExecutions, gitCommands, files, toolMix }: SessionTabsProps) {
+// ── Inline TurnChart (ported from design's session.jsx) ─────────────────────
+// Stacks bars [cacheR, cacheW, out, in] per turn, overlays a context-% line.
+function TurnChart({ turns }: { turns: any[] }) {
+  if (!turns.length) {
+    return <div className="empty-block">Per-turn detail not retained for this session.</div>
+  }
+
+  const w = 1200, h = 280, pad = { l: 48, r: 48, t: 16, b: 28 }
+  const innerW = w - pad.l - pad.r
+  const innerH = h - pad.t - pad.b
+  const n = turns.length
+  const colW = innerW / n
+  const barW = colW * 0.62
+
+  const maxTokens = Math.max(
+    ...turns.map((t: any) =>
+      (t.cache_read_input_tokens ?? 0) +
+      (t.ephemeral_5m_input_tokens ?? 0) +
+      (t.ephemeral_1h_input_tokens ?? 0) +
+      (t.output_tokens ?? 0) +
+      (t.input_tokens ?? 0)
+    ),
+    1
+  )
+  const maxCtx = Math.max(...turns.map((t: any) => t.context_pct ?? 0), 0.01)
+
+  const ctxPts = turns.map((t: any, i: number) => {
+    const x = pad.l + colW * (i + 0.5)
+    const y = pad.t + innerH - ((t.context_pct ?? 0) / maxCtx) * innerH * 0.95
+    return [x, y] as [number, number]
+  })
+  const ctxPath = 'M' + ctxPts.map(([x, y]) => `${x},${y}`).join(' L')
+
+  return (
+    <div className="chart-wrap">
+      <svg viewBox={`0 0 ${w} ${h}`} className="chart" preserveAspectRatio="none">
+        {/* Grid lines */}
+        {[0.25, 0.5, 0.75, 1].map(g => (
+          <line
+            key={g}
+            x1={pad.l} x2={w - pad.r}
+            y1={pad.t + innerH * (1 - g)} y2={pad.t + innerH * (1 - g)}
+            stroke="var(--rule)" strokeWidth="0.5" strokeDasharray="2,3"
+          />
+        ))}
+        {/* Left axis labels (token scale) */}
+        {[0, 0.5, 1].map(g => (
+          <text
+            key={g}
+            x={pad.l - 8} y={pad.t + innerH * (1 - g) + 3}
+            className="axis-text" textAnchor="end" fontSize={9} fill="var(--muted)"
+          >
+            {fmt.k(maxTokens * g)}
+          </text>
+        ))}
+        {/* Right axis labels (context % scale) */}
+        {[0, 0.5, 1].map(g => (
+          <text
+            key={g}
+            x={w - pad.r + 8} y={pad.t + innerH * (1 - g) + 3}
+            className="axis-text" textAnchor="start" fontSize={9} fill="var(--muted)"
+          >
+            {Math.round(maxCtx * g * 100)}%
+          </text>
+        ))}
+
+        {/* Stacked bars per turn */}
+        {turns.map((t: any, i: number) => {
+          const x = pad.l + colW * i + (colW - barW) / 2
+          const segs = [
+            { v: t.cache_read_input_tokens ?? 0,  c: 'var(--muted-bar)' },
+            { v: (t.ephemeral_5m_input_tokens ?? 0) + (t.ephemeral_1h_input_tokens ?? 0), c: 'var(--accent)' },
+            { v: t.output_tokens ?? 0,             c: 'var(--ink)' },
+            { v: t.input_tokens ?? 0,              c: 'var(--accent-2)' },
+          ]
+          let yCursor = pad.t + innerH
+          return (
+            <g key={i}>
+              {segs.map((seg, j) => {
+                const segH = (seg.v / maxTokens) * innerH
+                yCursor -= segH
+                return (
+                  <rect
+                    key={j}
+                    x={x} y={yCursor}
+                    width={barW} height={Math.max(segH, 0)}
+                    fill={seg.c}
+                  />
+                )
+              })}
+            </g>
+          )
+        })}
+
+        {/* Context % overlay line */}
+        <path d={ctxPath} stroke="var(--accent-2)" strokeWidth="1.4" fill="none" />
+        {ctxPts.map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r="1.4" fill="var(--accent-2)" />
+        ))}
+
+        {/* X-axis turn labels every 10 */}
+        {turns.map((t: any, i: number) => i % 10 === 0 && (
+          <text
+            key={i}
+            x={pad.l + colW * (i + 0.5)} y={h - 8}
+            className="axis-text" textAnchor="middle" fontSize={9} fill="var(--muted)"
+          >
+            #{t.turn_number ?? i + 1}
+          </text>
+        ))}
+      </svg>
+    </div>
+  )
+}
+
+function LegendSwatch({ color, label, line }: { color: string; label: string; line?: boolean }) {
+  return (
+    <div className="legend-item" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 16 }}>
+      {line
+        ? <span style={{ display: 'inline-block', width: 16, height: 2, borderTop: `2px solid ${color}` }} />
+        : <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: color }} />
+      }
+      <span style={{ fontSize: 12, color: 'var(--muted)' }}>{label}</span>
+    </div>
+  )
+}
+
+// ── Overkill chip ────────────────────────────────────────────────────────────
+function OverkillChip({ reason }: { reason: string }) {
+  return (
+    <span style={{
+      display: 'inline-block',
+      padding: '1px 6px',
+      border: '1px solid var(--accent)',
+      borderRadius: 3,
+      fontSize: 10,
+      color: 'var(--accent)',
+      fontFamily: 'var(--mono)',
+      lineHeight: 1.5,
+    }}>
+      overkill: {reason}
+    </span>
+  )
+}
+
+// ── Duration seconds → human string ─────────────────────────────────────────
+function fmtSecs(s: number | null | undefined): string {
+  if (s == null) return '—'
+  const n = Math.round(s)
+  if (n < 60) return `${n}s`
+  return `${Math.floor(n / 60)}m ${n % 60}s`
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+export function SessionTabs({
+  s, turns, errors, toolExecutions, gitCommands,
+  files, toolMix, prompts = [], filesWithAttribution = []
+}: SessionTabsProps) {
   const [activeTab, setActiveTab] = useState<'details' | 'tools' | 'git' | 'tokens'>('details')
 
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
-  const maxEdits = Math.max(...(files ?? []).map((f: any) => f.edit_count ?? 0), 1)
+  const maxEdits     = Math.max(...(files ?? []).map((f: any) => f.edit_count ?? 0), 1)
+
+  // For the files side panel, prefer attributed data; fall back to plain files
+  const filePanelData = filesWithAttribution.length ? filesWithAttribution : files
 
   return (
-    <div className="session-tabs-container">
-      <div className="tab-nav">
-        <button className={`tab-btn ${activeTab === 'details' ? 'active' : ''}`} onClick={() => setActiveTab('details')}>Details & Prompts</button>
-        <button className={`tab-btn ${activeTab === 'tools' ? 'active' : ''}`} onClick={() => setActiveTab('tools')}>Tools</button>
-        <button className={`tab-btn ${activeTab === 'git' ? 'active' : ''}`} onClick={() => setActiveTab('git')}>Git Commands</button>
-        <button className={`tab-btn ${activeTab === 'tokens' ? 'active' : ''}`} onClick={() => setActiveTab('tokens')}>Tokens & Caching</button>
-      </div>
+    <>
+      {/* ── TAB NAV + CONTENT ─────────────────────────────────────────── */}
+      <div className="session-tabs-container">
+        <div className="tab-nav">
+          <button className={`tab-btn ${activeTab === 'details' ? 'active' : ''}`} onClick={() => setActiveTab('details')}>Details &amp; Prompts</button>
+          <button className={`tab-btn ${activeTab === 'tools'   ? 'active' : ''}`} onClick={() => setActiveTab('tools')}>Tools</button>
+          <button className={`tab-btn ${activeTab === 'git'     ? 'active' : ''}`} onClick={() => setActiveTab('git')}>Git Commands</button>
+          <button className={`tab-btn ${activeTab === 'tokens'  ? 'active' : ''}`} onClick={() => setActiveTab('tokens')}>Tokens &amp; Caching</button>
+        </div>
 
-      <div className="tab-content">
-        {activeTab === 'details' && (
-          <div className="tab-panel">
-            <Eyebrow>Turns (first 60)</Eyebrow>
-            <table className="ledger-table" style={{ tableLayout: 'fixed', width: '100%' }}>
-              <thead>
-                <tr>
-                  <th style={{ width: 40 }}>#</th>
-                  <th style={{ width: 80 }}>Time</th>
-                  <th style={{ width: 100 }}>Model</th>
-                  <th>User Prompt</th>
-                  <th className="num" style={{ width: 80 }}>Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(turns ?? []).map((t: any) => (
-                  <tr key={t.turn_number}>
-                    <td className="num muted">{t.turn_number}</td>
-                    <td className="mono muted">{fmt.time(t.assistant_ts)}</td>
-                    <td><ModelPill model={t.model} /></td>
-                    <td style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
-                      <span title={t.assistant_response?.slice(0, 800) + '...'} style={{ cursor: 'help' }}>
-                        {t.user_prompt ? t.user_prompt.slice(0, 150) + (t.user_prompt.length > 150 ? '...' : '') : <span className="muted">{'<No prompt>'}</span>}
-                      </span>
-                    </td>
-                    <td className="num accent">{fmt.usd(t.calculated_cost)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <div className="tab-content">
+          {/* ── DETAILS TAB ─────────────────────────────────────────── */}
+          {activeTab === 'details' && (
+            <div className="tab-panel">
+              {/* Per-turn chart */}
+              <div className="section-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+                <Eyebrow>Per-turn ledger</Eyebrow>
+                <span className="section-meta muted" style={{ fontSize: 12 }}>
+                  {turns.length} turns sampled · stacked tokens · context % overlay
+                </span>
+              </div>
+              <TurnChart turns={turns} />
+              {turns.length > 0 && (
+                <div className="chart-legend" style={{ marginTop: 8, marginBottom: 24 }}>
+                  <LegendSwatch color="var(--muted-bar)" label="Cache read" />
+                  <LegendSwatch color="var(--accent)"    label="Cache write" />
+                  <LegendSwatch color="var(--ink)"       label="Output" />
+                  <LegendSwatch color="var(--accent-2)"  label="Fresh input" />
+                  <LegendSwatch color="var(--accent-2)"  label="Context %" line />
+                </div>
+              )}
 
-            {errors?.length > 0 && (
-              <>
-                <div style={{ marginTop: 48 }} />
-                <Eyebrow>Errors ({errors.length})</Eyebrow>
-                <table className="ledger-table ledger-errors">
-                  <thead><tr><th>Time</th><th>Severity</th><th>Kind</th><th>Tool</th><th>Message</th></tr></thead>
+              <Rule />
+
+              {/* Turns table */}
+              {turns.length > 0 && (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+                    <Eyebrow>Turns — table view</Eyebrow>
+                    <span className="muted" style={{ fontSize: 12 }}>first {Math.min(turns.length, 20)} of {turns.length}</span>
+                  </div>
+                  <table className="ledger-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ width: 44 }}>#</th>
+                        <th style={{ width: 72 }}>Time</th>
+                        <th className="num" style={{ width: 72 }}>In</th>
+                        <th className="num" style={{ width: 72 }}>Out</th>
+                        <th className="num" style={{ width: 110 }}>Cache W</th>
+                        <th className="num" style={{ width: 80 }}>Cache R</th>
+                        <th style={{ width: 100 }}>Stop</th>
+                        <th style={{ width: 80 }}>Tool</th>
+                        <th className="num" style={{ width: 60 }}>Ctx %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {turns.slice(0, 20).map((t: any) => (
+                        <tr key={t.turn_number}>
+                          <td className="muted mono">{String(t.turn_number).padStart(3, '0')}</td>
+                          <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(t.assistant_ts)}</td>
+                          <td className="num">{fmt.n(t.input_tokens)}</td>
+                          <td className="num">{fmt.n(t.output_tokens)}</td>
+                          <td className="num">
+                            <span className="muted">{fmt.k(t.ephemeral_5m_input_tokens)}</span>
+                            {' / '}
+                            <span style={{ color: 'var(--accent)' }}>{fmt.k(t.ephemeral_1h_input_tokens)}</span>
+                          </td>
+                          <td className="num">{fmt.k(t.cache_read_input_tokens)}</td>
+                          <td>
+                            {t.stop_reason
+                              ? <span className={`pill ${t.stop_reason === 'end_turn' ? 'pill-end' : 'pill-tool'}`}>{t.stop_reason}</span>
+                              : <span className="muted">—</span>}
+                          </td>
+                          <td>
+                            {t.tool_name
+                              ? <span className="mono" style={{ color: 'var(--accent)', fontSize: 11 }}>{t.tool_name}</span>
+                              : <span className="muted">—</span>}
+                          </td>
+                          <td className="num">
+                            <span className={(t.context_pct ?? 0) > 0.7 ? 'warn' : ''}>
+                              {fmt.pct(t.context_pct)}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <Rule />
+                </>
+              )}
+
+              {/* Errors for this session */}
+              <div style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+                <Eyebrow>Errors · this session</Eyebrow>
+                <span className="muted" style={{ fontSize: 12 }}>{errors.length} events</span>
+              </div>
+              {errors.length === 0
+                ? <div className="empty-block">No error events recorded — a clean run.</div>
+                : (
+                  <table className="ledger-table">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Severity</th>
+                        <th>Kind</th>
+                        <th>Tool</th>
+                        <th>Message</th>
+                        <th className="num">Turn</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {errors.map((e: any, i: number) => (
+                        <tr key={i}>
+                          <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(e.ts)}</td>
+                          <td><SeverityTag severity={e.severity} /></td>
+                          <td><span className="kind-tag mono">{e.kind}</span></td>
+                          <td>{e.tool ? <span className="mono" style={{ color: 'var(--accent)' }}>{e.tool}</span> : <span className="muted">—</span>}</td>
+                          <td className="muted err-msg mono" style={{ fontSize: 11 }}>{e.message}</td>
+                          <td className="num">#{e.turn_number}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )
+              }
+            </div>
+          )}
+
+          {/* ── TOOLS TAB ───────────────────────────────────────────── */}
+          {activeTab === 'tools' && (
+            <div className="tab-panel">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 48 }}>
+                <div>
+                  <Eyebrow>Tool Executions — detailed timeline ({toolExecutions.length})</Eyebrow>
+                  <table className="ledger-table">
+                    <thead>
+                      <tr>
+                        <th>Started</th>
+                        <th>Ended</th>
+                        <th>Tool</th>
+                        <th>File acted on</th>
+                        <th className="num">Duration</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {toolExecutions.map((te: any, i: number) => {
+                        const fileName = te.file_path ? te.file_path.split(/[/\\]/).pop() : '—'
+                        return (
+                          <tr key={i}>
+                            <td className="mono muted">{fmt.time(te.tool_call_ts)}</td>
+                            <td className="mono muted">{fmt.time(te.tool_result_ts)}</td>
+                            <td><span className="mono" style={{ color: 'var(--accent)' }}>{te.tool_name}</span></td>
+                            <td className="mono muted" title={te.file_path}>{te.file_path ? fileName : '—'}</td>
+                            <td className="num mono">{te.execution_duration_seconds != null ? `${te.execution_duration_seconds.toFixed(2)}s` : '—'}</td>
+                            <td>
+                              {te.is_error
+                                ? <span style={{ color: 'var(--warn)', fontWeight: 600 }}>✗ Fail</span>
+                                : <span style={{ color: 'var(--accent)', opacity: 0.85 }}>✓ OK</span>}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div>
+                  <Eyebrow>Tool mix</Eyebrow>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
+                    {(toolMix ?? []).map((t: any) => (
+                      <BarRow key={t.tool_name} label={t.tool_name} value={t.calls} max={maxToolCalls} fmt={fmt.n} />
+                    ))}
+                  </div>
+
+                  <div style={{ marginTop: 48 }} />
+                  <Eyebrow>Files touched</Eyebrow>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
+                    {(files ?? []).map((f: any) => (
+                      <BarRow key={f.file_path} label={f.file_path?.split(/[/\\]/).pop()} value={f.edit_count} max={maxEdits} fmt={fmt.n} />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── GIT TAB ─────────────────────────────────────────────── */}
+          {activeTab === 'git' && (
+            <div className="tab-panel">
+              <Eyebrow>Git commands ({gitCommands.length})</Eyebrow>
+              {gitCommands.length === 0 ? (
+                <div className="empty-block">No git commands executed during this session.</div>
+              ) : (
+                <table className="ledger-table">
+                  <thead>
+                    <tr><th>Time</th><th>Op</th><th>Command</th><th>Output</th><th>Status</th></tr>
+                  </thead>
                   <tbody>
-                    {errors.map((e: any, i: number) => (
+                    {gitCommands.map((g: any, i: number) => (
                       <tr key={i}>
-                        <td className="mono muted">{fmt.time(e.ts)}</td>
-                        <td><SeverityTag severity={e.severity} /></td>
-                        <td className="mono">{e.kind}</td>
-                        <td className="mono muted">{e.tool ?? '—'}</td>
-                        <td className="muted err-msg">{e.message?.slice(0, 80) ?? '—'}</td>
+                        <td className="mono muted">{fmt.time(g.ts)}</td>
+                        <td className="mono">{g.git_op}</td>
+                        <td className="mono">{g.raw_command?.slice(0, 60)}</td>
+                        <td className="muted">{g.output_text?.slice(0, 80)}</td>
+                        <td>{g.is_error ? <span className="warn">✗</span> : <span style={{ color: 'var(--accent)' }}>✓</span>}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </>
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          )}
 
-        {activeTab === 'tools' && (
-          <div className="tab-panel">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 48 }}>
-              <div>
-                <Eyebrow>Tool Executions — detailed timeline ({toolExecutions.length})</Eyebrow>
-                <table className="ledger-table">
-                  <thead>
-                    <tr>
-                      <th>Started</th>
-                      <th>Ended</th>
-                      <th>Tool</th>
-                      <th>File acted on</th>
-                      <th className="num">Duration</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {toolExecutions.map((te: any, i: number) => {
-                      const fileName = te.file_path ? (te.file_path.split(/[/\\]/).pop()) : '—'
-                      return (
-                        <tr key={i}>
-                          <td className="mono muted">{fmt.time(te.tool_call_ts)}</td>
-                          <td className="mono muted">{fmt.time(te.tool_result_ts)}</td>
-                          <td><span className="mono strong" style={{ color: 'var(--accent)' }}>{te.tool_name}</span></td>
-                          <td className="mono muted" title={te.file_path}>{te.file_path ? fileName : '—'}</td>
-                          <td className="num mono">{te.execution_duration_seconds != null ? `${te.execution_duration_seconds.toFixed(2)}s` : '—'}</td>
-                          <td>
-                            {te.is_error ? (
-                              <span style={{ color: 'var(--warn)', fontWeight: '600' }}>✗ Fail</span>
-                            ) : (
-                              <span style={{ color: 'var(--accent)', opacity: 0.85 }}>✓ Success</span>
-                            )}
-                          </td>
+          {/* ── TOKENS TAB ──────────────────────────────────────────── */}
+          {activeTab === 'tokens' && (
+            <div className="tab-panel">
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 48 }}>
+                <div>
+                  <Eyebrow>Per-turn tokens ({Math.min(turns?.length ?? 0, 60)} sampled)</Eyebrow>
+                  <TurnChart turns={turns ?? []} />
+
+                  <div style={{ marginTop: 48 }} />
+                  <table className="ledger-table">
+                    <thead>
+                      <tr><th>#</th><th>Input</th><th>Output</th><th>Cost</th><th>Ctx%</th></tr>
+                    </thead>
+                    <tbody>
+                      {(turns ?? []).map((t: any) => (
+                        <tr key={t.turn_number}>
+                          <td className="num muted">{t.turn_number}</td>
+                          <td className="num">{fmt.k(t.input_tokens)}</td>
+                          <td className="num">{fmt.k(t.output_tokens)}</td>
+                          <td className="num accent">{fmt.usd(t.calculated_cost)}</td>
+                          <td className="num muted">{fmt.pct(t.context_pct)}</td>
                         </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div>
-                <Eyebrow>Tool mix</Eyebrow>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-                  {(toolMix ?? []).map((t: any) => (
-                    <BarRow key={t.tool_name} label={t.tool_name} value={t.calls} max={maxToolCalls} fmt={fmt.n} />
-                  ))}
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-
-                <div style={{ marginTop: 48 }} />
-                <Eyebrow>Files touched</Eyebrow>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-                  {(files ?? []).map((f: any) => (
-                    <BarRow key={f.file_path} label={f.file_path?.split(/[/\\]/).pop()} value={f.edit_count} max={maxEdits} fmt={fmt.n} />
-                  ))}
+                <div>
+                  <Eyebrow>Token breakdown</Eyebrow>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 16 }}>
+                    <StatBlock label="Total Input"  value={fmt.k(s.total_input_tokens)} large />
+                    <StatBlock label="Total Output" value={fmt.k(s.total_output_tokens)} large />
+                    <Rule />
+                    <StatBlock label="Cache read" value={fmt.k(s.cache_read_total)} />
+                    <StatBlock label="Cache 5m"   value={fmt.k(s.ephemeral_5m_total)} />
+                    <StatBlock label="Cache 1h"   value={fmt.k(s.ephemeral_1h_total)} />
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
+      </div>
 
-        {activeTab === 'git' && (
-          <div className="tab-panel">
-            <Eyebrow>Git commands ({gitCommands.length})</Eyebrow>
-            {gitCommands.length === 0 ? (
-              <div className="empty-block">No git commands executed during this session.</div>
-            ) : (
-              <table className="ledger-table">
-                <thead><tr><th>Time</th><th>Op</th><th>Command</th><th>Output</th><th>Status</th></tr></thead>
+      {/* ── COLS: MAIN + SIDE RAIL ─────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 48, marginTop: 48 }}>
+        {/* col-main placeholder — the tab content above is the primary content area */}
+        <div />
+
+        {/* Side rail */}
+        <aside>
+          {/* Tokens · where */}
+          {(() => {
+            const breakdown = [
+              { name: 'Cache read',       value: s.cache_read_total ?? 0,       color: 'var(--muted-bar)' },
+              { name: 'Cache write · 5m', value: s.ephemeral_5m_total ?? 0,     color: 'var(--ink-2)' },
+              { name: 'Cache write · 1h', value: s.ephemeral_1h_total ?? 0,     color: 'var(--accent)' },
+              { name: 'Output',           value: s.total_output_tokens ?? 0,    color: 'var(--ink)' },
+              { name: 'Fresh input',      value: s.total_input_tokens ?? 0,     color: 'var(--accent-2)' },
+            ]
+            const totalU = breakdown.reduce((a, b) => a + b.value, 0)
+            if (!totalU) return null
+            return (
+              <div className="panel" style={{ marginBottom: 32 }}>
+                <Eyebrow>Tokens · where</Eyebrow>
+                <div className="stack-bar" style={{ display: 'flex', height: 8, borderRadius: 2, overflow: 'hidden', margin: '8px 0 12px' }}>
+                  {breakdown.map(b => (
+                    <div
+                      key={b.name}
+                      style={{ width: `${(b.value / totalU) * 100}%`, background: b.color }}
+                      title={`${b.name} · ${fmt.n(b.value)}`}
+                    />
+                  ))}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {breakdown.map(b => (
+                    <div key={b.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 2, background: b.color, flexShrink: 0 }} />
+                      <span style={{ flex: 1, color: 'var(--muted)' }}>{b.name}</span>
+                      <span className="mono">{fmt.k(b.value)}</span>
+                      <span className="muted" style={{ width: 40, textAlign: 'right' }}>{totalU > 0 ? `${((b.value / totalU) * 100).toFixed(0)}%` : '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Files · this session — attributed columns */}
+          {filePanelData.length > 0 && (
+            <div className="panel" style={{ marginBottom: 32 }}>
+              <Eyebrow>Files · this session</Eyebrow>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginTop: 8 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', color: 'var(--muted)', fontWeight: 400, paddingBottom: 4 }}>Path</th>
+                    <th style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: 400, paddingBottom: 4 }}>Tokens</th>
+                    <th style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: 400, paddingBottom: 4 }}>Time</th>
+                    <th style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: 400, paddingBottom: 4 }}>Edits</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  {gitCommands.map((g: any, i: number) => (
-                    <tr key={i}>
-                      <td className="mono muted">{fmt.time(g.ts)}</td>
-                      <td className="mono">{g.git_op}</td>
-                      <td className="mono">{g.raw_command?.slice(0, 60)}</td>
-                      <td className="muted">{g.output_text?.slice(0, 80)}</td>
-                      <td>{g.is_error ? <span className="warn">✗</span> : <span style={{ color: 'var(--accent)' }}>✓</span>}</td>
+                  {filePanelData.map((f: any) => (
+                    <tr key={f.file_path} style={{ borderTop: '1px solid var(--rule)' }}>
+                      <td className="mono" style={{ paddingTop: 4, paddingBottom: 4, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.file_path}>
+                        {f.file_path?.split(/[/\\]/).pop() ?? f.file_path}
+                      </td>
+                      <td className="num mono" style={{ paddingTop: 4, paddingBottom: 4 }}>
+                        {f.tokens_attributed != null ? fmt.k(f.tokens_attributed) : '—'}
+                      </td>
+                      <td className="num mono" style={{ paddingTop: 4, paddingBottom: 4 }}>
+                        {f.duration_attributed_seconds != null ? fmtSecs(f.duration_attributed_seconds) : '—'}
+                      </td>
+                      <td className="num mono" style={{ paddingTop: 4, paddingBottom: 4 }}>
+                        {fmt.n(f.edit_count ?? 0)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
-        {activeTab === 'tokens' && (
-          <div className="tab-panel">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 48 }}>
-              <div>
-                <Eyebrow>Per-turn tokens ({Math.min(turns?.length ?? 0, 60)} sampled)</Eyebrow>
-                <TurnChart data={turns ?? []} />
-                
-                <div style={{ marginTop: 48 }} />
-                <table className="ledger-table">
-                  <thead><tr><th>#</th><th>Input</th><th>Output</th><th>Cost</th><th>Ctx%</th></tr></thead>
-                  <tbody>
-                    {(turns ?? []).map((t: any) => (
-                      <tr key={t.turn_number}>
-                        <td className="num muted">{t.turn_number}</td>
-                        <td className="num">{fmt.k(t.input_tokens)}</td>
-                        <td className="num">{fmt.k(t.output_tokens)}</td>
-                        <td className="num accent">{fmt.usd(t.calculated_cost)}</td>
-                        <td className="num muted">{fmt.pct(t.context_pct)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div>
-                <Eyebrow>Token breakdown</Eyebrow>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 16 }}>
-                  <StatBlock label="Total Input" value={fmt.k(s.total_input_tokens)} large />
-                  <StatBlock label="Total Output" value={fmt.k(s.total_output_tokens)} large />
-                  <Rule />
-                  <StatBlock label="Cache read" value={fmt.k(s.cache_read_total)} />
-                  <StatBlock label="Cache 5m" value={fmt.k(s.ephemeral_5m_total)} />
-                  <StatBlock label="Cache 1h" value={fmt.k(s.ephemeral_1h_total)} />
-                </div>
+          {/* Tools · session */}
+          {toolMix.length > 0 && (
+            <div className="panel" style={{ marginBottom: 32 }}>
+              <Eyebrow>Tools · session</Eyebrow>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                {toolMix.map((t: any) => (
+                  <BarRow key={t.tool_name} label={t.tool_name} value={t.calls} max={maxToolCalls} fmt={fmt.n} />
+                ))}
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </aside>
       </div>
-    </div>
+
+      {/* ── PROMPTS & RESPONSES — full width below cols ─────────────────────── */}
+      {prompts.length > 0 && (
+        <>
+          <Rule />
+          <section style={{ marginTop: 32 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 24 }}>
+              <h2 className="h-section" style={{ fontSize: 22, fontWeight: 600 }}>Prompts &amp; responses</h2>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {prompts.length} operator prompt{prompts.length !== 1 ? 's' : ''} · what was asked, what happened
+              </span>
+            </div>
+            <ol className="prompts prompts-wide" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 24 }}>
+              {prompts.map((p: any, i: number) => (
+                <li key={p.prompt_id ?? i} style={{ display: 'flex', gap: 24, padding: '20px 0', borderTop: '1px solid var(--rule)' }}>
+                  {/* Left aside */}
+                  <div style={{ flexShrink: 0, width: 96, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--ink-2)', fontFamily: 'var(--mono)' }}>
+                      #{String((p.prompt_idx ?? i) + 1).padStart(2, '0')}
+                    </div>
+                    <div className="mono muted" style={{ fontSize: 11 }}>{fmt.time(p.prompt_ts)}</div>
+                    {p.duration_seconds != null && (
+                      <div className="mono muted" style={{ fontSize: 11 }}>{fmtSecs(p.duration_seconds)}</div>
+                    )}
+                    {p.agent && <AgentLink name={p.agent} />}
+                    {p.model_primary && <ModelPill model={p.model_primary} />}
+                    {p.is_overkill && p.overkill_reason && (
+                      <OverkillChip reason={p.overkill_reason} />
+                    )}
+                  </div>
+
+                  {/* Body */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Prompt text — SQL already truncates at 200 chars */}
+                    {p.prompt_text_200 && (
+                      <p style={{ fontStyle: 'italic', color: 'var(--ink-2)', marginBottom: 12, lineHeight: 1.6 }}>
+                        &ldquo;{p.prompt_text_200}&rdquo;
+                      </p>
+                    )}
+
+                    {/* Response meta chips */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                      {p.turn_count != null && (
+                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                          <b style={{ color: 'var(--ink)' }}>{p.turn_count}</b> turns
+                        </span>
+                      )}
+                      {p.tool_call_count != null && (
+                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                          · <b style={{ color: 'var(--ink)' }}>{p.tool_call_count}</b> tool calls
+                        </span>
+                      )}
+                      {p.files_edited != null && (
+                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                          · <b style={{ color: 'var(--ink)' }}>{p.files_edited}</b> files
+                        </span>
+                      )}
+                      {p.output_tokens_total != null && (
+                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                          · <b style={{ color: 'var(--ink)' }}>{fmt.k(p.output_tokens_total)}</b> tokens
+                        </span>
+                      )}
+                      {p.cost_total != null && (
+                        <span style={{ fontSize: 12, color: 'var(--accent)' }}>
+                          · {fmt.usd(p.cost_total)}
+                        </span>
+                      )}
+                      {p.errors_caught > 0 && (
+                        <span style={{ fontSize: 12, color: 'var(--warn)' }}>
+                          · {p.errors_caught} error{p.errors_caught !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Summary — SQL already truncates at 200 chars */}
+                    {p.summary_200 && (
+                      <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6, margin: 0 }}>
+                        {p.summary_200}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </section>
+        </>
+      )}
+    </>
   )
 }

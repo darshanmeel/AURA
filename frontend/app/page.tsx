@@ -10,21 +10,25 @@ import {
   getToolMix, getProviderSplit, getModelBreakdown,
   getRecentErrors, getTopFiles, getTopPeople
 } from '../lib/queries/dashboard'
+import { getLoudestPromptOfDay } from '../lib/queries/prompts'
 
 export default async function DashboardPage() {
   let kpis: any = {}, dailySpend: any[] = [], topApps: any[] = [], topProjects: any[] = [], topAgents: any[] = []
   let toolMix: any[] = [], providers: any[] = [], models: any[] = [], recentErrors: any[] = []
   let topFiles: any[] = [], topPeople: any[] = []
+  let loudestPrompt: { prompt_text_200: string; agent: string; app_id: string; model_primary: string } | null = null
   try {
-    const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp] = await Promise.all([
+    const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp] = await Promise.all([
       getDashboardKPIs(), getDailySpend(), getTopApps(), getTopProjects(), getTopAgents(),
       getToolMix(), getProviderSplit(), getModelBreakdown(),
-      getRecentErrors(), getTopFiles(), getTopPeople()
+      getRecentErrors(), getTopFiles(), getTopPeople(),
+      getLoudestPromptOfDay().catch(() => null)
     ])
     kpis = kpisArr ?? {}
     dailySpend = ds as any[]; topApps = ta as any[]; topProjects = tproj as any[]; topAgents = tag as any[]
     toolMix = tm as any[]; providers = prov as any[]; models = mod as any[]
     recentErrors = re as any[]; topFiles = tf as any[]; topPeople = tp as any[]
+    loudestPrompt = lp as typeof loudestPrompt
   } catch { /* DB not ready yet — show empty state */ }
 
   const totalDays = dailySpend.length
@@ -89,70 +93,51 @@ export default async function DashboardPage() {
         <StatBlock label="Tool calls" value={fmt.k(kpis.total_tool_calls)} footnote={`last ${totalDays} days`} />
         <StatBlock label="Commits" value={fmt.n(kpis.total_commits ?? 0)} footnote={`across ${fmt.n(kpis.total_apps)} apps`} />
         <StatBlock label="Errors" value={fmt.n(recentErrors.length)} footnote="recorded recently" accent />
-        <StatBlock label="Total spend" value={fmt.usd(kpis.total_cost)} footnote="overall total" />
+        {(() => {
+          const dailyAvg = (kpis.total_cost ?? 0) / Math.max(1, totalDays || 14)
+          const proj30 = dailyAvg * 30
+          return <StatBlock label="Projected · 30d" value={`$${proj30.toFixed(0)}`} footnote={`@$${dailyAvg.toFixed(2)} / day`} />
+        })()}
       </section>
 
       <Rule weight="thick" />
 
       <section className="cols">
         <div className="col-main">
-          {/* Projects ledger */}
+          {/* Apps ledger — flat */}
           <div className="section-head">
-            <h2 className="h-section">Projects — by cost</h2>
-            <span className="section-meta">{topProjects.length} projects · click any row →</span>
+            <h2 className="h-section">Apps — by cost</h2>
+            <span className="section-meta">{topApps.length} apps · click any row →</span>
           </div>
           <table className="ledger">
             <thead>
               <tr>
                 <th>#</th>
-                <th>Project</th>
-                <th className="num">Apps</th>
+                <th>App</th>
+                <th className="num">Agents</th>
                 <th className="num">Sessions</th>
-                <th className="num">Turns</th>
                 <th className="num">Cost</th>
                 <th>Share</th>
               </tr>
             </thead>
             <tbody>
-              {topProjects.map((proj: any, i: number) => (
-                <React.Fragment key={proj.project_id}>
-                  <tr className="clickable" onClick={() => {}}>
-                    <td className="muted">{String(i + 1).padStart(2, "0")}</td>
-                    <td>
-                      <div className="app-cell" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                        <span className="app-glyph-s" style={{ width: 24, height: 24, background: 'var(--rule)', borderRadius: 2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{proj.project_name[0]?.toUpperCase() ?? '?'}</span>
-                        <div>
-                          <div className="strong">{proj.project_name}</div>
-                          <div className="tiny muted">{proj.project_id}</div>
-                        </div>
+              {topApps.map((app: any, i: number) => (
+                <tr key={app.app_id} className="clickable" onClick={() => { window.location.href = `/apps/${encodeURIComponent(app.app_id)}` }}>
+                  <td className="muted">{String(i + 1).padStart(2, "0")}</td>
+                  <td>
+                    <div className="app-cell">
+                      <span className="app-glyph-s">{(app.app_name ?? app.app_id)[0]?.toUpperCase() ?? '?'}</span>
+                      <div>
+                        <div className="strong">{app.app_name ?? app.app_id}</div>
+                        <div className="tiny muted">{app.app_id}</div>
                       </div>
-                    </td>
-                    <td className="num">{fmt.n(proj.app_count)}</td>
-                    <td className="num">{fmt.n(proj.session_count)}</td>
-                    <td className="num">{fmt.n(proj.total_turns)}</td>
-                    <td className="num strong">{fmt.usd(proj.total_cost)}</td>
-                    <td style={{ width: 100 }}><TBar pct={(proj.total_cost / Math.max(0.001, topProjects[0]?.total_cost ?? 1)) * 100} /></td>
-                  </tr>
-                  {proj.apps && proj.apps.map((app: any, idx: number) => (
-                    <tr key={app.app_id} className="sub-row clickable" style={{ background: 'var(--surface-raised)' }}>
-                      <td></td>
-                      <td style={{ paddingLeft: '36px' }}>
-                        <div className="app-cell" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                          <span style={{ color: 'var(--muted)', fontSize: 14 }}>↳</span>
-                          <div>
-                            <div className="strong"><a href={`/apps/${encodeURIComponent(app.app_id)}`} style={{ textDecoration: 'none', color: 'inherit' }}>{app.app_name}</a></div>
-                            <div className="tiny muted">{app.app_id}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td></td>
-                      <td className="num">{fmt.n(app.session_count)}</td>
-                      <td className="num">{fmt.n(app.total_turns)}</td>
-                      <td className="num">{fmt.usd(app.total_cost)}</td>
-                      <td style={{ width: 100 }}><TBar pct={(app.total_cost / Math.max(0.001, topProjects[0]?.total_cost ?? 1)) * 100} /></td>
-                    </tr>
-                  ))}
-                </React.Fragment>
+                    </div>
+                  </td>
+                  <td className="num">{app.agents ? (Array.isArray(app.agents) ? app.agents.length : fmt.n(app.agent_count)) : '—'}</td>
+                  <td className="num">{fmt.n(app.session_count)}</td>
+                  <td className="num strong">{fmt.usd(app.total_cost)}</td>
+                  <td style={{ width: 100 }}><TBar pct={(app.total_cost / Math.max(0.001, topApps[0]?.total_cost ?? 1)) * 100} /></td>
+                </tr>
               ))}
             </tbody>
           </table>
@@ -344,13 +329,20 @@ export default async function DashboardPage() {
           </div>
 
           {/* Editor's note */}
-          {/* TODO: Fetch editor quote from a static config file or a new dbt seed (e.g., team_memos.csv). */}
           <div className="panel panel-quote" style={{ background: 'transparent', border: 'none', borderTop: '1px solid var(--rule-strong)', padding: '24px 0' }}>
             <Eyebrow>Editor's note</Eyebrow>
-            <blockquote className="pull" style={{ fontFamily: 'var(--serif)', fontSize: 24, margin: '8px 0 12px', fontWeight: 300, letterSpacing: '-0.015em', lineHeight: 1.2 }}>
-              {kpis.editor_quote ?? null}
+            <blockquote className="pull" style={{ fontFamily: 'var(--serif)', fontSize: 24, margin: '8px 0 12px', fontWeight: 300, letterSpacing: '-0.015em', lineHeight: 1.2, fontStyle: 'italic' }}>
+              {loudestPrompt
+                ? loudestPrompt.prompt_text_200
+                : <em>The loudest prompt of the day will appear here.</em>
+              }
             </blockquote>
-            <div className="pull-attrib" style={{ fontFamily: 'var(--sans)', fontSize: 12, color: 'var(--muted)' }}>{kpis.editor_quote_author ?? '—'}</div>
+            <div className="pull-attrib" style={{ fontFamily: 'var(--sans)', fontSize: 12, color: 'var(--muted)' }}>
+              {loudestPrompt
+                ? `— ${loudestPrompt.agent} · ${loudestPrompt.app_id}`
+                : '—'
+              }
+            </div>
           </div>
         </aside>
       </section>

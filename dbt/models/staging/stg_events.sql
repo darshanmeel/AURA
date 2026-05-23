@@ -4,7 +4,8 @@ SELECT
     tenant_id,
     uuid,
     session_id,
-    project_id,
+    -- project_id does not exist in raw_events; derived downstream via dim_apps (cwd parsing)
+    NULL::VARCHAR  AS project_id,
     agent,
     event_type,
     ts,

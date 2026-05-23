@@ -5,13 +5,30 @@ export async function getApps() {
 }
 
 export async function getApp(appId: string) {
-  return queryOne(`SELECT * FROM dim_apps WHERE app_id = ?`, [appId])
+  return queryOne(`
+    SELECT da.*, dp.project_name
+    FROM dim_apps da
+    LEFT JOIN dim_projects dp USING (project_id, tenant_id)
+    WHERE da.app_id = ?
+  `, [appId])
 }
 
-export async function getAppSessions(appId: string) {
+export async function getAppAgents(appId: string) {
   return query(`
-    SELECT session_id, start_ts, end_ts, agent, person_name, session_title,
-           status, turn_count, total_cost, commits
-    FROM dim_sessions WHERE cwd = ? ORDER BY start_ts DESC LIMIT 20
+    SELECT agent, session_count, total_turns, total_cost, total_tool_calls
+    FROM dim_agents WHERE app_id = ?
+    ORDER BY total_cost DESC
   `, [appId])
+}
+
+export async function getAppSessions(appId: string, limit = 12) {
+  return query(`
+    SELECT ds.session_id, ds.start_ts, ds.end_ts, ds.model, ds.agent,
+           ds.turn_count, ds.total_cost, ds.session_title
+    FROM dim_sessions ds
+    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+    WHERE da.app_id = ?
+    ORDER BY ds.start_ts DESC
+    LIMIT ?
+  `, [appId, limit])
 }
