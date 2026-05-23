@@ -28,7 +28,7 @@ export default async function DashboardPage() {
     dailySpend = ds as any[]; topApps = ta as any[]; topProjects = tproj as any[]; topAgents = tag as any[]
     toolMix = tm as any[]; providers = prov as any[]; models = mod as any[]
     recentErrors = re as any[]; topFiles = tf as any[]; topPeople = tp as any[]
-    loudestPrompt = lp as typeof loudestPrompt
+    loudestPrompt = lp as any
   } catch { /* DB not ready yet — show empty state */ }
 
   const totalDays = dailySpend.length
