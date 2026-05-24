@@ -1,5 +1,7 @@
 import { query, queryOne } from '../db'
 
+const APP_SESSIONS_LIMIT = 12
+
 export async function getApps() {
   return query(`SELECT * FROM dim_apps ORDER BY total_cost DESC`)
 }
@@ -34,7 +36,7 @@ export async function getAppAgents(appId: string) {
   `, [appId])
 }
 
-export async function getAppSessions(appId: string, limit = 12) {
+export async function getAppSessions(appId: string, limit = APP_SESSIONS_LIMIT) {
   return query(`
     SELECT ds.session_id, ds.start_ts, ds.end_ts, ds.model, ds.agent,
            ds.turn_count, ds.total_cost, ds.session_title

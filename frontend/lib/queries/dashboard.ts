@@ -1,5 +1,8 @@
 import { query, queryOne } from '../db'
 
+const TOP_N = 10
+const DAILY_SPEND_DAYS = 14
+
 export async function getDashboardKPIs() {
   return queryOne(`
     SELECT
@@ -39,7 +42,7 @@ export async function getDailySpend() {
     FROM fact_daily_spend
     GROUP BY date
     ORDER BY date DESC
-    LIMIT 14
+    LIMIT ${DAILY_SPEND_DAYS}
   `)
 }
 
@@ -48,30 +51,36 @@ export async function getTopApps() {
     SELECT app_id, app_name, total_cost, session_count, total_turns
     FROM dim_apps
     ORDER BY total_cost DESC
-    LIMIT 10
+    LIMIT ${TOP_N}
   `)
 }
 
 export async function getTopProjects() {
-  const [projects, apps] = await Promise.all([
-    query(`
-      SELECT project_id, project_name, total_cost, session_count, total_turns, app_count
-      FROM dim_projects
-      ORDER BY total_cost DESC
-      LIMIT 10
-    `),
-    query(`
-      SELECT app_id, app_name, total_cost, total_turns, session_count, project_id
-      FROM dim_apps
-      ORDER BY total_cost DESC
-    `)
-  ])
+  const rows = await query<any>(`
+    SELECT
+        p.project_id,
+        p.project_name,
+        p.total_cost,
+        p.session_count,
+        p.total_turns,
+        p.app_count,
+        LIST({
+            app_id:       a.app_id,
+            app_name:     a.app_name,
+            total_cost:   a.total_cost,
+            total_turns:  a.total_turns,
+            session_count: a.session_count
+        } ORDER BY a.total_cost DESC NULLS LAST) AS apps
+    FROM dim_projects p
+    LEFT JOIN dim_apps a USING (project_id)
+    GROUP BY p.project_id, p.project_name, p.total_cost, p.session_count, p.total_turns, p.app_count
+    ORDER BY p.total_cost DESC NULLS LAST
+    LIMIT ${TOP_N}
+  `)
 
-  return projects.map((p: any) => ({
-    ...p,
-    apps: apps
-      .filter((a: any) => a.project_id === p.project_id)
-      .sort((a: any, b: any) => (b.total_cost ?? 0) - (a.total_cost ?? 0))
+  return rows.map((row: any) => ({
+    ...row,
+    apps: typeof row.apps === 'string' ? JSON.parse(row.apps) : (row.apps ?? [])
   }))
 }
 
@@ -85,7 +94,7 @@ export async function getTopAgents() {
     FROM dim_sessions
     GROUP BY agent
     ORDER BY total_cost DESC
-    LIMIT 10
+    LIMIT ${TOP_N}
   `)
 }
 
@@ -133,7 +142,7 @@ export async function getTopFiles() {
     FROM fact_session_files
     GROUP BY file_path, file_ext
     ORDER BY edits DESC
-    LIMIT 10
+    LIMIT ${TOP_N}
   `)
 }
 

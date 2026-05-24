@@ -30,7 +30,7 @@ export default async function DashboardPage() {
     toolMix = tm as any[]; providers = prov as any[]; models = mod as any[]
     recentErrors = re as any[]; topFiles = tf as any[]; topPeople = tp as any[]
     loudestPrompt = lp as any
-  } catch { /* DB not ready yet — show empty state */ }
+  } catch (e) { console.error('[dashboard] data load failed:', e) }
 
   const totalDays = dailySpend.length
   const maxCost = Math.max(...topApps.map((a: any) => a.total_cost ?? 0), 0.001)

@@ -36,7 +36,7 @@ async function getAppAgents(appId: string) {
       FROM dim_agents WHERE app_id = ?
       ORDER BY total_cost DESC
     `, [appId]) as any[]
-  } catch { return [] }
+  } catch (e) { console.error('[app-profile] getAppAgents failed:', e); return [] }
 }
 
 export default async function AppProfilePage({ params }: { params: { appId: string } }) {
@@ -65,7 +65,7 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
     if (app?.project_id) {
       siblingApps = (await getProjectApps(app.project_id) as any[]).filter(x => x.app_id !== appId)
     }
-  } catch {}
+  } catch (e) { console.error('[app-profile] data load failed:', e) }
 
   if (!app) notFound()
 

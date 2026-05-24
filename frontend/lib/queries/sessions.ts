@@ -1,5 +1,9 @@
 import { query, queryOne } from '../db'
 
+const SESSIONS_PAGE_SIZE = 50
+const SESSIONS_STATS_CAP = 200
+// SESSIONS_PAGE_SIZE is reserved for future paginated endpoints
+
 export interface SessionFilters {
   provider?: string
   agent?: string
@@ -41,7 +45,7 @@ export async function getSessions(filters: SessionFilters = {}) {
     LEFT JOIN dim_apps da ON da.cwd = ds.cwd
     ${where}
     ORDER BY ${orderBy}
-    LIMIT 200
+    LIMIT ${SESSIONS_STATS_CAP}
   `, params)
 }
 
