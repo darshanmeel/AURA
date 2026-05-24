@@ -446,90 +446,55 @@ export function SessionTabs({
         {/* ── PROMPTS TAB ─────────────────────────────────────────────── */}
         {activeTab === 'prompts' && (
           <div className="tab-panel">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 20 }}>
+              <Eyebrow>Prompts · in their voice</Eyebrow>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {prompts.length} prompt{prompts.length !== 1 ? 's' : ''} · what was asked, what happened
+              </span>
+            </div>
             {prompts.length === 0 ? (
               <div className="empty-block">No operator prompts recorded for this session.</div>
             ) : (
-              <>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 24 }}>
-                  <Eyebrow>Prompts &amp; responses</Eyebrow>
-                  <span className="muted" style={{ fontSize: 12 }}>
-                    {prompts.length} operator prompt{prompts.length !== 1 ? 's' : ''} · what was asked, what happened
-                  </span>
-                </div>
-                <ol className="prompts prompts-wide" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 24 }}>
-                  {prompts.map((p: any, i: number) => (
-                    <li key={p.prompt_id ?? i} style={{ display: 'flex', gap: 24, padding: '20px 0', borderTop: '1px solid var(--rule)' }}>
-                      {/* Left aside */}
-                      <div style={{ flexShrink: 0, width: 96, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--ink-2)', fontFamily: 'var(--mono)' }}>
-                          #{String((p.prompt_idx ?? i) + 1).padStart(2, '0')}
-                        </div>
-                        <div className="mono muted" style={{ fontSize: 11 }}>{fmt.time(p.prompt_ts)}</div>
-                        {p.duration_seconds != null && (
-                          <div className="mono muted" style={{ fontSize: 11 }}>{fmtSecs(p.duration_seconds)}</div>
-                        )}
-                        {p.agent && <AgentLink name={p.agent} />}
-                        {p.model_primary && <ModelPill model={p.model_primary} />}
-                        {p.is_overkill && p.overkill_reason && (
-                          <OverkillChip reason={p.overkill_reason} />
-                        )}
-                      </div>
+              <ol className="prompts" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
+                {prompts.map((p: any, i: number) => (
+                  <li key={p.prompt_id ?? i} className="prompt" style={{ borderTop: '1px solid var(--rule)', padding: '16px 0' }}>
+                    {/* Header row: date · time · agent · model · overkill */}
+                    <div className="prompt-meta" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <span className="mono muted" style={{ fontSize: 11 }}>
+                        #{String((p.prompt_idx ?? i) + 1).padStart(2, '0')} · {fmt.date(p.prompt_ts)} · {fmt.time(p.prompt_ts)}
+                        {p.duration_seconds != null && ` · ${fmtSecs(p.duration_seconds)}`}
+                      </span>
+                      {p.agent && <AgentLink name={p.agent} />}
+                      {p.model_primary && <ModelPill model={p.model_primary} />}
+                      {p.is_overkill && p.overkill_reason && <OverkillChip reason={p.overkill_reason} />}
+                    </div>
 
-                      {/* Body */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        {/* Prompt text — defensively unwrap any leaked JSON content-block arrays */}
-                        {p.prompt_text_200 && (
-                          <p style={{ fontStyle: 'italic', color: 'var(--ink-2)', marginBottom: 12, lineHeight: 1.6 }}>
-                            &ldquo;{unwrapTitle(p.prompt_text_200)}&rdquo;
-                          </p>
-                        )}
+                    {/* Quote */}
+                    {p.prompt_text_200 && (
+                      <p className="prompt-text" style={{ fontStyle: 'italic', color: 'var(--ink-2)', margin: '0 0 10px', lineHeight: 1.6 }}>
+                        &ldquo;{unwrapTitle(p.prompt_text_200)}&rdquo;
+                      </p>
+                    )}
 
-                        {/* Response meta chips */}
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10, alignItems: 'center' }}>
-                          {p.model_primary && <ModelPill model={p.model_primary} />}
-                          {p.turn_count != null && (
-                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                              <b style={{ color: 'var(--ink)' }}>{p.turn_count}</b> turns
-                            </span>
-                          )}
-                          {p.tool_call_count != null && (
-                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                              · <b style={{ color: 'var(--ink)' }}>{p.tool_call_count}</b> tool calls
-                            </span>
-                          )}
-                          {p.files_edited != null && (
-                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                              · <b style={{ color: 'var(--ink)' }}>{p.files_edited}</b> files
-                            </span>
-                          )}
-                          {p.output_tokens_total != null && (
-                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                              · <b style={{ color: 'var(--ink)' }}>{fmt.k(p.output_tokens_total)}</b> tokens
-                            </span>
-                          )}
-                          {p.cost_total != null && (
-                            <span style={{ fontSize: 12, color: 'var(--accent)' }}>
-                              · {fmt.usd(p.cost_total)}
-                            </span>
-                          )}
-                          {p.errors_caught > 0 && (
-                            <span style={{ fontSize: 12, color: 'var(--warn)' }}>
-                              · {p.errors_caught} error{p.errors_caught !== 1 ? 's' : ''}
-                            </span>
-                          )}
-                        </div>
+                    {/* Mini stats row */}
+                    <div className="prompt-mini-stats" style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                      {p.turn_count != null && <span>{fmt.n(p.turn_count)} turns</span>}
+                      {p.tool_call_count != null && <span>{fmt.n(p.tool_call_count)} tools</span>}
+                      {p.files_edited != null && <span>{fmt.n(p.files_edited)} files</span>}
+                      {p.output_tokens_total != null && <span>{fmt.k(p.output_tokens_total)} tok</span>}
+                      {p.cost_total != null && <span style={{ color: 'var(--accent)' }}>{fmt.usd(p.cost_total)}</span>}
+                      {p.errors_caught > 0 && <span style={{ color: 'var(--warn)' }}>{p.errors_caught} err</span>}
+                    </div>
 
-                        {/* Summary — SQL already truncates at 200 chars */}
-                        {p.summary_200 && (
-                          <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6, margin: 0 }}>
-                            {p.summary_200}
-                          </p>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              </>
+                    {/* Summary */}
+                    {p.summary_200 && (
+                      <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.55, margin: '8px 0 0' }}>
+                        {p.summary_200}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ol>
             )}
           </div>
         )}

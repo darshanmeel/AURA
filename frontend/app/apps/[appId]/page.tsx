@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import { notFound } from 'next/navigation'
 import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
+import { ClickableRow } from '../../../components/ClickableRow'
 import { fmt } from '../../../lib/fmt'
 import { getApp, getAppSessions, getProjectApps } from '../../../lib/queries/apps'
 import { getAppPrompts, getAppAllPrompts } from '../../../lib/queries/prompts'
@@ -189,16 +190,12 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
                     <td className="num strong">{fmt.usd(app.total_cost)}</td>
                   </tr>
                   {siblingApps.map((a: any) => (
-                    <tr key={a.app_id} className="clickable" onClick={() => {}}>
-                      <td>
-                        <a href={`/apps/${encodeURIComponent(a.app_id)}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                          {a.app_name ?? a.app_id}
-                        </a>
-                      </td>
+                    <ClickableRow key={a.app_id} href={`/apps/${encodeURIComponent(a.app_id)}`}>
+                      <td>{a.app_name ?? a.app_id}</td>
                       <td className="num">{fmt.n(a.session_count)}</td>
                       <td className="num">{fmt.n(a.total_turns)}</td>
                       <td className="num">{fmt.usd(a.total_cost)}</td>
-                    </tr>
+                    </ClickableRow>
                   ))}
                 </tbody>
               </table>
