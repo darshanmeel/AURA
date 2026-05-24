@@ -174,450 +174,496 @@ export function SessionTabs({
   s, turns, errors, toolExecutions, gitCommands,
   files, toolMix, prompts = [], filesWithAttribution = []
 }: SessionTabsProps) {
-  const [activeTab, setActiveTab] = useState<'details' | 'tools' | 'git' | 'tokens'>('details')
+  const [activeTab, setActiveTab] = useState<'details' | 'prompts' | 'agents' | 'files' | 'tokens' | 'tools' | 'git'>('details')
 
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
   const maxEdits     = Math.max(...(files ?? []).map((f: any) => f.edit_count ?? 0), 1)
 
-  // For the files side panel, prefer attributed data; fall back to plain files
+  // For the files tab, prefer attributed data; fall back to plain files
   const filePanelData = filesWithAttribution.length ? filesWithAttribution : files
 
   return (
-    <>
-      {/* ── TAB NAV + CONTENT ─────────────────────────────────────────── */}
-      <div className="session-tabs-container">
-        <div className="tab-nav">
-          <button className={`tab-btn ${activeTab === 'details' ? 'active' : ''}`} onClick={() => setActiveTab('details')}>Details &amp; Prompts</button>
-          <button className={`tab-btn ${activeTab === 'tools'   ? 'active' : ''}`} onClick={() => setActiveTab('tools')}>Tools</button>
-          <button className={`tab-btn ${activeTab === 'git'     ? 'active' : ''}`} onClick={() => setActiveTab('git')}>Git Commands</button>
-          <button className={`tab-btn ${activeTab === 'tokens'  ? 'active' : ''}`} onClick={() => setActiveTab('tokens')}>Tokens &amp; Caching</button>
-        </div>
+    <div className="session-tabs-container">
+      <div className="tab-nav">
+        <button className={`tab-btn ${activeTab === 'details' ? 'active' : ''}`} onClick={() => setActiveTab('details')}>Details</button>
+        <button className={`tab-btn ${activeTab === 'prompts' ? 'active' : ''}`} onClick={() => setActiveTab('prompts')}>Prompts</button>
+        <button className={`tab-btn ${activeTab === 'agents'  ? 'active' : ''}`} onClick={() => setActiveTab('agents')}>Agents</button>
+        <button className={`tab-btn ${activeTab === 'files'   ? 'active' : ''}`} onClick={() => setActiveTab('files')}>Files</button>
+        <button className={`tab-btn ${activeTab === 'tokens'  ? 'active' : ''}`} onClick={() => setActiveTab('tokens')}>Tokens</button>
+        <button className={`tab-btn ${activeTab === 'tools'   ? 'active' : ''}`} onClick={() => setActiveTab('tools')}>Tools</button>
+        <button className={`tab-btn ${activeTab === 'git'     ? 'active' : ''}`} onClick={() => setActiveTab('git')}>Git</button>
+      </div>
 
-        <div className="tab-content">
-          {/* ── DETAILS TAB ─────────────────────────────────────────── */}
-          {activeTab === 'details' && (
-            <div className="tab-panel">
-              {/* Per-turn chart */}
-              <div className="section-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
-                <Eyebrow>Per-turn ledger</Eyebrow>
-                <span className="section-meta muted" style={{ fontSize: 12 }}>
-                  {turns.length} turns sampled · stacked tokens · context % overlay
-                </span>
-              </div>
-              <TurnChart turns={turns} />
-              {turns.length > 0 && (
-                <div className="chart-legend" style={{ marginTop: 8, marginBottom: 24 }}>
-                  <LegendSwatch color="var(--muted-bar)" label="Cache read" />
-                  <LegendSwatch color="var(--accent)"    label="Cache write" />
-                  <LegendSwatch color="var(--ink)"       label="Output" />
-                  <LegendSwatch color="var(--accent-2)"  label="Fresh input" />
-                  <LegendSwatch color="var(--accent-2)"  label="Context %" line />
+      <div className="tab-content">
+        {/* ── DETAILS TAB ─────────────────────────────────────────────── */}
+        {activeTab === 'details' && (
+          <div className="tab-panel">
+            {/* Turns table */}
+            {turns.length > 0 ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+                  <Eyebrow>Turns — table view</Eyebrow>
+                  <span className="muted" style={{ fontSize: 12 }}>first {Math.min(turns.length, 20)} of {turns.length}</span>
                 </div>
-              )}
-
-              <Rule />
-
-              {/* Turns table */}
-              {turns.length > 0 && (
-                <>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-                    <Eyebrow>Turns — table view</Eyebrow>
-                    <span className="muted" style={{ fontSize: 12 }}>first {Math.min(turns.length, 20)} of {turns.length}</span>
-                  </div>
-                  <table className="ledger-table" style={{ tableLayout: 'fixed', width: '100%' }}>
-                    <thead>
-                      <tr>
-                        <th style={{ width: 44 }}>#</th>
-                        <th style={{ width: 72 }}>Time</th>
-                        <th className="num" style={{ width: 72 }}>In</th>
-                        <th className="num" style={{ width: 72 }}>Out</th>
-                        <th className="num" style={{ width: 110 }}>Cache W</th>
-                        <th className="num" style={{ width: 80 }}>Cache R</th>
-                        <th style={{ width: 100 }}>Stop</th>
-                        <th style={{ width: 80 }}>Tool</th>
-                        <th className="num" style={{ width: 60 }}>Ctx %</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {turns.slice(0, 20).map((t: any) => (
-                        <tr key={t.turn_number}>
-                          <td className="muted mono">{String(t.turn_number).padStart(3, '0')}</td>
-                          <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(t.assistant_ts)}</td>
-                          <td className="num">{fmt.n(t.input_tokens)}</td>
-                          <td className="num">{fmt.n(t.output_tokens)}</td>
-                          <td className="num">
-                            <span className="muted">{fmt.k(t.ephemeral_5m_input_tokens)}</span>
-                            {' / '}
-                            <span style={{ color: 'var(--accent)' }}>{fmt.k(t.ephemeral_1h_input_tokens)}</span>
-                          </td>
-                          <td className="num">{fmt.k(t.cache_read_input_tokens)}</td>
-                          <td>
-                            {t.stop_reason
-                              ? <span className={`pill ${t.stop_reason === 'end_turn' ? 'pill-end' : 'pill-tool'}`}>{t.stop_reason}</span>
-                              : <span className="muted">—</span>}
-                          </td>
-                          <td>
-                            {t.tool_name
-                              ? <span className="mono" style={{ color: 'var(--accent)', fontSize: 11 }}>{t.tool_name}</span>
-                              : <span className="muted">—</span>}
-                          </td>
-                          <td className="num">
-                            <span className={(t.context_pct ?? 0) > 0.7 ? 'warn' : ''}>
-                              {fmt.pct(t.context_pct)}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <Rule />
-                </>
-              )}
-
-              {/* Errors for this session */}
-              <div style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-                <Eyebrow>Errors · this session</Eyebrow>
-                <span className="muted" style={{ fontSize: 12 }}>{errors.length} events</span>
-              </div>
-              {errors.length === 0
-                ? <div className="empty-block">No error events recorded — a clean run.</div>
-                : (
-                  <table className="ledger-table">
-                    <thead>
-                      <tr>
-                        <th>Time</th>
-                        <th>Severity</th>
-                        <th>Kind</th>
-                        <th>Tool</th>
-                        <th>Message</th>
-                        <th className="num">Turn</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {errors.map((e: any, i: number) => (
-                        <tr key={i}>
-                          <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(e.ts)}</td>
-                          <td><SeverityTag severity={e.severity} /></td>
-                          <td><span className="kind-tag mono">{e.kind}</span></td>
-                          <td>{e.tool ? <span className="mono" style={{ color: 'var(--accent)' }}>{e.tool}</span> : <span className="muted">—</span>}</td>
-                          <td className="muted err-msg mono" style={{ fontSize: 11 }}>{e.message}</td>
-                          <td className="num">#{e.turn_number}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-              }
-            </div>
-          )}
-
-          {/* ── TOOLS TAB ───────────────────────────────────────────── */}
-          {activeTab === 'tools' && (
-            <div className="tab-panel">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 48 }}>
-                <div>
-                  <Eyebrow>Tool Executions — detailed timeline ({toolExecutions.length})</Eyebrow>
-                  <table className="ledger-table">
-                    <thead>
-                      <tr>
-                        <th>Started</th>
-                        <th>Ended</th>
-                        <th>Tool</th>
-                        <th>File acted on</th>
-                        <th className="num">Duration</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {toolExecutions.map((te: any, i: number) => {
-                        const fileName = te.file_path ? te.file_path.split(/[/\\]/).pop() : '—'
-                        return (
-                          <tr key={i}>
-                            <td className="mono muted">{fmt.time(te.tool_call_ts)}</td>
-                            <td className="mono muted">{fmt.time(te.tool_result_ts)}</td>
-                            <td><span className="mono" style={{ color: 'var(--accent)' }}>{te.tool_name}</span></td>
-                            <td className="mono muted" title={te.file_path}>{te.file_path ? fileName : '—'}</td>
-                            <td className="num mono">{te.execution_duration_seconds != null ? `${te.execution_duration_seconds.toFixed(2)}s` : '—'}</td>
-                            <td>
-                              {te.is_error
-                                ? <span style={{ color: 'var(--warn)', fontWeight: 600 }}>✗ Fail</span>
-                                : <span style={{ color: 'var(--accent)', opacity: 0.85 }}>✓ OK</span>}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div>
-                  <Eyebrow>Tool mix</Eyebrow>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-                    {(toolMix ?? []).map((t: any) => (
-                      <BarRow key={t.tool_name} label={t.tool_name} value={t.calls} max={maxToolCalls} fmt={fmt.n} />
-                    ))}
-                  </div>
-
-                  <div style={{ marginTop: 48 }} />
-                  <Eyebrow>Files touched</Eyebrow>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-                    {(files ?? []).map((f: any) => (
-                      <BarRow key={f.file_path} label={f.file_path?.split(/[/\\]/).pop()} value={f.edit_count} max={maxEdits} fmt={fmt.n} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ── GIT TAB ─────────────────────────────────────────────── */}
-          {activeTab === 'git' && (
-            <div className="tab-panel">
-              <Eyebrow>Git commands ({gitCommands.length})</Eyebrow>
-              {gitCommands.length === 0 ? (
-                <div className="empty-block">No git commands executed during this session.</div>
-              ) : (
-                <table className="ledger-table">
+                <table className="ledger-table" style={{ tableLayout: 'fixed', width: '100%' }}>
                   <thead>
-                    <tr><th>Time</th><th>Op</th><th>Command</th><th>Output</th><th>Status</th></tr>
+                    <tr>
+                      <th style={{ width: 44 }}>#</th>
+                      <th style={{ width: 72 }}>Time</th>
+                      <th className="num" style={{ width: 72 }}>In</th>
+                      <th className="num" style={{ width: 72 }}>Out</th>
+                      <th className="num" style={{ width: 110 }}>Cache W</th>
+                      <th className="num" style={{ width: 80 }}>Cache R</th>
+                      <th style={{ width: 100 }}>Stop</th>
+                      <th style={{ width: 80 }}>Tool</th>
+                      <th className="num" style={{ width: 60 }}>Ctx %</th>
+                    </tr>
                   </thead>
                   <tbody>
-                    {gitCommands.map((g: any, i: number) => (
-                      <tr key={i}>
-                        <td className="mono muted">{fmt.time(g.ts)}</td>
-                        <td className="mono">{g.git_op}</td>
-                        <td className="mono">{g.raw_command?.slice(0, 60)}</td>
-                        <td className="muted">{g.output_text?.slice(0, 80)}</td>
-                        <td>{g.is_error ? <span className="warn">✗</span> : <span style={{ color: 'var(--accent)' }}>✓</span>}</td>
+                    {turns.slice(0, 20).map((t: any) => (
+                      <tr key={t.turn_number}>
+                        <td className="muted mono">{String(t.turn_number).padStart(3, '0')}</td>
+                        <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(t.assistant_ts)}</td>
+                        <td className="num">{fmt.n(t.input_tokens)}</td>
+                        <td className="num">{fmt.n(t.output_tokens)}</td>
+                        <td className="num">
+                          <span className="muted">{fmt.k(t.ephemeral_5m_input_tokens)}</span>
+                          {' / '}
+                          <span style={{ color: 'var(--accent)' }}>{fmt.k(t.ephemeral_1h_input_tokens)}</span>
+                        </td>
+                        <td className="num">{fmt.k(t.cache_read_input_tokens)}</td>
+                        <td>
+                          {t.stop_reason
+                            ? <span className={`pill ${t.stop_reason === 'end_turn' ? 'pill-end' : 'pill-tool'}`}>{t.stop_reason}</span>
+                            : <span className="muted">—</span>}
+                        </td>
+                        <td>
+                          {t.tool_name
+                            ? <span className="mono" style={{ color: 'var(--accent)', fontSize: 11 }}>{t.tool_name}</span>
+                            : <span className="muted">—</span>}
+                        </td>
+                        <td className="num">
+                          <span className={(t.context_pct ?? 0) > 0.7 ? 'warn' : ''}>
+                            {fmt.pct(t.context_pct)}
+                          </span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              )}
+                <Rule />
+              </>
+            ) : (
+              <div className="empty-block" style={{ marginBottom: 24 }}>No turn data retained for this session.</div>
+            )}
+
+            {/* Errors for this session */}
+            <div style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+              <Eyebrow>Errors · this session</Eyebrow>
+              <span className="muted" style={{ fontSize: 12 }}>{errors.length} events</span>
             </div>
-          )}
+            {errors.length === 0
+              ? <div className="empty-block">No error events recorded — a clean run.</div>
+              : (
+                <table className="ledger-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Severity</th>
+                      <th>Kind</th>
+                      <th>Tool</th>
+                      <th>Message</th>
+                      <th className="num">Turn</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {errors.map((e: any, i: number) => (
+                      <tr key={i}>
+                        <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(e.ts)}</td>
+                        <td><SeverityTag severity={e.severity} /></td>
+                        <td><span className="kind-tag mono">{e.kind}</span></td>
+                        <td>{e.tool ? <span className="mono" style={{ color: 'var(--accent)' }}>{e.tool}</span> : <span className="muted">—</span>}</td>
+                        <td className="muted err-msg mono" style={{ fontSize: 11 }}>{e.message}</td>
+                        <td className="num">#{e.turn_number}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            }
+          </div>
+        )}
 
-          {/* ── TOKENS TAB ──────────────────────────────────────────── */}
-          {activeTab === 'tokens' && (
-            <div className="tab-panel">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 48 }}>
-                <div>
-                  <Eyebrow>Per-turn tokens ({Math.min(turns?.length ?? 0, 60)} sampled)</Eyebrow>
-                  <TurnChart turns={turns ?? []} />
+        {/* ── PROMPTS TAB ─────────────────────────────────────────────── */}
+        {activeTab === 'prompts' && (
+          <div className="tab-panel">
+            {prompts.length === 0 ? (
+              <div className="empty-block">No operator prompts recorded for this session.</div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 24 }}>
+                  <Eyebrow>Prompts &amp; responses</Eyebrow>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {prompts.length} operator prompt{prompts.length !== 1 ? 's' : ''} · what was asked, what happened
+                  </span>
+                </div>
+                <ol className="prompts prompts-wide" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 24 }}>
+                  {prompts.map((p: any, i: number) => (
+                    <li key={p.prompt_id ?? i} style={{ display: 'flex', gap: 24, padding: '20px 0', borderTop: '1px solid var(--rule)' }}>
+                      {/* Left aside */}
+                      <div style={{ flexShrink: 0, width: 96, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--ink-2)', fontFamily: 'var(--mono)' }}>
+                          #{String((p.prompt_idx ?? i) + 1).padStart(2, '0')}
+                        </div>
+                        <div className="mono muted" style={{ fontSize: 11 }}>{fmt.time(p.prompt_ts)}</div>
+                        {p.duration_seconds != null && (
+                          <div className="mono muted" style={{ fontSize: 11 }}>{fmtSecs(p.duration_seconds)}</div>
+                        )}
+                        {p.agent && <AgentLink name={p.agent} />}
+                        {p.model_primary && <ModelPill model={p.model_primary} />}
+                        {p.is_overkill && p.overkill_reason && (
+                          <OverkillChip reason={p.overkill_reason} />
+                        )}
+                      </div>
 
-                  <div style={{ marginTop: 48 }} />
-                  <table className="ledger-table">
-                    <thead>
-                      <tr><th>#</th><th>Input</th><th>Output</th><th>Cost</th><th>Ctx%</th></tr>
-                    </thead>
-                    <tbody>
-                      {(turns ?? []).map((t: any) => (
-                        <tr key={t.turn_number}>
-                          <td className="num muted">{t.turn_number}</td>
-                          <td className="num">{fmt.k(t.input_tokens)}</td>
-                          <td className="num">{fmt.k(t.output_tokens)}</td>
-                          <td className="num accent">{fmt.usd(t.calculated_cost)}</td>
-                          <td className="num muted">{fmt.pct(t.context_pct)}</td>
+                      {/* Body */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        {/* Prompt text — SQL already truncates at 200 chars */}
+                        {p.prompt_text_200 && (
+                          <p style={{ fontStyle: 'italic', color: 'var(--ink-2)', marginBottom: 12, lineHeight: 1.6 }}>
+                            &ldquo;{p.prompt_text_200}&rdquo;
+                          </p>
+                        )}
+
+                        {/* Response meta chips */}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                          {p.turn_count != null && (
+                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                              <b style={{ color: 'var(--ink)' }}>{p.turn_count}</b> turns
+                            </span>
+                          )}
+                          {p.tool_call_count != null && (
+                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                              · <b style={{ color: 'var(--ink)' }}>{p.tool_call_count}</b> tool calls
+                            </span>
+                          )}
+                          {p.files_edited != null && (
+                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                              · <b style={{ color: 'var(--ink)' }}>{p.files_edited}</b> files
+                            </span>
+                          )}
+                          {p.output_tokens_total != null && (
+                            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                              · <b style={{ color: 'var(--ink)' }}>{fmt.k(p.output_tokens_total)}</b> tokens
+                            </span>
+                          )}
+                          {p.cost_total != null && (
+                            <span style={{ fontSize: 12, color: 'var(--accent)' }}>
+                              · {fmt.usd(p.cost_total)}
+                            </span>
+                          )}
+                          {p.errors_caught > 0 && (
+                            <span style={{ fontSize: 12, color: 'var(--warn)' }}>
+                              · {p.errors_caught} error{p.errors_caught !== 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Summary — SQL already truncates at 200 chars */}
+                        {p.summary_200 && (
+                          <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6, margin: 0 }}>
+                            {p.summary_200}
+                          </p>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── AGENTS TAB ──────────────────────────────────────────────── */}
+        {activeTab === 'agents' && (
+          <div className="tab-panel">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 16 }}>
+              <Eyebrow>Agents · in this session</Eyebrow>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {Array.isArray(s.agents) ? s.agents.length : 1} distinct agent{Array.isArray(s.agents) && s.agents.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            {(() => {
+              const agentsList: string[] = Array.isArray(s.agents) && s.agents.length > 0
+                ? s.agents
+                : (s.agent ? [s.agent] : [])
+              if (agentsList.length === 0) {
+                return <div className="empty-block">No resolved agents for this session.</div>
+              }
+              // Per-agent prompt rollup from the prompts array we already have
+              const byAgent: Record<string, { prompts: number; tools: number; files: number; cost: number; tokens: number; errors: number }> = {}
+              for (const p of (prompts ?? [])) {
+                const a = p.agent ?? 'main'
+                if (!byAgent[a]) byAgent[a] = { prompts: 0, tools: 0, files: 0, cost: 0, tokens: 0, errors: 0 }
+                byAgent[a].prompts += 1
+                byAgent[a].tools   += p.tool_call_count     ?? 0
+                byAgent[a].files   += p.files_edited        ?? 0
+                byAgent[a].cost    += p.cost_total          ?? 0
+                byAgent[a].tokens  += p.output_tokens_total ?? 0
+                byAgent[a].errors  += p.errors_caught       ?? 0
+              }
+              const totalCost = Math.max(...Object.values(byAgent).map(v => v.cost), 0.001)
+              return (
+                <table className="ledger-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th>Agent</th>
+                      <th className="num" style={{ width: 90 }}>Prompts</th>
+                      <th className="num" style={{ width: 90 }}>Tool calls</th>
+                      <th className="num" style={{ width: 80 }}>Files</th>
+                      <th className="num" style={{ width: 100 }}>Tokens</th>
+                      <th className="num" style={{ width: 90 }}>Cost</th>
+                      <th className="num" style={{ width: 70 }}>Errors</th>
+                      <th style={{ width: 120 }}>Share</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agentsList.map((a: string) => {
+                      const v = byAgent[a] ?? { prompts: 0, tools: 0, files: 0, cost: 0, tokens: 0, errors: 0 }
+                      const sharePct = (v.cost / totalCost) * 100
+                      return (
+                        <tr key={a}>
+                          <td><AgentLink name={a} /></td>
+                          <td className="num mono">{fmt.n(v.prompts)}</td>
+                          <td className="num mono">{fmt.n(v.tools)}</td>
+                          <td className="num mono">{fmt.n(v.files)}</td>
+                          <td className="num mono">{fmt.k(v.tokens)}</td>
+                          <td className="num mono strong">{fmt.usd(v.cost)}</td>
+                          <td className="num mono">{v.errors > 0 ? <span style={{ color: 'var(--warn)' }}>{v.errors}</span> : '—'}</td>
+                          <td>
+                            <div className="tbar" style={{ width: '100%', height: 6, background: 'var(--rule)', borderRadius: 1, overflow: 'hidden' }}>
+                              <div className="tbar-fill" style={{ width: `${sharePct}%`, height: '100%', background: 'var(--accent)' }} />
+                            </div>
+                          </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div>
-                  <Eyebrow>Token breakdown</Eyebrow>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 16 }}>
-                    <StatBlock label="Total Input"  value={fmt.k(s.total_input_tokens)} large />
-                    <StatBlock label="Total Output" value={fmt.k(s.total_output_tokens)} large />
-                    <Rule />
-                    <StatBlock label="Cache read" value={fmt.k(s.cache_read_total)} />
-                    <StatBlock label="Cache 5m"   value={fmt.k(s.ephemeral_5m_total)} />
-                    <StatBlock label="Cache 1h"   value={fmt.k(s.ephemeral_1h_total)} />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )
+            })()}
+          </div>
+        )}
 
-      {/* ── COLS: MAIN + SIDE RAIL ─────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 48, marginTop: 48 }}>
-        {/* col-main placeholder — the tab content above is the primary content area */}
-        <div />
-
-        {/* Side rail */}
-        <aside>
-          {/* Tokens · where */}
-          {(() => {
-            const breakdown = [
-              { name: 'Cache read',       value: s.cache_read_total ?? 0,       color: 'var(--muted-bar)' },
-              { name: 'Cache write · 5m', value: s.ephemeral_5m_total ?? 0,     color: 'var(--ink-2)' },
-              { name: 'Cache write · 1h', value: s.ephemeral_1h_total ?? 0,     color: 'var(--accent)' },
-              { name: 'Output',           value: s.total_output_tokens ?? 0,    color: 'var(--ink)' },
-              { name: 'Fresh input',      value: s.total_input_tokens ?? 0,     color: 'var(--accent-2)' },
-            ]
-            const totalU = breakdown.reduce((a, b) => a + b.value, 0)
-            if (!totalU) return null
-            return (
-              <div className="panel" style={{ marginBottom: 32 }}>
-                <Eyebrow>Tokens · where</Eyebrow>
-                <div className="stack-bar" style={{ display: 'flex', height: 8, borderRadius: 2, overflow: 'hidden', margin: '8px 0 12px' }}>
-                  {breakdown.map(b => (
-                    <div
-                      key={b.name}
-                      style={{ width: `${(b.value / totalU) * 100}%`, background: b.color }}
-                      title={`${b.name} · ${fmt.n(b.value)}`}
-                    />
-                  ))}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {breakdown.map(b => (
-                    <div key={b.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: 2, background: b.color, flexShrink: 0 }} />
-                      <span style={{ flex: 1, color: 'var(--muted)' }}>{b.name}</span>
-                      <span className="mono">{fmt.k(b.value)}</span>
-                      <span className="muted" style={{ width: 40, textAlign: 'right' }}>{totalU > 0 ? `${((b.value / totalU) * 100).toFixed(0)}%` : '—'}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )
-          })()}
-
-          {/* Files · this session — attributed columns */}
-          {filePanelData.length > 0 && (
-            <div className="panel" style={{ marginBottom: 32 }}>
+        {/* ── FILES TAB ───────────────────────────────────────────────── */}
+        {activeTab === 'files' && (
+          <div className="tab-panel">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
               <Eyebrow>Files · this session</Eyebrow>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, marginTop: 8 }}>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {filePanelData.length} file{filePanelData.length !== 1 ? 's' : ''}
+                {filesWithAttribution.length > 0 ? ' · with attribution' : ' · edit counts only'}
+              </span>
+            </div>
+            {filePanelData.length === 0 ? (
+              <div className="empty-block">No files recorded for this session.</div>
+            ) : (
+              <table className="ledger-table" style={{ tableLayout: 'fixed', width: '100%' }}>
                 <thead>
                   <tr>
-                    <th style={{ textAlign: 'left', color: 'var(--muted)', fontWeight: 400, paddingBottom: 4 }}>Path</th>
-                    <th style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: 400, paddingBottom: 4 }}>Tokens</th>
-                    <th style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: 400, paddingBottom: 4 }}>Time</th>
-                    <th style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: 400, paddingBottom: 4 }}>Edits</th>
+                    <th style={{ textAlign: 'left' }}>Path</th>
+                    <th className="num" style={{ width: 90 }}>Tokens</th>
+                    <th className="num" style={{ width: 90 }}>Time</th>
+                    <th className="num" style={{ width: 80 }}>Cost</th>
+                    <th className="num" style={{ width: 70 }}>Edits</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filePanelData.map((f: any) => (
-                    <tr key={f.file_path} style={{ borderTop: '1px solid var(--rule)' }}>
-                      <td className="mono" style={{ paddingTop: 4, paddingBottom: 4, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.file_path}>
+                    <tr key={f.file_path}>
+                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.file_path}>
                         {f.file_path?.split(/[/\\]/).pop() ?? f.file_path}
                       </td>
-                      <td className="num mono" style={{ paddingTop: 4, paddingBottom: 4 }}>
+                      <td className="num mono">
                         {f.tokens_attributed != null ? fmt.k(f.tokens_attributed) : '—'}
                       </td>
-                      <td className="num mono" style={{ paddingTop: 4, paddingBottom: 4 }}>
+                      <td className="num mono">
                         {f.duration_attributed_seconds != null ? fmtSecs(f.duration_attributed_seconds) : '—'}
                       </td>
-                      <td className="num mono" style={{ paddingTop: 4, paddingBottom: 4 }}>
+                      <td className="num mono">
+                        {f.cost_attributed != null ? fmt.usd(f.cost_attributed) : '—'}
+                      </td>
+                      <td className="num mono">
                         {fmt.n(f.edit_count ?? 0)}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
-          )}
+            )}
+          </div>
+        )}
 
-          {/* Tools · session */}
-          {toolMix.length > 0 && (
-            <div className="panel" style={{ marginBottom: 32 }}>
-              <Eyebrow>Tools · session</Eyebrow>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+        {/* ── TOKENS TAB ──────────────────────────────────────────────── */}
+        {activeTab === 'tokens' && (
+          <div className="tab-panel">
+            {/* TurnChart — stacked bars */}
+            <div className="section-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+              <Eyebrow>Per-turn ledger</Eyebrow>
+              <span className="section-meta muted" style={{ fontSize: 12 }}>
+                {turns.length} turns sampled · stacked tokens · context % overlay
+              </span>
+            </div>
+            <TurnChart turns={turns} />
+            {turns.length > 0 && (
+              <div className="chart-legend" style={{ marginTop: 8, marginBottom: 24 }}>
+                <LegendSwatch color="var(--muted-bar)" label="Cache read" />
+                <LegendSwatch color="var(--accent)"    label="Cache write" />
+                <LegendSwatch color="var(--ink)"       label="Output" />
+                <LegendSwatch color="var(--accent-2)"  label="Fresh input" />
+                <LegendSwatch color="var(--accent-2)"  label="Context %" line />
+              </div>
+            )}
+
+            <Rule />
+
+            {/* Tokens · where — stack-bar panel */}
+            {(() => {
+              const breakdown = [
+                { name: 'Cache read',       value: s.cache_read_total ?? 0,       color: 'var(--muted-bar)' },
+                { name: 'Cache write · 5m', value: s.ephemeral_5m_total ?? 0,     color: 'var(--ink-2)' },
+                { name: 'Cache write · 1h', value: s.ephemeral_1h_total ?? 0,     color: 'var(--accent)' },
+                { name: 'Output',           value: s.total_output_tokens ?? 0,    color: 'var(--ink)' },
+                { name: 'Fresh input',      value: s.total_input_tokens ?? 0,     color: 'var(--accent-2)' },
+              ]
+              const totalU = breakdown.reduce((a, b) => a + b.value, 0)
+              if (!totalU) return null
+              return (
+                <div style={{ marginBottom: 32 }}>
+                  <Eyebrow>Tokens · where</Eyebrow>
+                  <div className="stack-bar" style={{ display: 'flex', height: 8, borderRadius: 2, overflow: 'hidden', margin: '8px 0 12px' }}>
+                    {breakdown.map(b => (
+                      <div
+                        key={b.name}
+                        style={{ width: `${(b.value / totalU) * 100}%`, background: b.color }}
+                        title={`${b.name} · ${fmt.n(b.value)}`}
+                      />
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {breakdown.map(b => (
+                      <div key={b.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 2, background: b.color, flexShrink: 0 }} />
+                        <span style={{ flex: 1, color: 'var(--muted)' }}>{b.name}</span>
+                        <span className="mono">{fmt.k(b.value)}</span>
+                        <span className="muted" style={{ width: 40, textAlign: 'right' }}>{totalU > 0 ? `${((b.value / totalU) * 100).toFixed(0)}%` : '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
+
+            <Rule />
+
+            {/* Cache breakdown table */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 16, maxWidth: 360 }}>
+              <StatBlock label="Total Input"  value={fmt.k(s.total_input_tokens)} large />
+              <StatBlock label="Total Output" value={fmt.k(s.total_output_tokens)} large />
+              <Rule />
+              <StatBlock label="Cache read" value={fmt.k(s.cache_read_total)} />
+              <StatBlock label="Cache 5m"   value={fmt.k(s.ephemeral_5m_total)} />
+              <StatBlock label="Cache 1h"   value={fmt.k(s.ephemeral_1h_total)} />
+            </div>
+          </div>
+        )}
+
+        {/* ── TOOLS TAB ───────────────────────────────────────────────── */}
+        {activeTab === 'tools' && (
+          <div className="tab-panel">
+            {/* Tool mix — bar rows */}
+            <Eyebrow>Tool mix</Eyebrow>
+            {toolMix.length === 0 ? (
+              <div className="empty-block" style={{ marginBottom: 24 }}>No tool calls recorded for this session.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16, marginBottom: 40 }}>
                 {toolMix.map((t: any) => (
                   <BarRow key={t.tool_name} label={t.tool_name} value={t.calls} max={maxToolCalls} fmt={fmt.n} />
                 ))}
               </div>
+            )}
+
+            <Rule />
+
+            {/* Tool executions log */}
+            <div style={{ marginTop: 24 }}>
+              <Eyebrow>Tool Executions — detailed timeline ({toolExecutions.length})</Eyebrow>
+              {toolExecutions.length === 0 ? (
+                <div className="empty-block">No tool execution records for this session.</div>
+              ) : (
+                <table className="ledger-table">
+                  <thead>
+                    <tr>
+                      <th>Started</th>
+                      <th>Ended</th>
+                      <th>Tool</th>
+                      <th>File acted on</th>
+                      <th className="num">Duration</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {toolExecutions.map((te: any, i: number) => {
+                      const fileName = te.file_path ? te.file_path.split(/[/\\]/).pop() : '—'
+                      return (
+                        <tr key={i}>
+                          <td className="mono muted">{fmt.time(te.tool_call_ts)}</td>
+                          <td className="mono muted">{fmt.time(te.tool_result_ts)}</td>
+                          <td><span className="mono" style={{ color: 'var(--accent)' }}>{te.tool_name}</span></td>
+                          <td className="mono muted" title={te.file_path}>{te.file_path ? fileName : '—'}</td>
+                          <td className="num mono">{te.execution_duration_seconds != null ? `${te.execution_duration_seconds.toFixed(2)}s` : '—'}</td>
+                          <td>
+                            {te.is_error
+                              ? <span style={{ color: 'var(--warn)', fontWeight: 600 }}>✗ Fail</span>
+                              : <span style={{ color: 'var(--accent)', opacity: 0.85 }}>✓ OK</span>}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
-          )}
-        </aside>
+          </div>
+        )}
+
+        {/* ── GIT TAB ─────────────────────────────────────────────────── */}
+        {activeTab === 'git' && (
+          <div className="tab-panel">
+            <Eyebrow>Git commands ({gitCommands.length})</Eyebrow>
+            {gitCommands.length === 0 ? (
+              <div className="empty-block">No git commands executed during this session.</div>
+            ) : (
+              <table className="ledger-table">
+                <thead>
+                  <tr><th>Time</th><th>Op</th><th>Command</th><th>Output</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  {gitCommands.map((g: any, i: number) => (
+                    <tr key={i}>
+                      <td className="mono muted">{fmt.time(g.ts)}</td>
+                      <td className="mono">{g.git_op}</td>
+                      <td className="mono">{g.raw_command?.slice(0, 60)}</td>
+                      <td className="muted">{g.output_text?.slice(0, 80)}</td>
+                      <td>{g.is_error ? <span className="warn">✗</span> : <span style={{ color: 'var(--accent)' }}>✓</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </div>
-
-      {/* ── PROMPTS & RESPONSES — full width below cols ─────────────────────── */}
-      {prompts.length > 0 && (
-        <>
-          <Rule />
-          <section style={{ marginTop: 32 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 24 }}>
-              <h2 className="h-section" style={{ fontSize: 22, fontWeight: 600 }}>Prompts &amp; responses</h2>
-              <span className="muted" style={{ fontSize: 12 }}>
-                {prompts.length} operator prompt{prompts.length !== 1 ? 's' : ''} · what was asked, what happened
-              </span>
-            </div>
-            <ol className="prompts prompts-wide" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 24 }}>
-              {prompts.map((p: any, i: number) => (
-                <li key={p.prompt_id ?? i} style={{ display: 'flex', gap: 24, padding: '20px 0', borderTop: '1px solid var(--rule)' }}>
-                  {/* Left aside */}
-                  <div style={{ flexShrink: 0, width: 96, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--ink-2)', fontFamily: 'var(--mono)' }}>
-                      #{String((p.prompt_idx ?? i) + 1).padStart(2, '0')}
-                    </div>
-                    <div className="mono muted" style={{ fontSize: 11 }}>{fmt.time(p.prompt_ts)}</div>
-                    {p.duration_seconds != null && (
-                      <div className="mono muted" style={{ fontSize: 11 }}>{fmtSecs(p.duration_seconds)}</div>
-                    )}
-                    {p.agent && <AgentLink name={p.agent} />}
-                    {p.model_primary && <ModelPill model={p.model_primary} />}
-                    {p.is_overkill && p.overkill_reason && (
-                      <OverkillChip reason={p.overkill_reason} />
-                    )}
-                  </div>
-
-                  {/* Body */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    {/* Prompt text — SQL already truncates at 200 chars */}
-                    {p.prompt_text_200 && (
-                      <p style={{ fontStyle: 'italic', color: 'var(--ink-2)', marginBottom: 12, lineHeight: 1.6 }}>
-                        &ldquo;{p.prompt_text_200}&rdquo;
-                      </p>
-                    )}
-
-                    {/* Response meta chips */}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-                      {p.turn_count != null && (
-                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                          <b style={{ color: 'var(--ink)' }}>{p.turn_count}</b> turns
-                        </span>
-                      )}
-                      {p.tool_call_count != null && (
-                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                          · <b style={{ color: 'var(--ink)' }}>{p.tool_call_count}</b> tool calls
-                        </span>
-                      )}
-                      {p.files_edited != null && (
-                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                          · <b style={{ color: 'var(--ink)' }}>{p.files_edited}</b> files
-                        </span>
-                      )}
-                      {p.output_tokens_total != null && (
-                        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                          · <b style={{ color: 'var(--ink)' }}>{fmt.k(p.output_tokens_total)}</b> tokens
-                        </span>
-                      )}
-                      {p.cost_total != null && (
-                        <span style={{ fontSize: 12, color: 'var(--accent)' }}>
-                          · {fmt.usd(p.cost_total)}
-                        </span>
-                      )}
-                      {p.errors_caught > 0 && (
-                        <span style={{ fontSize: 12, color: 'var(--warn)' }}>
-                          · {p.errors_caught} error{p.errors_caught !== 1 ? 's' : ''}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Summary — SQL already truncates at 200 chars */}
-                    {p.summary_200 && (
-                      <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.6, margin: 0 }}>
-                        {p.summary_200}
-                      </p>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ol>
-          </section>
-        </>
-      )}
-    </>
+    </div>
   )
 }
