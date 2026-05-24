@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import React from 'react'
 import { Eyebrow, Rule, StatBlock, BarRow, ProviderTag, ModelPill, AgentLink, PersonLink, SeverityTag, TBar, StackBar, StatusDot } from '../components/atoms'
+import { ClickableRow } from '../components/ClickableRow'
 import { DailyChart } from '../components/charts'
 import { SideRail, SideSection } from '../components/panels'
 import { fmt } from '../lib/fmt'
@@ -122,7 +123,7 @@ export default async function DashboardPage() {
             </thead>
             <tbody>
               {topApps.map((app: any, i: number) => (
-                <tr key={app.app_id} className="clickable" onClick={() => { window.location.href = `/apps/${encodeURIComponent(app.app_id)}` }}>
+                <ClickableRow key={app.app_id} href={`/apps/${encodeURIComponent(app.app_id)}`}>
                   <td className="muted">{String(i + 1).padStart(2, "0")}</td>
                   <td>
                     <div className="app-cell">
@@ -137,7 +138,7 @@ export default async function DashboardPage() {
                   <td className="num">{fmt.n(app.session_count)}</td>
                   <td className="num strong">{fmt.usd(app.total_cost)}</td>
                   <td style={{ width: 100 }}><TBar pct={(app.total_cost / Math.max(0.001, topApps[0]?.total_cost ?? 1)) * 100} /></td>
-                </tr>
+                </ClickableRow>
               ))}
             </tbody>
           </table>
