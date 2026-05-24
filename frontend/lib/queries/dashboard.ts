@@ -56,31 +56,25 @@ export async function getTopApps() {
 }
 
 export async function getTopProjects() {
-  const rows = await query<any>(`
-    SELECT
-        p.project_id,
-        p.project_name,
-        p.total_cost,
-        p.session_count,
-        p.total_turns,
-        p.app_count,
-        LIST({
-            app_id:       a.app_id,
-            app_name:     a.app_name,
-            total_cost:   a.total_cost,
-            total_turns:  a.total_turns,
-            session_count: a.session_count
-        } ORDER BY a.total_cost DESC NULLS LAST) AS apps
-    FROM dim_projects p
-    LEFT JOIN dim_apps a USING (project_id)
-    GROUP BY p.project_id, p.project_name, p.total_cost, p.session_count, p.total_turns, p.app_count
-    ORDER BY p.total_cost DESC NULLS LAST
-    LIMIT ${TOP_N}
-  `)
+  const [projects, apps] = await Promise.all([
+    query(`
+      SELECT project_id, project_name, total_cost, session_count, total_turns, app_count
+      FROM dim_projects
+      ORDER BY total_cost DESC
+      LIMIT ${TOP_N}
+    `),
+    query(`
+      SELECT app_id, app_name, total_cost, total_turns, session_count, project_id
+      FROM dim_apps
+      ORDER BY total_cost DESC
+    `)
+  ])
 
-  return rows.map((row: any) => ({
-    ...row,
-    apps: typeof row.apps === 'string' ? JSON.parse(row.apps) : (row.apps ?? [])
+  return projects.map((p: any) => ({
+    ...p,
+    apps: apps
+      .filter((a: any) => a.project_id === p.project_id)
+      .sort((a: any, b: any) => (b.total_cost ?? 0) - (a.total_cost ?? 0))
   }))
 }
 
