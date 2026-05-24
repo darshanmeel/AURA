@@ -35,15 +35,14 @@ def process_file(file_path, writer, adapter, cp_manager):
                     if event:
                         events.append(event)
                         last_uuid = event["uuid"]
+                    try:
+                        skills = adapter.parse_skills(raw, file_path)
+                        if skills:
+                            writer.insert_session_skills(skills)
+                    except Exception as e:
+                        print(f"Error parsing skills: {e}")
                 except Exception as e:
                     print(f"Error parsing line in {file_path}: {e}")
-                
-                try:
-                    skills = adapter.parse_skills(raw, file_path)
-                    if skills:
-                        writer.insert_session_skills(skills)
-                except Exception as e:
-                    pass
             
             if events:
                 writer.insert_events(events)
@@ -69,33 +68,30 @@ class JSONLHandler(FileSystemEventHandler):
             write_session_meta(self.writer, session_id, event.src_path)
             process_file(event.src_path, self.writer, self.adapter, self.cp_manager)
 
-dbt_active = False
+dbt_running = threading.Event()
 
 def snapshot_worker(src, dst, interval):
     print(f"Snapshot worker started: {src} -> {dst} every {interval}s")
     while True:
         try:
-            global dbt_active
-            if dbt_active:
+            if dbt_running.is_set():
                 time.sleep(1)
                 continue
 
             if os.path.exists(src):
                 take_snapshot(src, dst)
         except Exception as e:
-            # Locking errors are expected if the backfill is busy
-            pass
+            print(f"[snapshot] Warning: {e}")
         time.sleep(interval)
 
 def dbt_worker(interval_mins):
-    global dbt_active
     if interval_mins <= 0:
         print("DBT run worker disabled.")
         return
     print(f"DBT run worker started (every {interval_mins} mins).")
     while True:
         try:
-            dbt_active = True
+            dbt_running.set()
             time.sleep(1)  # Allow snapshot worker to finish any active run
 
             print("Invoking dbt seed...")
@@ -122,7 +118,7 @@ def dbt_worker(interval_mins):
         except Exception as e:
             print(f"Error running DBT build: {e}")
         finally:
-            dbt_active = False
+            dbt_running.clear()
         time.sleep(interval_mins * 60)
 
 def main():
@@ -149,6 +145,21 @@ def main():
     for f in files:
         process_file(f, writer, adapter, cp_manager)
     print(f"Backfill complete. Processed {len(files)} files.")
+
+    # Backfill session_meta for any sessions not yet recorded
+    from aura_watcher.session_meta import ensure_session_meta_table
+    for f in files:
+        session_id = os.path.basename(os.path.dirname(f))
+        try:
+            with writer.get_connection() as conn:
+                ensure_session_meta_table(conn)
+                row = conn.execute(
+                    "SELECT 1 FROM session_meta WHERE session_id = ?", [session_id]
+                ).fetchone()
+            if row is None:
+                write_session_meta(writer, session_id, f)
+        except Exception as e:
+            print(f"Error writing session_meta for {session_id}: {e}")
 
     # Start DBT worker in the background (AFTER backfill to avoid lock contention)
     threading.Thread(target=dbt_worker, args=(dbt_interval,), daemon=True).start()

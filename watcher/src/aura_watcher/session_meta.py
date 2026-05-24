@@ -1,7 +1,7 @@
 import json
 import os
 import getpass
-from datetime import datetime
+from datetime import datetime, UTC
 
 
 def _load_people_config():
@@ -60,7 +60,7 @@ def write_session_meta(writer, session_id: str, file_path: str, tenant_id: str =
     person_id = getpass.getuser()
     people = _load_people_config()
     person_info = people.get(person_id, {})
-    person_name = person_info.get("name", "Darshan Meel")
+    person_name = person_info.get("name", getpass.getuser())
     session_title = _extract_session_title(file_path)
 
     with writer.get_connection() as conn:
@@ -69,4 +69,4 @@ def write_session_meta(writer, session_id: str, file_path: str, tenant_id: str =
             INSERT INTO session_meta (session_id, tenant_id, person_id, person_name, session_title, ingested_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (session_id) DO NOTHING
-        """, [session_id, tenant_id, person_id, person_name, session_title, datetime.utcnow()])
+        """, [session_id, tenant_id, person_id, person_name, session_title, datetime.now(UTC)])

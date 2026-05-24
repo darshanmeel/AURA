@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime
+from aura_watcher.redact import redact_content
 
 class ClaudeAdapter:
     MODEL_CONTEXT_WINDOWS = {
@@ -39,7 +40,7 @@ class ClaudeAdapter:
                 idx = parts.index("projects")
                 if len(parts) > idx + 1:
                     encoded_proj = parts[idx + 1]
-                    decoded_proj = encoded_proj.replace("--", ":\\").replace("-", "\\")
+                    decoded_proj = encoded_proj.replace("--", "\x00").replace("-", "/").replace("\x00", "-")
                     project_id = decoded_proj
             elif len(parts) >= 2:
                 # Fallback: if not in a "projects" folder, try to use the parent directory
@@ -84,7 +85,7 @@ class ClaudeAdapter:
             "ephemeral_1h_input_tokens": cache_creation.get("ephemeral_1h_input_tokens"),
             "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
             "context_pct": context_pct,
-            "payload": json.dumps(raw)
+            "payload": redact_content(json.dumps(raw))
         }
 
     def parse_skills(self, raw: dict, file_path: str) -> list[dict]:
