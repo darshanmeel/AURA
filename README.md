@@ -63,7 +63,23 @@ To transition Aura from a local single-user tool to a multi-user production envi
 3. **Hosted Dashboard:** Deploy the Next.js frontend to a cloud provider like Vercel, AWS, or GCP. Add user authentication (e.g., OAuth/SSO) and role-based access control (RBAC).
 4. **Scheduled Transformations:** Use a production orchestrator like Airflow or Dagster to manage and schedule the `dbt` transformations, rather than relying on the local watcher loop.
 
-### Privacy for Multiple Users (Data Anonymization)
-When rolling out to multiple users, it's critical to preserve privacy. **To prevent managers from knowing what people are typing, individual message contents will be hashed.** 
-- Instead of sending raw text prompts and AI completions to the central server, the log-shipper will send a cryptographic hash (e.g., SHA-256) of the message content.
-- This allows the system to track metrics like message frequency, length, token counts, and session duration without exposing the actual sensitive intellectual property or private conversations of the developers.
+### Privacy for Multiple Users (Column Masking)
+
+When rolling out to multiple users, it's critical to preserve privacy. **Before any data is shipped to a central server, message and prompt content will be masked so that only the individual user can see their own conversations — not other users, not managers, not admins.**
+
+The following columns contain sensitive content and will be masked or hashed prior to central ingestion:
+
+| Column | Location | Masking approach |
+|---|---|---|
+| `user_prompt` | `int_turns`, `fact_turns` | SHA-256 hash (content not recoverable) |
+| `assistant_response` | `int_turns`, `fact_turns` | SHA-256 hash (content not recoverable) |
+| `prompt_text_200` | `fact_prompts` | Masked / nulled out |
+| `summary_200` | `fact_prompts` | Masked / nulled out |
+
+**How it works:**
+- The log-shipper (or a pre-ship dbt macro) replaces raw text in these columns with a cryptographic hash (SHA-256) before the data leaves the user's machine.
+- All other columns — token counts, costs, tool names, timestamps, model IDs — travel unmasked and are safe to aggregate across users.
+- A user viewing their own session detail page sees the full decrypted content sourced directly from their local DuckDB, not from the central copy.
+- The central warehouse only ever receives hashed values, so even a compromised central store cannot reveal what any developer typed.
+
+> **TODO (pre-central-deployment):** Implement column masking in `watcher/src/aura_watcher/redact.py` and/or a dbt pre-hook macro so that `user_prompt`, `assistant_response`, `prompt_text_200`, and `summary_200` are hashed/nulled before any outbound sync. See the column table above for target fields.
