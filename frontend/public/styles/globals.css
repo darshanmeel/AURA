@@ -712,6 +712,14 @@ html[data-density="compact"] .ledger th { padding: 8px 12px; }
   padding: 48px 0 40px;
   align-items: end;
 }
+.session-head-left {
+  min-width: 0;
+}
+.session-head-right {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
 .session-meta-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1684,10 +1692,12 @@ em { font-style: italic; }
   border: none;
   background: transparent;
 }
+.kpi-strip .stat,
 .kpi-strip .stat-block {
   padding: 4px 28px;
   border-left: 1px solid var(--rule);
 }
+.kpi-strip .stat:first-child,
 .kpi-strip .stat-block:first-child {
   padding-left: 0;
   border-left: none;

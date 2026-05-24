@@ -4,6 +4,21 @@ import React, { useState, useEffect } from 'react'
 import { Eyebrow, Rule, StatBlock, SeverityTag, AgentLink } from '../../components/atoms'
 import { fmt } from '../../lib/fmt'
 
+function unwrapTitle(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const s = raw.trim()
+  if (s.startsWith('[{') && s.includes('"type"')) {
+    try {
+      const blocks = JSON.parse(s)
+      if (Array.isArray(blocks)) {
+        const text = blocks.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string).join(' ').trim()
+        if (text) return text.length > 80 ? text.slice(0, 80) + '…' : text
+      }
+    } catch { /* fall through */ }
+  }
+  return s.length > 80 ? s.slice(0, 80) + '…' : s
+}
+
 interface ErrorRow {
   ts: string
   severity: string
@@ -52,27 +67,20 @@ export default function ErrorsPage() {
   return (
     <div className="page-layout">
       {/* ── MASTHEAD STRAP ───────────────────────────────────────────── */}
-      <section style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      <section className="masthead-strap">
         <Eyebrow>Errors · across all sessions · 14 days</Eyebrow>
-        <span style={{
-          padding: '2px 10px',
-          border: '1px solid var(--rule-strong)',
-          borderRadius: 4,
-          fontSize: 12,
-          fontFamily: 'var(--mono)',
-          color: 'var(--muted)',
-        }}>
-          {fmt.n(allErrors.length)} events
-        </span>
+        <div className="strap-right">
+          <span className="strap-pill is-muted">{fmt.n(allErrors.length)} events</span>
+        </div>
       </section>
 
       {/* ── HERO ─────────────────────────────────────────────────────── */}
-      <section style={{ marginBottom: 32 }}>
+      <section className="page-head">
         <Eyebrow>The error log</Eyebrow>
-        <h1 className="display display-sm" style={{ margin: '8px 0 16px' }}>
+        <h1 className="display display-sm">
           What went <em>wrong.</em>
         </h1>
-        <p className="hero-lede" style={{ maxWidth: 560 }}>
+        <p className="hero-lede">
           {bySev.error ?? 0} hard error{(bySev.error ?? 0) !== 1 ? 's' : ''}{' '}
           · {bySev.warn ?? 0} warning{(bySev.warn ?? 0) !== 1 ? 's' : ''}{' '}
           · {bySev.info ?? 0} info event{(bySev.info ?? 0) !== 1 ? 's' : ''}.{' '}
@@ -83,7 +91,7 @@ export default function ErrorsPage() {
       <Rule weight="thick" />
 
       {/* ── 5-STAT STRIP ─────────────────────────────────────────────── */}
-      <section className="kpi-strip" style={{ marginBottom: 24 }}>
+      <section className="strip strip-tight">
         <StatBlock
           label="Total events"
           value={fmt.n(allErrors.length)}
@@ -115,34 +123,17 @@ export default function ErrorsPage() {
       <Rule />
 
       {/* ── KIND CHIP FILTER ROW ─────────────────────────────────────── */}
-      <section style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '16px 0' }}>
-        {(['All', ...kinds] as string[]).map(k => {
-          const isActive = activeKind === k
-          return (
-            <button
-              key={k}
-              className={`chip${isActive ? ' is-active' : ''}`}
-              onClick={() => setActiveKind(k)}
-              style={isActive
-                ? { background: 'var(--accent)', color: 'var(--bg)', borderColor: 'var(--accent)' }
-                : undefined}
-            >
-              {k}
-              {k !== 'All' && (
-                <span style={{
-                  marginLeft: 6,
-                  padding: '0 5px',
-                  borderRadius: 3,
-                  background: isActive ? 'rgba(0,0,0,0.2)' : 'var(--rule)',
-                  fontSize: 11,
-                  fontFamily: 'var(--mono)',
-                }}>
-                  {fmt.n(byKind[k])}
-                </span>
-              )}
-            </button>
-          )
-        })}
+      <section className="chip-row">
+        {(['All', ...kinds] as string[]).map(k => (
+          <button
+            key={k}
+            className={`chip${activeKind === k ? ' is-active' : ''}`}
+            onClick={() => setActiveKind(k)}
+          >
+            {k}
+            {k !== 'All' && <span className="chip-count">{fmt.n(byKind[k])}</span>}
+          </button>
+        ))}
       </section>
 
       {/* ── ERROR TABLE ──────────────────────────────────────────────── */}
@@ -150,7 +141,7 @@ export default function ErrorsPage() {
         {loading ? (
           <div className="muted eyebrow" style={{ padding: '24px 0' }}>Loading…</div>
         ) : (
-          <table className="ledger-table ledger-errors" style={{ width: '100%' }}>
+          <table className="ledger ledger-errors" style={{ width: '100%' }}>
             <thead>
               <tr>
                 <th>When</th>
@@ -199,8 +190,8 @@ export default function ErrorsPage() {
                   <td>
                     {e.session_title && e.session_title !== e.session_id
                       ? (
-                        <div style={{ fontSize: 13, color: 'var(--ink)', marginBottom: 2 }}>
-                          {e.session_title}
+                        <div className="sess-title-sm" style={{ marginBottom: 2 }}>
+                          {unwrapTitle(e.session_title)}
                         </div>
                       )
                       : null}
@@ -222,7 +213,7 @@ export default function ErrorsPage() {
               ))}
               {filtered.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={8} style={{ padding: '32px 0', textAlign: 'center', color: 'var(--muted)' }}>
+                  <td colSpan={8} className="empty">
                     No errors matching this filter — a quiet day.
                   </td>
                 </tr>
@@ -230,7 +221,7 @@ export default function ErrorsPage() {
             </tbody>
           </table>
         )}
-        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>{fmt.n(filtered.length)} errors</div>
+        <div className="muted" style={{ fontFamily: 'var(--mono)', fontSize: 11, marginTop: 8, letterSpacing: '0.04em' }}>{fmt.n(filtered.length)} error{filtered.length !== 1 ? 's' : ''} shown</div>
       </section>
     </div>
   )

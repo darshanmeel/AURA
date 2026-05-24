@@ -16,6 +16,26 @@ interface SessionTabsProps {
   filesWithAttribution?: any[]
 }
 
+// ── Title unwrap helper (guards against raw JSON content-block arrays) ────────
+function unwrapTitle(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const s = raw.trim()
+  if (s.startsWith('[{') && s.includes('"type"')) {
+    try {
+      const blocks = JSON.parse(s)
+      if (Array.isArray(blocks)) {
+        const text = blocks
+          .filter((b: any) => b.type === 'text' && b.text)
+          .map((b: any) => b.text as string)
+          .join(' ')
+          .trim()
+        if (text) return text
+      }
+    } catch { /* fall through */ }
+  }
+  return s
+}
+
 // ── Inline TurnChart (ported from design's session.jsx) ─────────────────────
 // Stacks bars [cacheR, cacheW, out, in] per turn, overlays a context-% line.
 function TurnChart({ turns }: { turns: any[] }) {
@@ -328,10 +348,10 @@ export function SessionTabs({
 
                       {/* Body */}
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        {/* Prompt text — SQL already truncates at 200 chars */}
+                        {/* Prompt text — defensively unwrap any leaked JSON content-block arrays */}
                         {p.prompt_text_200 && (
                           <p style={{ fontStyle: 'italic', color: 'var(--ink-2)', marginBottom: 12, lineHeight: 1.6 }}>
-                            &ldquo;{p.prompt_text_200}&rdquo;
+                            &ldquo;{unwrapTitle(p.prompt_text_200)}&rdquo;
                           </p>
                         )}
 
@@ -566,14 +586,39 @@ export function SessionTabs({
 
             <Rule />
 
-            {/* Cache breakdown table */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 16, maxWidth: 360 }}>
-              <StatBlock label="Total Input"  value={fmt.k(s.total_input_tokens)} large />
-              <StatBlock label="Total Output" value={fmt.k(s.total_output_tokens)} large />
-              <Rule />
-              <StatBlock label="Cache read" value={fmt.k(s.cache_read_total)} />
-              <StatBlock label="Cache 5m"   value={fmt.k(s.ephemeral_5m_total)} />
-              <StatBlock label="Cache 1h"   value={fmt.k(s.ephemeral_1h_total)} />
+            {/* Cost per turn + model summary strip */}
+            <div className="strip strip-tight" style={{ marginBottom: 0 }}>
+              <StatBlock
+                label="Total Input"
+                value={fmt.k(s.total_input_tokens)}
+                footnote="tokens into the model"
+              />
+              <StatBlock
+                label="Total Output"
+                value={fmt.k(s.total_output_tokens)}
+                footnote="tokens generated"
+              />
+              <StatBlock
+                label="Cache read"
+                value={fmt.k(s.cache_read_total)}
+                footnote="0.10× input cost"
+              />
+              <StatBlock
+                label="Cache 5m"
+                value={fmt.k(s.ephemeral_5m_total)}
+                footnote="1.25× input cost"
+              />
+              <StatBlock
+                label="Cache 1h"
+                value={fmt.k(s.ephemeral_1h_total)}
+                footnote="2.5× input cost"
+                accent
+              />
+              <StatBlock
+                label="$ / turn"
+                value={fmt.usd((s.turn_count ?? 0) > 0 ? (s.total_cost ?? 0) / s.turn_count : null)}
+                footnote="amortized"
+              />
             </div>
           </div>
         )}

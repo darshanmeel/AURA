@@ -10,7 +10,8 @@ export function Eyebrow({ children, dot = true }: { children: React.ReactNode; d
 }
 
 export function Rule({ weight = 'hair' }: { weight?: 'hair' | 'thick' }) {
-  return <div className={`rule rule-${weight}`} />
+  // 'hair' maps to the base .rule class; 'thick' adds .rule-thick
+  return <div className={weight === 'thick' ? 'rule rule-thick' : 'rule'} />
 }
 
 export function StatBlock({ label, value, footnote, large = false, accent = false }: { label: string; value: React.ReactNode; footnote?: string; large?: boolean; accent?: boolean }) {

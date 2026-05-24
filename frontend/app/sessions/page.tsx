@@ -8,9 +8,37 @@ function trunc200(s: string | null | undefined): string {
   return s.length > 200 ? s.slice(0, 200) + '…' : s
 }
 
+/**
+ * Defensively unwrap a session_title that may contain raw JSON content-block arrays.
+ * Pattern: '[{"type":"text","text":"..."}]' or '[{"type":"text","text":"..."},...]'
+ * Returns the plain text of the first text block, or the original string.
+ */
+function unwrapTitle(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const s = raw.trim()
+  // Detect JSON content-block array: starts with [{ and contains "type"
+  if (s.startsWith('[{') && s.includes('"type"')) {
+    try {
+      const blocks = JSON.parse(s)
+      if (Array.isArray(blocks)) {
+        const text = blocks
+          .filter((b: any) => b.type === 'text' && b.text)
+          .map((b: any) => b.text as string)
+          .join(' ')
+          .trim()
+        if (text) return trunc200(text)
+      }
+    } catch {
+      // fall through to original
+    }
+  }
+  return trunc200(s)
+}
+
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(false)
   const [q, setQ] = useState('')
   const [provider, setProvider] = useState('')
   const [status, setStatus] = useState('')
@@ -23,10 +51,20 @@ export default function SessionsPage() {
     if (status) params.set('status', status)
     if (sort) params.set('sort', sort)
     setLoading(true)
+    setFetchError(false)
     fetch(`/api/sessions?${params}`)
-      .then(r => r.json())
-      .then(d => { setSessions(d.sessions ?? []); setLoading(false) })
-      .catch(() => setLoading(false))
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
+      .then(d => {
+        setSessions(d.sessions ?? [])
+        setLoading(false)
+      })
+      .catch(() => {
+        setFetchError(true)
+        setLoading(false)
+      })
   }, [q, provider, status, sort])
 
   // Client-side filter for search (server already does provider/status/sort filtering)
@@ -125,6 +163,10 @@ export default function SessionsPage() {
       {/* Sessions table */}
       {loading ? (
         <div className="muted eyebrow" style={{ padding: '24px 0' }}>Loading…</div>
+      ) : fetchError ? (
+        <div className="empty-block" style={{ marginTop: 24 }}>
+          Could not load sessions — the database may not be ready yet. Check that the watcher is running and dbt has completed at least one run.
+        </div>
       ) : (
         <section style={{ paddingTop: 24 }}>
           <table className="ledger ledger-sessions ledger-sessions-full">
@@ -146,8 +188,8 @@ export default function SessionsPage() {
               {filtered.map((s: any) => {
                 // Prefer app_id from dim_apps join; fall back to cwd last segment
                 const appDisplay = s.app_id ?? s.cwd?.split(/[/\\]/).pop()
-                // Prompt preview: session_title fallback chain already handled in SQL
-                const titleText = trunc200(s.session_title)
+                // Prompt preview: defensively unwrap JSON content-block titles
+                const titleText = unwrapTitle(s.session_title)
 
                 return (
                   <tr

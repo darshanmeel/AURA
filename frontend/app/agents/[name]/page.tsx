@@ -16,6 +16,21 @@ function trunc200(s: string | null | undefined): string {
   return s.length > 200 ? s.slice(0, 200) + '…' : s
 }
 
+function unwrapTitle(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const s = raw.trim()
+  if (s.startsWith('[{') && s.includes('"type"')) {
+    try {
+      const blocks = JSON.parse(s)
+      if (Array.isArray(blocks)) {
+        const text = blocks.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string).join(' ').trim()
+        if (text) return trunc200(text)
+      }
+    } catch { /* fall through */ }
+  }
+  return trunc200(s)
+}
+
 function fileKindClass(ext: string | null | undefined): string {
   const e = (ext ?? '').toLowerCase()
   if (e === 'md') return 'file-kind-md'
@@ -275,7 +290,7 @@ export default async function AgentProfilePage({ params }: { params: { name: str
                     </td>
                     <td>
                       <a href={`/sessions/${s.session_id}`} className="sess-title-sm">
-                        {trunc200(s.session_title) || s.session_id?.slice(0, 12)}
+                        {unwrapTitle(s.session_title) || s.session_id?.slice(0, 12)}
                       </a>
                     </td>
                     <td>{s.model ? <ModelPill model={s.model} /> : '—'}</td>

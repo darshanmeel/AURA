@@ -140,10 +140,68 @@ export default async function DashboardPage() {
                   <td style={{ width: 100 }}><TBar pct={(app.total_cost / Math.max(0.001, topApps[0]?.total_cost ?? 1)) * 100} /></td>
                 </ClickableRow>
               ))}
+              {topApps.length === 0 && (
+                <tr><td colSpan={6} className="empty">No app data — dbt mart will populate after next run.</td></tr>
+              )}
             </tbody>
           </table>
 
-
+          {/* Projects ledger — nested rollup under apps, shown only when dim_projects data exists */}
+          {topProjects.length > 0 && (
+            <>
+              <div className="section-head" style={{ marginTop: 32 }}>
+                <h2 className="h-section">Projects — rollup</h2>
+                <span className="section-meta">{topProjects.length} project{topProjects.length !== 1 ? 's' : ''} · apps nested within</span>
+              </div>
+              <table className="ledger">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Project</th>
+                    <th className="num">Apps</th>
+                    <th className="num">Sessions</th>
+                    <th className="num">Turns</th>
+                    <th className="num">Cost</th>
+                    <th>Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topProjects.map((proj: any, i: number) => (
+                    <React.Fragment key={proj.project_id ?? i}>
+                      <tr>
+                        <td className="muted">{String(i + 1).padStart(2, '0')}</td>
+                        <td>
+                          <div className="strong">{proj.project_name ?? proj.project_id}</div>
+                          {proj.project_id && proj.project_name !== proj.project_id && (
+                            <div className="tiny muted mono">{proj.project_id}</div>
+                          )}
+                        </td>
+                        <td className="num">{fmt.n((proj.apps ?? []).length)}</td>
+                        <td className="num">{fmt.n(proj.session_count)}</td>
+                        <td className="num">{fmt.n(proj.total_turns)}</td>
+                        <td className="num strong">{fmt.usd(proj.total_cost)}</td>
+                        <td style={{ width: 100 }}><TBar pct={(proj.total_cost / Math.max(0.001, topProjects[0]?.total_cost ?? 1)) * 100} /></td>
+                      </tr>
+                      {/* Nested apps under this project */}
+                      {(proj.apps ?? []).map((a: any) => (
+                        <ClickableRow key={a.app_id} href={`/apps/${encodeURIComponent(a.app_id)}`}>
+                          <td className="muted" style={{ paddingLeft: 20, fontSize: 11 }}>↳</td>
+                          <td className="muted" style={{ paddingLeft: 16 }}>
+                            <div style={{ fontSize: 12 }}>{a.app_name ?? a.app_id}</div>
+                          </td>
+                          <td />
+                          <td className="num muted" style={{ fontSize: 12 }}>{fmt.n(a.session_count)}</td>
+                          <td className="num muted" style={{ fontSize: 12 }}>{fmt.n(a.total_turns)}</td>
+                          <td className="num muted" style={{ fontSize: 12 }}>{fmt.usd(a.total_cost)}</td>
+                          <td><TBar pct={(a.total_cost / Math.max(0.001, proj.total_cost ?? 1)) * 100} /></td>
+                        </ClickableRow>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
 
           <Rule />
 
@@ -182,15 +240,28 @@ export default async function DashboardPage() {
           {/* Files */}
           <div className="section-head" style={{ marginTop: 32 }}>
             <h2 className="h-section">Files — most edited</h2>
-            <span className="section-meta">top {topFiles.length} files touched</span>
+            <span className="section-meta">top {topFiles.slice(0, 8).length} of {topFiles.length} files</span>
           </div>
-          <ul className="files-list" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {topFiles.slice(0, 8).map((f: any) => (
-              <li key={f.file_path} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center' }}>
-                <span className="mono file-path">{f.file_path?.split(/[/\\]/).pop() ?? f.file_path}</span>
-                <span className="mono muted">{f.edits} edits</span>
-              </li>
-            ))}
+          <ul className="files-list">
+            {topFiles.slice(0, 8).map((f: any) => {
+              const ext = f.file_ext ?? f.file_path?.split('.').pop() ?? ''
+              const maxEdits = Math.max(...topFiles.slice(0, 8).map((x: any) => x.edits ?? 0), 1)
+              return (
+                <li key={f.file_path} className="file-row">
+                  <span className={`file-kind file-kind-${ext}`}>{ext || '?'}</span>
+                  <span className="mono file-path" title={f.file_path}>
+                    {f.file_path?.split(/[/\\]/).slice(-3).join('/') ?? f.file_path}
+                  </span>
+                  <span className="file-bar">
+                    <span className="file-bar-fill" style={{ width: `${((f.edits ?? 0) / maxEdits) * 100}%` }} />
+                  </span>
+                  <span className="mono file-edits">{f.edits} edits</span>
+                </li>
+              )
+            })}
+            {topFiles.length === 0 && (
+              <li className="empty-block">No file data — fact_session_files will populate after dbt runs.</li>
+            )}
           </ul>
 
           <Rule />
