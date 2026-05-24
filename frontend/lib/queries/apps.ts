@@ -4,6 +4,10 @@ export async function getApps() {
   return query(`SELECT * FROM dim_apps ORDER BY total_cost DESC`)
 }
 
+export async function getAppsTotalCost() {
+  return queryOne(`SELECT SUM(total_cost) AS total_cost FROM dim_sessions`)
+}
+
 export async function getApp(appId: string) {
   return queryOne(`
     SELECT da.*, dp.project_name

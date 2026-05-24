@@ -75,17 +75,15 @@ turn_stats AS (
         sl.tenant_id,
         sl.app_id,
         sl.project_id,
-        COUNT(DISTINCT ft.session_id)          AS session_count,
-        SUM(ft.output_tokens)                  AS total_output_tokens,
-        COALESCE(SUM(mc.calculated_cost), 0)   AS total_cost,
-        COUNT(*)                               AS total_turns,
-        MIN(ft.assistant_ts)                   AS first_seen,
-        MAX(ft.assistant_ts)                   AS last_seen
+        COUNT(DISTINCT ft.session_id)              AS session_count,
+        SUM(ft.output_tokens)                      AS total_output_tokens,
+        COALESCE(SUM(ft.calculated_cost), 0)       AS total_cost,
+        COUNT(*)                                   AS total_turns,
+        MIN(ft.assistant_ts)                       AS first_seen,
+        MAX(ft.assistant_ts)                       AS last_seen
     FROM session_list sl
     JOIN {{ ref('fact_turns') }} ft
         ON ft.session_id = sl.session_id AND ft.tenant_id = sl.tenant_id
-    LEFT JOIN {{ ref('fact_model_calls') }} mc
-        ON mc.event_uuid = ft.assistant_event_uuid AND mc.tenant_id = ft.tenant_id
     GROUP BY sl.tenant_id, sl.app_id, sl.project_id
 )
 SELECT

@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import { Eyebrow, Rule, StatBlock } from '../../components/atoms'
 import { fmt } from '../../lib/fmt'
-import { getApps } from '../../lib/queries/apps'
+import { getApps, getAppsTotalCost } from '../../lib/queries/apps'
 
 function trunc200(s: string | null | undefined): string {
   if (!s) return ''
@@ -10,10 +10,12 @@ function trunc200(s: string | null | undefined): string {
 }
 
 export default async function AppsPage() {
-  let apps: any[] = []
-  try { apps = await getApps() as any[] } catch {}
+  let apps: any[] = [], totalCostRow: any = null
+  try {
+    [apps, totalCostRow] = await Promise.all([getApps(), getAppsTotalCost()])
+  } catch {}
 
-  const totalCost = apps.reduce((a: number, x: any) => a + (x.total_cost ?? 0), 0)
+  const totalCost: number = totalCostRow?.total_cost ?? apps.reduce((a: number, x: any) => a + (x.total_cost ?? 0), 0)
 
   return (
     <div className="page-layout">

@@ -11,8 +11,8 @@ export async function getDashboardKPIs() {
       COUNT(DISTINCT cwd)                                                   AS total_apps,
       COUNT(DISTINCT person_id)                                             AS total_people,
       COUNT(DISTINCT CASE WHEN status = 'active' THEN session_id END)      AS active_sessions,
-      AVG(CASE WHEN total_input_tokens > 0
-          THEN cache_read_total::DOUBLE / total_input_tokens END)           AS cache_hit_rate,
+      SUM(cache_read_total)::DOUBLE /
+          NULLIF(SUM(cache_read_total + ephemeral_5m_total + ephemeral_1h_total), 0) AS cache_hit_rate,
       SUM(ephemeral_5m_total)                                               AS cache_5m_total,
       SUM(ephemeral_1h_total)                                               AS cache_1h_total,
       MIN(start_ts)                                                         AS first_session,
