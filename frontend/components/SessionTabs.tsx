@@ -189,12 +189,112 @@ function fmtSecs(s: number | null | undefined): string {
   return `${Math.floor(n / 60)}m ${n % 60}s`
 }
 
+// ── Compact message bubble for Messages tab ──────────────────────────────────
+const PREVIEW_LEN = 280
+
+function MessageTurn({ turn }: { turn: any }) {
+  const [userExpanded, setUserExpanded] = React.useState(false)
+  const [assistExpanded, setAssistExpanded] = React.useState(false)
+
+  const userText: string = turn.user_prompt ?? ''
+  const assistText: string = turn.assistant_response ?? ''
+  const userTrunc = !userExpanded && userText.length > PREVIEW_LEN
+  const assistTrunc = !assistExpanded && assistText.length > PREVIEW_LEN
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {/* Turn header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="mono muted" style={{ fontSize: 11, minWidth: 36 }}>
+          #{String(turn.turn_number).padStart(3, '0')}
+        </span>
+        <span className="mono muted" style={{ fontSize: 11 }}>{fmt.time(turn.assistant_ts)}</span>
+        <span className="muted" style={{ fontSize: 11 }}>·</span>
+        <span className="mono muted" style={{ fontSize: 11 }}>
+          {fmt.k((turn.input_tokens ?? 0) + (turn.output_tokens ?? 0))} tok
+        </span>
+        {turn.context_pct > 0 && (
+          <>
+            <span className="muted" style={{ fontSize: 11 }}>·</span>
+            <span className={`mono`} style={{ fontSize: 11, color: (turn.context_pct ?? 0) > 0.7 ? 'var(--warn)' : 'var(--muted)' }}>
+              {fmt.pct(turn.context_pct)} ctx
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* User bubble */}
+      {userText && (
+        <div style={{ marginLeft: 44 }}>
+          <div style={{
+            padding: '8px 12px',
+            borderLeft: '2px solid var(--accent-2)',
+            background: 'rgba(239,230,214,0.06)',
+            borderRadius: '0 4px 4px 0',
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: 'var(--muted)', marginBottom: 4, fontFamily: 'var(--mono)' }}>
+              USER
+            </div>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {userTrunc ? userText.slice(0, PREVIEW_LEN) + '…' : userText}
+            </p>
+            {userText.length > PREVIEW_LEN && (
+              <button
+                onClick={() => setUserExpanded(!userExpanded)}
+                style={{ marginTop: 4, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'var(--accent)', padding: 0 }}
+              >
+                {userExpanded ? '▲ collapse' : `▼ show all (${userText.length} chars)`}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Assistant bubble */}
+      {assistText && (
+        <div style={{ marginLeft: 44 }}>
+          <div style={{
+            padding: '8px 12px',
+            borderLeft: '2px solid var(--ink-2)',
+            borderRadius: '0 4px 4px 0',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
+                CLAUDE
+              </div>
+              <span className="mono muted" style={{ fontSize: 10 }}>{fmt.k(turn.output_tokens)} out</span>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--ink)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {assistTrunc ? assistText.slice(0, PREVIEW_LEN) + '…' : assistText}
+            </p>
+            {assistText.length > PREVIEW_LEN && (
+              <button
+                onClick={() => setAssistExpanded(!assistExpanded)}
+                style={{ marginTop: 4, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'var(--accent)', padding: 0 }}
+              >
+                {assistExpanded ? '▲ collapse' : `▼ show all (${assistText.length} chars)`}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* No text placeholder */}
+      {!userText && !assistText && (
+        <div className="muted" style={{ marginLeft: 44, fontSize: 12, fontStyle: 'italic' }}>
+          No message text retained for this turn.
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main component ───────────────────────────────────────────────────────────
 export function SessionTabs({
   s, turns, errors, toolExecutions, gitCommands,
   files, toolMix, prompts = [], filesWithAttribution = []
 }: SessionTabsProps) {
-  const [activeTab, setActiveTab] = useState<'details' | 'prompts' | 'agents' | 'files' | 'tokens' | 'tools' | 'git'>('details')
+  const [activeTab, setActiveTab] = useState<'details' | 'prompts' | 'agents' | 'errors' | 'files' | 'tokens' | 'tools' | 'git' | 'messages'>('details')
 
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
   const maxEdits     = Math.max(...(files ?? []).map((f: any) => f.edit_count ?? 0), 1)
@@ -205,13 +305,15 @@ export function SessionTabs({
   return (
     <div className="session-tabs-container">
       <div className="tab-nav">
-        <button className={`tab-btn ${activeTab === 'details' ? 'active' : ''}`} onClick={() => setActiveTab('details')}>Details</button>
-        <button className={`tab-btn ${activeTab === 'prompts' ? 'active' : ''}`} onClick={() => setActiveTab('prompts')}>Prompts</button>
-        <button className={`tab-btn ${activeTab === 'agents'  ? 'active' : ''}`} onClick={() => setActiveTab('agents')}>Agents</button>
-        <button className={`tab-btn ${activeTab === 'files'   ? 'active' : ''}`} onClick={() => setActiveTab('files')}>Files</button>
-        <button className={`tab-btn ${activeTab === 'tokens'  ? 'active' : ''}`} onClick={() => setActiveTab('tokens')}>Tokens</button>
-        <button className={`tab-btn ${activeTab === 'tools'   ? 'active' : ''}`} onClick={() => setActiveTab('tools')}>Tools</button>
-        <button className={`tab-btn ${activeTab === 'git'     ? 'active' : ''}`} onClick={() => setActiveTab('git')}>Git</button>
+        <button className={`tab-btn ${activeTab === 'details'  ? 'active' : ''}`} onClick={() => setActiveTab('details')}>Details</button>
+        <button className={`tab-btn ${activeTab === 'messages' ? 'active' : ''}`} onClick={() => setActiveTab('messages')}>Messages{turns.length > 0 ? ` (${turns.length})` : ''}</button>
+        <button className={`tab-btn ${activeTab === 'prompts'  ? 'active' : ''}`} onClick={() => setActiveTab('prompts')}>Prompts</button>
+        <button className={`tab-btn ${activeTab === 'agents'   ? 'active' : ''}`} onClick={() => setActiveTab('agents')}>Agents</button>
+        <button className={`tab-btn ${activeTab === 'errors'   ? 'active' : ''}`} onClick={() => setActiveTab('errors')}>Errors{errors.length > 0 ? ` (${errors.length})` : ''}</button>
+        <button className={`tab-btn ${activeTab === 'files'    ? 'active' : ''}`} onClick={() => setActiveTab('files')}>Files</button>
+        <button className={`tab-btn ${activeTab === 'tokens'   ? 'active' : ''}`} onClick={() => setActiveTab('tokens')}>Tokens</button>
+        <button className={`tab-btn ${activeTab === 'tools'    ? 'active' : ''}`} onClick={() => setActiveTab('tools')}>Tools</button>
+        <button className={`tab-btn ${activeTab === 'git'      ? 'active' : ''}`} onClick={() => setActiveTab('git')}>Git</button>
       </div>
 
       <div className="tab-content">
@@ -277,40 +379,67 @@ export function SessionTabs({
               <div className="empty-block" style={{ marginBottom: 24 }}>No turn data retained for this session.</div>
             )}
 
-            {/* Errors for this session */}
-            <div style={{ marginTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          </div>
+        )}
+
+        {/* ── ERRORS TAB ──────────────────────────────────────────────── */}
+        {activeTab === 'errors' && (
+          <div className="tab-panel">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
               <Eyebrow>Errors · this session</Eyebrow>
-              <span className="muted" style={{ fontSize: 12 }}>{errors.length} events</span>
+              <span className="muted" style={{ fontSize: 12 }}>{errors.length} event{errors.length !== 1 ? 's' : ''}</span>
             </div>
-            {errors.length === 0
-              ? <div className="empty-block">No error events recorded — a clean run.</div>
-              : (
-                <table className="ledger-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Severity</th>
-                      <th>Kind</th>
-                      <th>Tool</th>
-                      <th>Message</th>
-                      <th className="num">Turn</th>
+            {errors.length === 0 ? (
+              <div className="empty-block">No error events recorded — a clean run.</div>
+            ) : (
+              <table className="ledger-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Severity</th>
+                    <th>Kind</th>
+                    <th>Tool</th>
+                    <th>Message</th>
+                    <th className="num">Turn</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {errors.map((e: any, i: number) => (
+                    <tr key={i}>
+                      <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(e.ts)}</td>
+                      <td><SeverityTag severity={e.severity} /></td>
+                      <td><span className="kind-tag mono">{e.kind}</span></td>
+                      <td>{e.tool ? <span className="mono" style={{ color: 'var(--accent)' }}>{e.tool}</span> : <span className="muted">—</span>}</td>
+                      <td className="muted err-msg mono" style={{ fontSize: 11 }}>{e.message}</td>
+                      <td className="num">#{e.turn_number}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {errors.map((e: any, i: number) => (
-                      <tr key={i}>
-                        <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(e.ts)}</td>
-                        <td><SeverityTag severity={e.severity} /></td>
-                        <td><span className="kind-tag mono">{e.kind}</span></td>
-                        <td>{e.tool ? <span className="mono" style={{ color: 'var(--accent)' }}>{e.tool}</span> : <span className="muted">—</span>}</td>
-                        <td className="muted err-msg mono" style={{ fontSize: 11 }}>{e.message}</td>
-                        <td className="num">#{e.turn_number}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )
-            }
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {/* ── MESSAGES TAB ────────────────────────────────────────────── */}
+        {activeTab === 'messages' && (
+          <div className="tab-panel">
+            {turns.length === 0 ? (
+              <div className="empty-block">No message data retained for this session.</div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 20 }}>
+                  <Eyebrow>Conversation · turn by turn</Eyebrow>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {turns.length} turn{turns.length !== 1 ? 's' : ''}{turns.length >= 60 ? ' · first 60 shown' : ''}
+                  </span>
+                </div>
+                <div className="messages-feed" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                  {turns.map((t: any) => (
+                    <MessageTurn key={t.turn_number} turn={t} />
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -356,7 +485,8 @@ export function SessionTabs({
                         )}
 
                         {/* Response meta chips */}
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+                          {p.model_primary && <ModelPill model={p.model_primary} />}
                           {p.turn_count != null && (
                             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
                               <b style={{ color: 'var(--ink)' }}>{p.turn_count}</b> turns

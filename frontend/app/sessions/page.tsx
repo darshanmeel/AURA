@@ -37,6 +37,7 @@ function unwrapTitle(raw: string | null | undefined): string {
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<any[]>([])
+  const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState(false)
   const [q, setQ] = useState('')
@@ -59,6 +60,7 @@ export default function SessionsPage() {
       })
       .then(d => {
         setSessions(d.sessions ?? [])
+        setStats(d.stats ?? null)
         setLoading(false)
       })
       .catch(() => {
@@ -70,11 +72,11 @@ export default function SessionsPage() {
   // Client-side filter for search (server already does provider/status/sort filtering)
   const filtered = useMemo(() => sessions, [sessions])
 
-  // Aggregate stats over the filtered set
-  const totalCost    = filtered.reduce((a, s) => a + (s.total_cost ?? 0), 0)
-  const totalTurns   = filtered.reduce((a, s) => a + (s.turn_count ?? 0), 0)
-  const totalCommits = filtered.reduce((a, s) => a + (s.commits ?? 0), 0)
-  const totalErrors  = filtered.reduce((a, s) => a + (s.errors ?? 0), 0)
+  // Use server-side totals (all matching rows, not just the 200 returned)
+  const totalCost    = stats?.total_cost    ?? filtered.reduce((a, s) => a + (s.total_cost ?? 0), 0)
+  const totalTurns   = stats?.total_turns   ?? filtered.reduce((a, s) => a + (s.turn_count ?? 0), 0)
+  const totalCommits = stats?.total_commits ?? filtered.reduce((a, s) => a + (s.commits ?? 0), 0)
+  const totalCount   = stats?.total_count   ?? filtered.length
 
   return (
     <div className="page-layout">
@@ -83,7 +85,8 @@ export default function SessionsPage() {
         <Eyebrow>Sessions · all providers</Eyebrow>
         <div className="strap-right">
           <span className="strap-pill is-muted">
-            {filtered.length} session{filtered.length !== 1 ? 's' : ''}
+            {fmt.n(totalCount)} session{totalCount !== 1 ? 's' : ''}
+            {filtered.length < totalCount ? ` · showing ${fmt.n(filtered.length)}` : ''}
           </span>
         </div>
       </section>
@@ -151,11 +154,14 @@ export default function SessionsPage() {
 
       {/* 5-stat strip for filtered set */}
       <section className="strip strip-tight">
-        <StatBlock label="Sessions" value={fmt.n(filtered.length)} footnote="matching filters" />
-        <StatBlock label="Cost" value={fmt.usd(totalCost)} footnote="across set" accent />
+        <StatBlock
+          label="Sessions"
+          value={fmt.n(totalCount)}
+          footnote={filtered.length < totalCount ? `showing ${fmt.n(filtered.length)} of ${fmt.n(totalCount)}` : 'matching filters'}
+        />
+        <StatBlock label="Cost" value={fmt.usd(totalCost)} footnote="all matching sessions" accent />
         <StatBlock label="Turns" value={fmt.n(totalTurns)} footnote="aggregate" />
         <StatBlock label="Commits" value={fmt.n(totalCommits)} footnote="aggregate" />
-        <StatBlock label="Errors" value={fmt.n(totalErrors)} footnote="across set" />
       </section>
 
       <Rule />

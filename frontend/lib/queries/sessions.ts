@@ -45,6 +45,30 @@ export async function getSessions(filters: SessionFilters = {}) {
   `, params)
 }
 
+export async function getSessionsStats(filters: SessionFilters = {}) {
+  const conditions: string[] = []
+  const params: unknown[] = []
+
+  if (filters.provider) { conditions.push('ds.provider = ?'); params.push(filters.provider) }
+  if (filters.agent)    { conditions.push('ds.agent = ?');    params.push(filters.agent) }
+  if (filters.status)   { conditions.push('ds.status = ?');   params.push(filters.status) }
+  if (filters.q) {
+    conditions.push("(ds.session_title ILIKE ? OR ds.session_id ILIKE ? OR ds.cwd ILIKE ?)")
+    params.push(`%${filters.q}%`, `%${filters.q}%`, `%${filters.q}%`)
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  return queryOne(`
+    SELECT
+      COUNT(*) as total_count,
+      SUM(total_cost) as total_cost,
+      SUM(turn_count) as total_turns,
+      SUM(commits) as total_commits
+    FROM dim_sessions ds
+    ${where}
+  `, params)
+}
+
 export async function getSession(id: string) {
   const session = await queryOne(`
     SELECT * FROM dim_sessions WHERE session_id = ?

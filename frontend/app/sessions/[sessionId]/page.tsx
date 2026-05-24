@@ -53,6 +53,9 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
   } catch {}
   if (!s) notFound()
 
+  const cacheHitTot = (s.cache_read_total ?? 0) + (s.ephemeral_5m_total ?? 0) + (s.ephemeral_1h_total ?? 0)
+  const cacheHitRate = cacheHitTot > 0 ? (s.cache_read_total ?? 0) / cacheHitTot : null
+
   const displayTitle = unwrapTitle(s.session_title ?? s.session_id)
   // Split title on · for italic second part, matching design pattern
   const [titlePart, ...restParts] = displayTitle.split('·')
@@ -135,7 +138,7 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
         <StatBlock label="Output tokens" value={fmt.k(s.total_output_tokens)} footnote={s.turn_count > 0 ? `avg ${Math.round((s.total_output_tokens ?? 0) / s.turn_count)} / turn` : undefined} />
         <StatBlock label="Cache 1h" value={fmt.k(s.ephemeral_1h_total)} footnote="paid 2.5× input" accent />
         <StatBlock label="Cache 5m" value={fmt.k(s.ephemeral_5m_total)} footnote="paid 1.25× input" />
-        <StatBlock label="Cache hit" value={fmt.pct(s.total_input_tokens > 0 ? s.cache_read_total / s.total_input_tokens : null)} footnote="read / (read + write)" />
+        <StatBlock label="Cache hit" value={fmt.pct(cacheHitRate)} footnote="read / (read + write)" />
         <StatBlock label="$ / turn" value={fmt.usd(s.turn_count > 0 ? s.total_cost / s.turn_count : null)} footnote="amortized" />
       </section>
 
