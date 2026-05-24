@@ -24,6 +24,19 @@ export async function getAppPrompts(appId: string, limit = 6) {
   `, [appId, limit])
 }
 
+export async function getAppAllPrompts(appId: string, limit = 200) {
+  return query(`
+    SELECT prompt_idx, prompt_ts, duration_seconds, prompt_text_200, summary_200,
+           agent, model_primary, turn_count, tool_call_count,
+           files_edited, output_tokens_total, cost_total, errors_caught,
+           is_overkill, overkill_reason, complexity_tier, session_id
+    FROM fact_prompts
+    WHERE app_id = ?
+    ORDER BY prompt_ts DESC
+    LIMIT ?
+  `, [appId, limit])
+}
+
 export async function getAgentPrompts(agent: string, limit = 6) {
   return query(`
     SELECT prompt_idx, prompt_ts, prompt_text_200, app_id, cost_total,

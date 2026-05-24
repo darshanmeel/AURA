@@ -5,7 +5,7 @@ import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill } from '../../../compone
 import { ProfileBackRail } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'
 import { getApp, getAppSessions } from '../../../lib/queries/apps'
-import { getAppPrompts } from '../../../lib/queries/prompts'
+import { getAppPrompts, getAppAllPrompts } from '../../../lib/queries/prompts'
 import { query } from '../../../lib/db'
 
 function trunc200(s: string | null | undefined): string {
@@ -30,18 +30,21 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
   let sessions: any[] = []
   let agents: any[] = []
   let prompts: any[] = []
+  let allPrompts: any[] = []
 
   try {
-    const [a, s, ag, pr] = await Promise.all([
+    const [a, s, ag, pr, allPr] = await Promise.all([
       getApp(appId),
       getAppSessions(appId),
       getAppAgents(appId),
       getAppPrompts(appId, 6),
+      getAppAllPrompts(appId, 200),
     ])
     app = a
     sessions = s as any[]
     agents = ag
     prompts = pr as any[]
+    allPrompts = allPr as any[]
   } catch {}
 
   if (!app) notFound()
@@ -221,6 +224,89 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
             )}
           </div>
         </aside>
+      </section>
+
+      {/* All prompts — full chronological feed for this app */}
+      <Rule weight="thick" />
+      <section style={{ marginTop: 32 }}>
+        <div className="section-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 16 }}>
+          <h2 className="h-section">All prompts — {app.app_name ?? app.app_id}</h2>
+          <span className="section-meta muted">
+            {allPrompts.length} prompt{allPrompts.length !== 1 ? 's' : ''} · newest first
+          </span>
+        </div>
+        {allPrompts.length === 0 ? (
+          <div className="empty-block">No prompts recorded for this app yet.</div>
+        ) : (
+          <ol className="prompts prompts-wide" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {allPrompts.map((p: any, i: number) => (
+              <li key={p.session_id + '_' + (p.prompt_idx ?? i)} style={{ display: 'flex', gap: 24, padding: '20px 0', borderTop: '1px solid var(--rule)' }}>
+                {/* Left aside */}
+                <div style={{ flexShrink: 0, width: 140, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div className="mono muted" style={{ fontSize: 11 }}>
+                    {fmt.date(p.prompt_ts)} · {fmt.time(p.prompt_ts)}
+                  </div>
+                  {p.agent && <AgentLink name={p.agent} />}
+                  {p.model_primary && <ModelPill model={p.model_primary} />}
+                  {p.is_overkill && (
+                    <span style={{ display: 'inline-block', padding: '2px 6px', fontSize: 10, fontFamily: 'var(--mono)', color: 'var(--warn)', border: '1px solid var(--warn)', borderRadius: 2, marginTop: 4 }}>
+                      OVERKILL
+                    </span>
+                  )}
+                  <a href={`/sessions/${p.session_id}`} className="tiny mono muted" style={{ marginTop: 4 }}>
+                    → {p.session_id?.slice(0, 8)}
+                  </a>
+                </div>
+
+                {/* Body */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {p.prompt_text_200 && (
+                    <p style={{ fontStyle: 'italic', color: 'var(--ink-2)', marginBottom: 10, lineHeight: 1.6 }}>
+                      &ldquo;{trunc200(p.prompt_text_200)}&rdquo;
+                    </p>
+                  )}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                    {p.turn_count != null && (
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        <b style={{ color: 'var(--ink)' }}>{p.turn_count}</b> turns
+                      </span>
+                    )}
+                    {p.tool_call_count != null && (
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        · <b style={{ color: 'var(--ink)' }}>{p.tool_call_count}</b> tools
+                      </span>
+                    )}
+                    {p.files_edited != null && (
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        · <b style={{ color: 'var(--ink)' }}>{p.files_edited}</b> files
+                      </span>
+                    )}
+                    {p.output_tokens_total != null && (
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        · <b style={{ color: 'var(--ink)' }}>{fmt.k(p.output_tokens_total)}</b> tokens
+                      </span>
+                    )}
+                    {p.cost_total != null && (
+                      <span style={{ fontSize: 12, color: 'var(--accent)' }}>
+                        · {fmt.usd(p.cost_total)}
+                      </span>
+                    )}
+                    {p.errors_caught > 0 && (
+                      <span style={{ fontSize: 12, color: 'var(--warn)' }}>
+                        · {p.errors_caught} error{p.errors_caught !== 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </div>
+                  {p.summary_200 && (
+                    <p className="muted" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
+                      {trunc200(p.summary_200)}
+                    </p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
       </section>
     </div>
   )
