@@ -1,5 +1,20 @@
 import { query, queryOne } from '../db'
 
+export async function getAllAgents() {
+  return query(`
+    SELECT
+      agent,
+      app_id,
+      project_id,
+      session_count,
+      total_turns,
+      total_cost,
+      total_tool_calls
+    FROM dim_agents
+    ORDER BY total_cost DESC
+  `)
+}
+
 export async function getAgent(name: string) {
   return queryOne(`
     SELECT agent,

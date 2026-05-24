@@ -82,13 +82,15 @@ export async function getTopAgents() {
   return query(`
     SELECT
       agent,
-      COUNT(DISTINCT session_id) AS session_count,
-      SUM(total_cost)            AS total_cost,
-      SUM(turn_count)            AS total_turns
-    FROM dim_sessions
-    GROUP BY agent
+      app_id,
+      project_id,
+      session_count,
+      total_turns,
+      total_cost,
+      total_tool_calls
+    FROM dim_agents
     ORDER BY total_cost DESC
-    LIMIT ${TOP_N}
+    LIMIT 20
   `)
 }
 

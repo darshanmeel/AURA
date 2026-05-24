@@ -209,13 +209,15 @@ export default async function DashboardPage() {
           {/* Agents */}
           <div className="section-head" style={{ marginTop: 32 }}>
             <h2 className="h-section">Agents — by cost</h2>
-            <span className="section-meta">{topAgents.length} agents · click any name →</span>
+            <span className="section-meta">{topAgents.length} rows · <a href="/agents" className="inline-link">see all →</a></span>
           </div>
           <table className="ledger">
             <thead>
               <tr>
                 <th>#</th>
                 <th>Agent</th>
+                <th>App</th>
+                <th>Project</th>
                 <th className="num">Sessions</th>
                 <th className="num">Turns</th>
                 <th className="num">Cost</th>
@@ -224,9 +226,15 @@ export default async function DashboardPage() {
             </thead>
             <tbody>
               {topAgents.map((ag: any, i: number) => (
-                <tr key={ag.agent} className="clickable">
+                <tr key={`${ag.agent}-${ag.app_id}`} className="clickable">
                   <td className="muted">{String(i + 1).padStart(2, "0")}</td>
                   <td><AgentLink name={ag.agent} /></td>
+                  <td>
+                    {ag.app_id
+                      ? <a href={`/apps/${encodeURIComponent(ag.app_id)}`} className="inline-link" style={{ fontSize: 12 }}>{ag.app_id}</a>
+                      : <span className="muted">—</span>}
+                  </td>
+                  <td className="muted" style={{ fontSize: 12 }}>{ag.project_id ?? '—'}</td>
                   <td className="num">{fmt.n(ag.session_count)}</td>
                   <td className="num">{fmt.n(ag.total_turns)}</td>
                   <td className="num strong">{fmt.usd(ag.total_cost)}</td>
