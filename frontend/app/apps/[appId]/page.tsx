@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation'
 import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'
-import { getApp, getAppSessions } from '../../../lib/queries/apps'
+import { getApp, getAppSessions, getProjectApps } from '../../../lib/queries/apps'
 import { getAppPrompts, getAppAllPrompts } from '../../../lib/queries/prompts'
 import { query } from '../../../lib/db'
 
@@ -46,6 +46,7 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
   let agents: any[] = []
   let prompts: any[] = []
   let allPrompts: any[] = []
+  let siblingApps: any[] = []
 
   try {
     const [a, s, ag, pr, allPr] = await Promise.all([
@@ -60,6 +61,9 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
     agents = ag
     prompts = pr as any[]
     allPrompts = allPr as any[]
+    if (app?.project_id) {
+      siblingApps = (await getProjectApps(app.project_id) as any[]).filter(x => x.app_id !== appId)
+    }
   } catch {}
 
   if (!app) notFound()
@@ -78,7 +82,7 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
           </span>
           <div>
             <Eyebrow dot={false}>
-              app · {app.project_id ?? app.app_id} · owner —
+              app · <span style={{ color: 'var(--accent)' }}>{app.project_name ?? app.project_id ?? app.app_id}</span> · project
             </Eyebrow>
             <h1 className="display display-sm" style={{ margin: '8px 0 12px' }}>
               {app.app_name ?? app.app_id}
@@ -157,6 +161,48 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
             </table>
           ) : (
             <div className="empty-block">No agent data yet — dim_agents will populate after dbt runs.</div>
+          )}
+
+          {/* Other apps in this project */}
+          {(app.project_id && (siblingApps.length > 0)) && (
+            <>
+              <Rule />
+              <div className="section-head" style={{ marginTop: 28 }}>
+                <h2 className="h-section">Project — {app.project_name ?? app.project_id}</h2>
+                <span className="section-meta">{siblingApps.length + 1} app{siblingApps.length + 1 !== 1 ? 's' : ''} in this project</span>
+              </div>
+              <table className="ledger">
+                <thead>
+                  <tr>
+                    <th>App</th>
+                    <th className="num">Sessions</th>
+                    <th className="num">Turns</th>
+                    <th className="num">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Current app row */}
+                  <tr style={{ background: 'rgba(217,183,135,0.06)' }}>
+                    <td><span className="strong">{app.app_name ?? app.app_id}</span> <span className="muted tiny">← this app</span></td>
+                    <td className="num">{fmt.n(app.session_count)}</td>
+                    <td className="num">{fmt.n(app.total_turns)}</td>
+                    <td className="num strong">{fmt.usd(app.total_cost)}</td>
+                  </tr>
+                  {siblingApps.map((a: any) => (
+                    <tr key={a.app_id} className="clickable" onClick={() => {}}>
+                      <td>
+                        <a href={`/apps/${encodeURIComponent(a.app_id)}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+                          {a.app_name ?? a.app_id}
+                        </a>
+                      </td>
+                      <td className="num">{fmt.n(a.session_count)}</td>
+                      <td className="num">{fmt.n(a.total_turns)}</td>
+                      <td className="num">{fmt.usd(a.total_cost)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
           )}
 
           <Rule />

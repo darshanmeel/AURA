@@ -8,6 +8,15 @@ export async function getAppsTotalCost() {
   return queryOne(`SELECT SUM(total_cost) AS total_cost FROM dim_sessions`)
 }
 
+export async function getProjectApps(projectId: string) {
+  return query(`
+    SELECT app_id, app_name, total_cost, session_count, total_turns
+    FROM dim_apps
+    WHERE project_id = ?
+    ORDER BY total_cost DESC
+  `, [projectId])
+}
+
 export async function getApp(appId: string) {
   return queryOne(`
     SELECT da.*, dp.project_name

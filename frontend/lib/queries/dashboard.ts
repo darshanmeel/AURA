@@ -53,24 +53,25 @@ export async function getTopApps() {
 }
 
 export async function getTopProjects() {
-  const projects = await query(`
-    SELECT project_id, project_name, total_cost, session_count, total_turns
-    FROM dim_projects
-    ORDER BY total_cost DESC
-    LIMIT 10
-  `)
-  
-  const apps = await query(`
-    SELECT cwd as app_id, regexp_extract(cwd, '[^/\\\\]+$') as app_name, 
-           SUM(total_cost) as total_cost, SUM(turn_count) as total_turns,
-           COUNT(DISTINCT session_id) as session_count, project_id
-    FROM dim_sessions
-    GROUP BY cwd, project_id
-  `)
+  const [projects, apps] = await Promise.all([
+    query(`
+      SELECT project_id, project_name, total_cost, session_count, total_turns, app_count
+      FROM dim_projects
+      ORDER BY total_cost DESC
+      LIMIT 10
+    `),
+    query(`
+      SELECT app_id, app_name, total_cost, total_turns, session_count, project_id
+      FROM dim_apps
+      ORDER BY total_cost DESC
+    `)
+  ])
 
   return projects.map((p: any) => ({
     ...p,
-    apps: apps.filter((a: any) => a.project_id === p.project_id).sort((a: any, b: any) => b.total_cost - a.total_cost)
+    apps: apps
+      .filter((a: any) => a.project_id === p.project_id)
+      .sort((a: any, b: any) => (b.total_cost ?? 0) - (a.total_cost ?? 0))
   }))
 }
 

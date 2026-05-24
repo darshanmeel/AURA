@@ -148,61 +148,60 @@ export default async function DashboardPage() {
             </tbody>
           </table>
 
-          {/* Projects ledger — nested rollup under apps, shown only when dim_projects data exists */}
-          {topProjects.length > 0 && (
-            <>
-              <div className="section-head" style={{ marginTop: 32 }}>
-                <h2 className="h-section">Projects — rollup</h2>
-                <span className="section-meta">{topProjects.length} project{topProjects.length !== 1 ? 's' : ''} · apps nested within</span>
-              </div>
-              <table className="ledger">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Project</th>
-                    <th className="num">Apps</th>
-                    <th className="num">Sessions</th>
-                    <th className="num">Turns</th>
-                    <th className="num">Cost</th>
-                    <th>Share</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topProjects.map((proj: any, i: number) => (
-                    <React.Fragment key={proj.project_id ?? i}>
-                      <tr>
-                        <td className="muted">{String(i + 1).padStart(2, '0')}</td>
-                        <td>
-                          <div className="strong">{proj.project_name ?? proj.project_id}</div>
-                          {proj.project_id && proj.project_name !== proj.project_id && (
-                            <div className="tiny muted mono">{proj.project_id}</div>
-                          )}
+          {/* Projects ledger — nested rollup under apps */}
+          <div className="section-head" style={{ marginTop: 32 }}>
+            <h2 className="h-section">Projects — rollup</h2>
+            <span className="section-meta">{topProjects.length} project{topProjects.length !== 1 ? 's' : ''} · apps nested within</span>
+          </div>
+          {topProjects.length === 0 ? (
+            <div className="empty-block">No project data — dim_projects will populate after dbt runs.</div>
+          ) : (
+            <table className="ledger">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Project</th>
+                  <th className="num">Apps</th>
+                  <th className="num">Sessions</th>
+                  <th className="num">Turns</th>
+                  <th className="num">Cost</th>
+                  <th>Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topProjects.map((proj: any, i: number) => (
+                  <React.Fragment key={proj.project_id ?? i}>
+                    <tr>
+                      <td className="muted">{String(i + 1).padStart(2, '0')}</td>
+                      <td>
+                        <div className="strong">{proj.project_name ?? proj.project_id}</div>
+                        {proj.project_id && proj.project_name !== proj.project_id && (
+                          <div className="tiny muted mono">{proj.project_id}</div>
+                        )}
+                      </td>
+                      <td className="num">{fmt.n(proj.app_count ?? (proj.apps ?? []).length)}</td>
+                      <td className="num">{fmt.n(proj.session_count)}</td>
+                      <td className="num">{fmt.n(proj.total_turns)}</td>
+                      <td className="num strong">{fmt.usd(proj.total_cost)}</td>
+                      <td style={{ width: 100 }}><TBar pct={(proj.total_cost / Math.max(0.001, topProjects[0]?.total_cost ?? 1)) * 100} /></td>
+                    </tr>
+                    {(proj.apps ?? []).map((a: any) => (
+                      <ClickableRow key={a.app_id} href={`/apps/${encodeURIComponent(a.app_id)}`}>
+                        <td className="muted" style={{ paddingLeft: 20, fontSize: 11 }}>↳</td>
+                        <td className="muted" style={{ paddingLeft: 16 }}>
+                          <div style={{ fontSize: 12 }}>{a.app_name ?? a.app_id}</div>
                         </td>
-                        <td className="num">{fmt.n((proj.apps ?? []).length)}</td>
-                        <td className="num">{fmt.n(proj.session_count)}</td>
-                        <td className="num">{fmt.n(proj.total_turns)}</td>
-                        <td className="num strong">{fmt.usd(proj.total_cost)}</td>
-                        <td style={{ width: 100 }}><TBar pct={(proj.total_cost / Math.max(0.001, topProjects[0]?.total_cost ?? 1)) * 100} /></td>
-                      </tr>
-                      {/* Nested apps under this project */}
-                      {(proj.apps ?? []).map((a: any) => (
-                        <ClickableRow key={a.app_id} href={`/apps/${encodeURIComponent(a.app_id)}`}>
-                          <td className="muted" style={{ paddingLeft: 20, fontSize: 11 }}>↳</td>
-                          <td className="muted" style={{ paddingLeft: 16 }}>
-                            <div style={{ fontSize: 12 }}>{a.app_name ?? a.app_id}</div>
-                          </td>
-                          <td />
-                          <td className="num muted" style={{ fontSize: 12 }}>{fmt.n(a.session_count)}</td>
-                          <td className="num muted" style={{ fontSize: 12 }}>{fmt.n(a.total_turns)}</td>
-                          <td className="num muted" style={{ fontSize: 12 }}>{fmt.usd(a.total_cost)}</td>
-                          <td><TBar pct={(a.total_cost / Math.max(0.001, proj.total_cost ?? 1)) * 100} /></td>
-                        </ClickableRow>
-                      ))}
-                    </React.Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </>
+                        <td />
+                        <td className="num muted" style={{ fontSize: 12 }}>{fmt.n(a.session_count)}</td>
+                        <td className="num muted" style={{ fontSize: 12 }}>{fmt.n(a.total_turns)}</td>
+                        <td className="num muted" style={{ fontSize: 12 }}>{fmt.usd(a.total_cost)}</td>
+                        <td><TBar pct={((a.total_cost ?? 0) / Math.max(0.001, proj.total_cost ?? 1)) * 100} /></td>
+                      </ClickableRow>
+                    ))}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
           )}
 
           <Rule />
