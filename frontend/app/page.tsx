@@ -40,9 +40,11 @@ export default async function DashboardPage() {
   const cache1h = kpis.cache_1h_total ?? 0
   const cacheR = kpis.cache_read_total ?? 0
 
-  const anthropicCost = providers.find(p => p.provider.toLowerCase() === 'anthropic')?.cost ?? 0
-  const googleCost = providers.find(p => p.provider.toLowerCase() === 'google')?.cost ?? 0
-  const heroLede = `${providers.length} providers — Anthropic (${fmt.usd(anthropicCost)}) vs Google (${fmt.usd(googleCost)}) over ${totalDays} days.`
+  const providerSummary = providers
+    .slice(0, 3)
+    .map(p => `${p.provider ?? 'Unknown'} (${fmt.usd(p.cost)})`)
+    .join(' · ')
+  const heroLede = `${providers.length} provider${providers.length !== 1 ? 's' : ''} — ${providerSummary || '—'} — ${fmt.usd(kpis.total_cost)} total over ${totalDays} days.`
 
   return (
     <div className="page page-layout">
@@ -76,7 +78,7 @@ export default async function DashboardPage() {
             <div className="hero-stat-eyebrow">{totalDays}-DAY SPEND</div>
             <div className="hero-stat-value">{fmt.usd(kpis.total_cost)}</div>
             <div className="hero-stat-foot">
-              <em>against</em> {fmt.k(kpis.total_input_tokens + kpis.total_output_tokens)} tokens · {fmt.n(kpis.total_tool_calls)} tool calls · {fmt.n(kpis.total_commits ?? 0)} commits
+              <em>against</em> {fmt.k((kpis.total_input_tokens ?? 0) + (kpis.total_output_tokens ?? 0))} tokens · {fmt.n(kpis.total_tool_calls)} tool calls · {fmt.n(kpis.total_commits ?? 0)} commits
             </div>
             <div className="hero-stat-spark">
               <DailyChart data={dailySpend} />
