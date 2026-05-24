@@ -19,7 +19,7 @@ WITH session_stats AS (
         SUM(ephemeral_1h_input_tokens)           AS ephemeral_1h_total,
         SUM(cache_read_input_tokens)             AS cache_read_total
     FROM {{ ref('fact_turns') }}
-    GROUP BY tenant_id, session_id, model, cwd, project_id, git_branch, claude_version
+    GROUP BY tenant_id, session_id, cwd, project_id, git_branch, claude_version
 ),
 aggregated_sessions AS (
     SELECT
@@ -27,7 +27,11 @@ aggregated_sessions AS (
         session_id,
         MIN(start_ts)                            AS start_ts,
         MAX(end_ts)                              AS end_ts,
-        ANY_VALUE(model)                         AS model,
+        -- Pick the model responsible for the most cost in the session.
+        -- model is no longer in the GROUP BY of session_stats, so each row
+        -- carries its own model; ordering by total_cost DESC selects the
+        -- dominant model deterministically.
+        FIRST(model ORDER BY total_cost DESC)    AS model,
         ANY_VALUE(cwd)                           AS cwd,
         ANY_VALUE(project_id)                    AS project_id,
         ANY_VALUE(git_branch)                    AS git_branch,
@@ -104,11 +108,10 @@ skills_per_session AS (
     FROM {{ ref('stg_session_skills') }}
     GROUP BY session_id
 ),
--- Raw session_meta table written by the watcher (person, commits, title).
--- Not a ref() model yet — read directly from the DuckDB table.
+-- Staged session_meta (person, commits, title).
 session_meta_lookup AS (
     SELECT session_id, person_id, person_name, commits
-    FROM session_meta
+    FROM {{ ref('stg_session_meta') }}
 )
 SELECT
     s.tenant_id,

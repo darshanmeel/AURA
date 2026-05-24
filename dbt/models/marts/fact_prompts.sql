@@ -39,7 +39,70 @@ windowed AS (
         )                                              AS prompt_idx
     FROM real_prompts rp
 ),
--- Aggregate everything that happened between prompt_ts and next_prompt_ts.
+-- Aggregate fact_turns metrics across each prompt's span window.
+span_turn_agg AS (
+    SELECT
+        w.prompt_id,
+        COUNT(ft.turn_id)                                            AS turn_count,
+        COALESCE(SUM(ft.tool_count), 0)                              AS tool_call_count,
+        COALESCE(SUM(ft.output_tokens), 0)                           AS output_tokens_total,
+        COALESCE(SUM(ft.calculated_cost), 0)                         AS cost_total,
+        -- First model in span
+        FIRST(ft.model ORDER BY ft.assistant_ts)                     AS model_primary,
+        -- Last assistant response in span (for summary)
+        LAST(ft.assistant_response ORDER BY ft.assistant_ts)         AS last_assistant_response
+    FROM windowed w
+    LEFT JOIN {{ ref('fact_turns') }} ft
+        ON  ft.tenant_id    = w.tenant_id
+        AND ft.session_id   = w.session_id
+        AND ft.assistant_ts >= w.prompt_ts
+        AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
+    GROUP BY w.prompt_id
+),
+-- Count distinct files edited in each span.
+span_file_agg AS (
+    SELECT
+        w.prompt_id,
+        COUNT(DISTINCT json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path')) AS files_edited
+    FROM windowed w
+    LEFT JOIN {{ ref('fact_tool_executions') }} fte
+        ON  fte.session_id    = w.session_id
+        AND fte.tool_call_ts >= w.prompt_ts
+        AND (w.next_prompt_ts IS NULL OR fte.tool_call_ts < w.next_prompt_ts)
+        AND fte.tool_name IN ('Edit', 'Write')
+        AND json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path') IS NOT NULL
+    GROUP BY w.prompt_id
+),
+-- Count errors in each span.
+span_error_agg AS (
+    SELECT
+        w.prompt_id,
+        COUNT(*) AS errors_caught
+    FROM windowed w
+    LEFT JOIN {{ ref('fact_tool_executions') }} fte
+        ON  fte.session_id    = w.session_id
+        AND fte.tool_call_ts >= w.prompt_ts
+        AND (w.next_prompt_ts IS NULL OR fte.tool_call_ts < w.next_prompt_ts)
+        AND fte.is_error = TRUE
+    GROUP BY w.prompt_id
+),
+-- Resolved agent: first agent_resolved in span, ordered by assistant_ts.
+span_agent_agg AS (
+    SELECT
+        w.prompt_id,
+        FIRST(COALESCE(ea.agent_resolved, 'main') ORDER BY ft.assistant_ts) AS agent_resolved
+    FROM windowed w
+    LEFT JOIN {{ ref('fact_turns') }} ft
+        ON  ft.tenant_id    = w.tenant_id
+        AND ft.session_id   = w.session_id
+        AND ft.assistant_ts >= w.prompt_ts
+        AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
+    LEFT JOIN {{ ref('int_event_agent') }} ea
+        ON ea.event_uuid = ft.assistant_event_uuid
+       AND ea.tenant_id  = ft.tenant_id
+    GROUP BY w.prompt_id
+),
+-- Assemble all span aggregates back onto windowed prompts.
 spans AS (
     SELECT
         w.tenant_id,
@@ -52,110 +115,31 @@ spans AS (
             || CASE WHEN length(w.prompt_text) > 200 THEN '…' ELSE '' END   AS prompt_text_200,
         w.prompt_text                                                       AS prompt_text_full,
         length(w.prompt_text)                                               AS prompt_chars,
-        -- model from first assistant turn in span
-        (
-            SELECT ft.model
-            FROM {{ ref('fact_turns') }} ft
-            WHERE ft.session_id  = w.session_id
-              AND ft.tenant_id   = w.tenant_id
-              AND ft.assistant_ts >= w.prompt_ts
-              AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-            ORDER BY ft.assistant_ts
-            LIMIT 1
-        )                                                                   AS model_primary,
-        -- 200-char summary from LAST assistant response in span
-        (
-            SELECT
-                SUBSTR(ft.assistant_response, 1, 200)
-                || CASE WHEN length(ft.assistant_response) > 200 THEN '…' ELSE '' END
-            FROM {{ ref('fact_turns') }} ft
-            WHERE ft.session_id  = w.session_id
-              AND ft.tenant_id   = w.tenant_id
-              AND ft.assistant_ts >= w.prompt_ts
-              AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-              AND ft.assistant_response IS NOT NULL
-            ORDER BY ft.assistant_ts DESC
-            LIMIT 1
-        )                                                                   AS summary_200,
-        -- turn count in span
-        (
-            SELECT COUNT(*)
-            FROM {{ ref('fact_turns') }} ft
-            WHERE ft.session_id  = w.session_id
-              AND ft.tenant_id   = w.tenant_id
-              AND ft.assistant_ts >= w.prompt_ts
-              AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-        )                                                                   AS turn_count,
-        -- tool call count in span
-        (
-            SELECT COALESCE(SUM(ft.tool_count), 0)
-            FROM {{ ref('fact_turns') }} ft
-            WHERE ft.session_id  = w.session_id
-              AND ft.tenant_id   = w.tenant_id
-              AND ft.assistant_ts >= w.prompt_ts
-              AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-        )                                                                   AS tool_call_count,
-        -- output tokens in span
-        (
-            SELECT COALESCE(SUM(ft.output_tokens), 0)
-            FROM {{ ref('fact_turns') }} ft
-            WHERE ft.session_id  = w.session_id
-              AND ft.tenant_id   = w.tenant_id
-              AND ft.assistant_ts >= w.prompt_ts
-              AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-        )                                                                   AS output_tokens_total,
-        -- cost in span
-        (
-            SELECT COALESCE(SUM(ft.calculated_cost), 0)
-            FROM {{ ref('fact_turns') }} ft
-            WHERE ft.session_id  = w.session_id
-              AND ft.tenant_id   = w.tenant_id
-              AND ft.assistant_ts >= w.prompt_ts
-              AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-        )                                                                   AS cost_total,
-        -- distinct files edited in span
-        (
-            SELECT COUNT(DISTINCT json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path'))
-            FROM {{ ref('fact_tool_executions') }} fte
-            WHERE fte.session_id    = w.session_id
-              AND fte.tool_call_ts >= w.prompt_ts
-              AND (w.next_prompt_ts IS NULL OR fte.tool_call_ts < w.next_prompt_ts)
-              AND fte.tool_name IN ('Edit', 'Write')
-              AND json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path') IS NOT NULL
-        )                                                                   AS files_edited,
-        -- errors in span
-        (
-            SELECT COUNT(*)
-            FROM {{ ref('fact_tool_executions') }} fte
-            WHERE fte.session_id    = w.session_id
-              AND fte.tool_call_ts >= w.prompt_ts
-              AND (w.next_prompt_ts IS NULL OR fte.tool_call_ts < w.next_prompt_ts)
-              AND fte.is_error = TRUE
-        )                                                                   AS errors_caught
+        sta.model_primary,
+        SUBSTR(sta.last_assistant_response, 1, 200)
+            || CASE WHEN length(sta.last_assistant_response) > 200 THEN '…' ELSE '' END
+                                                                            AS summary_200,
+        sta.turn_count,
+        sta.tool_call_count,
+        sta.output_tokens_total,
+        sta.cost_total,
+        COALESCE(sfa.files_edited, 0)                                       AS files_edited,
+        COALESCE(sea.errors_caught, 0)                                      AS errors_caught
     FROM windowed w
+    LEFT JOIN span_turn_agg  sta ON sta.prompt_id = w.prompt_id
+    LEFT JOIN span_file_agg  sfa ON sfa.prompt_id = w.prompt_id
+    LEFT JOIN span_error_agg sea ON sea.prompt_id = w.prompt_id
 ),
--- Attach resolved agent (from first assistant turn's event) and app/project.
+-- Attach resolved agent (from span_agent_agg) and app/project.
 with_agent_and_app AS (
     SELECT
         s.*,
-        -- resolved agent on the first assistant turn in span
-        (
-            SELECT COALESCE(ea.agent_resolved, 'main')
-            FROM {{ ref('fact_turns') }} ft
-            JOIN {{ ref('int_event_agent') }} ea
-                ON ea.event_uuid = ft.assistant_event_uuid
-               AND ea.tenant_id  = ft.tenant_id
-            WHERE ft.session_id  = s.session_id
-              AND ft.tenant_id   = s.tenant_id
-              AND ft.assistant_ts >= s.prompt_ts
-              AND (s.next_prompt_ts IS NULL OR ft.assistant_ts < s.next_prompt_ts)
-            ORDER BY ft.assistant_ts
-            LIMIT 1
-        )                                                                   AS agent,
+        COALESCE(saa.agent_resolved, 'main')                                AS agent,
         da.app_id,
         da.project_id,
         EXTRACT(EPOCH FROM (COALESCE(s.next_prompt_ts, NOW()) - s.prompt_ts)) AS duration_seconds
     FROM spans s
+    LEFT JOIN span_agent_agg saa ON saa.prompt_id = s.prompt_id
     LEFT JOIN {{ ref('dim_sessions') }} ds
         USING (tenant_id, session_id)
     LEFT JOIN {{ ref('dim_apps') }} da
