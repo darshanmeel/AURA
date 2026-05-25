@@ -5,6 +5,11 @@ import {
   getRecentErrors, getTopFiles, getTopPeople
 } from '../../../lib/queries/dashboard'
 
+// Force dynamic: at build time /data is not mounted, so the DB cannot be
+// opened. Without this, Next.js statically prerenders the empty-fallback
+// response and serves it forever. Every request must re-query the DB.
+export const dynamic = 'force-dynamic'
+
 // Per-query isolation: a single missing mart (e.g. before first successful dbt run)
 // must not 500 the whole endpoint. Each query falls back to a safe empty value.
 async function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
