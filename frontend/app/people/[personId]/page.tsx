@@ -6,9 +6,12 @@ import {
   AgentLink, AppLink, PersonLink, TBar,
 } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
+import { RangeFilter } from '../../../components/RangeFilter'
 import { fmt } from '../../../lib/fmt'
+import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
 import {
   getPerson, getPersonSessions, getPersonAgents, getPersonApps, getPersonPrompts,
+  getPersonRangeAggregates,
 } from '../../../lib/queries/people'
 
 function trunc200(s: string | null | undefined): string {
@@ -16,40 +19,48 @@ function trunc200(s: string | null | undefined): string {
   return s.length > 200 ? s.slice(0, 200) + '…' : s
 }
 
-export default async function PersonProfilePage({ params }: { params: { personId: string } }) {
+export default async function PersonProfilePage({
+  params, searchParams,
+}: { params: { personId: string }; searchParams?: { range?: string } }) {
   const personId = decodeURIComponent(params.personId)
+  const range = parseRange(searchParams?.range)
+  const since = rangeSince(range)
 
   let person: any = null
   let sessions: any[] = []
   let agentList: any[] = []
   let appList: any[] = []
   let prompts: any[] = []
+  let rangeAgg: any = null
 
   try {
-    const [p, s, ag, ap] = await Promise.all([
+    const [p, s, ag, ap, ra] = await Promise.all([
       getPerson(personId),
-      getPersonSessions(personId),
-      getPersonAgents(personId),
-      getPersonApps(personId),
+      getPersonSessions(personId, since),
+      getPersonAgents(personId, since),
+      getPersonApps(personId, since),
+      getPersonRangeAggregates(personId, since),
     ])
     person = p
     sessions = s as any[]
     agentList = ag as any[]
     appList = ap as any[]
+    rangeAgg = ra
   } catch {}
 
   // Prompts — guard: fact_prompts may not exist yet
   try {
-    prompts = (await getPersonPrompts(personId, 8)) as any[]
+    prompts = (await getPersonPrompts(personId, 8, since)) as any[]
   } catch {}
 
   if (!person) notFound()
 
-  const totalCost = Number(person.total_cost ?? 0)
-  const totalTurns = Number(person.total_turns ?? 0)
-  const totalTokens = Number(person.total_output_tokens ?? 0)
-  const totalCommits = Number(person.total_commits ?? 0)
-  const sessionCount = Number(person.session_count ?? 0)
+  // Range-aware KPIs (fall back to lifetime when since is null).
+  const totalCost = Number((rangeAgg?.total_cost ?? person.total_cost) ?? 0)
+  const totalTurns = Number((rangeAgg?.total_turns ?? person.total_turns) ?? 0)
+  const totalTokens = Number((rangeAgg?.total_output_tokens ?? person.total_output_tokens) ?? 0)
+  const totalCommits = Number((rangeAgg?.total_commits ?? person.total_commits) ?? 0)
+  const sessionCount = Number((rangeAgg?.session_count ?? person.session_count) ?? 0)
   const appCount = appList.length
   const agentCount = agentList.length
 
@@ -61,6 +72,19 @@ export default async function PersonProfilePage({ params }: { params: { personId
   return (
     <div className="page-layout">
       <ProfileBackRail href="/people" label="Back to people" />
+
+      {/* Masthead strap with RangeFilter */}
+      <section className="masthead-strap">
+        <Eyebrow dot={false}>
+          Person · {person.person_name ?? person.person_id} · {rangeLabel(range)}
+        </Eyebrow>
+        <div className="strap-right">
+          <RangeFilter current={range} />
+          <span className="strap-pill is-muted">
+            {fmt.n(sessionCount)} session{sessionCount !== 1 ? 's' : ''} · {fmt.usd(totalCost)}
+          </span>
+        </div>
+      </section>
 
       {/* Profile head */}
       <section className="profile-head">
@@ -84,7 +108,7 @@ export default async function PersonProfilePage({ params }: { params: { personId
         </div>
         <div className="profile-head-right">
           <div className="hero-stat hero-stat-detail">
-            <div className="hero-stat-eyebrow">14-DAY SPEND</div>
+            <div className="hero-stat-eyebrow">{rangeLabel(range).toUpperCase()} SPEND</div>
             <div className="hero-stat-value">{fmt.usd(totalCost)}</div>
             <div className="hero-stat-foot">
               <em>across</em> {fmt.k(totalTokens)} tokens · {fmt.n(totalTurns)} turns
@@ -97,11 +121,11 @@ export default async function PersonProfilePage({ params }: { params: { personId
 
       {/* 6-stat strip */}
       <section className="strip">
-        <StatBlock label="Sessions" value={sessionCount} footnote="14 days" />
+        <StatBlock label="Sessions" value={sessionCount} footnote={rangeLabel(range)} />
         <StatBlock label="Apps" value={appCount} footnote="worked in" />
         <StatBlock label="Agents" value={agentCount} footnote="delegated to" />
-        <StatBlock label="Commits" value={totalCommits} footnote="aggregate" accent />
-        <StatBlock label="Tokens" value={fmt.k(totalTokens)} footnote="aggregate" />
+        <StatBlock label="Commits" value={totalCommits} footnote={rangeLabel(range)} accent />
+        <StatBlock label="Tokens" value={fmt.k(totalTokens)} footnote={rangeLabel(range)} />
         <StatBlock label="Errors" value="—" footnote="across sessions" />
       </section>
 

@@ -3,9 +3,14 @@ export const dynamic = 'force-dynamic'
 import { notFound } from 'next/navigation'
 import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill, PersonLink } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
+import { RangeFilter } from '../../../components/RangeFilter'
 import { ClickableRow } from '../../../components/ClickableRow'
 import { fmt } from '../../../lib/fmt'
-import { getApp, getAppSessions, getProjectApps, getAppPeople } from '../../../lib/queries/apps'
+import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
+import {
+  getApp, getAppSessions, getProjectApps, getAppPeople,
+  getAppRangeAggregates,
+} from '../../../lib/queries/apps'
 import { getAppPrompts, getAppAllPrompts } from '../../../lib/queries/prompts'
 import { query } from '../../../lib/db'
 
@@ -29,18 +34,43 @@ function unwrapTitle(raw: string | null | undefined): string {
   return trunc200(s)
 }
 
-async function getAppAgents(appId: string) {
+async function getAppAgents(appId: string, since: string | null = null) {
+  // Fast path: lifetime mart.
+  if (!since) {
+    try {
+      return await query(`
+        SELECT agent, session_count, total_turns, total_cost, total_tool_calls
+        FROM dim_agents WHERE app_id = ?
+        ORDER BY total_cost DESC
+      `, [appId]) as any[]
+    } catch (e) { console.error('[app-profile] getAppAgents failed:', e); return [] }
+  }
+  // Range path: re-aggregate from dim_sessions for this app's cwds.
   try {
     return await query(`
-      SELECT agent, session_count, total_turns, total_cost, total_tool_calls
-      FROM dim_agents WHERE app_id = ?
+      SELECT
+        ds.agent                       AS agent,
+        COUNT(DISTINCT ds.session_id)  AS session_count,
+        SUM(ds.turn_count)             AS total_turns,
+        SUM(ds.total_cost)             AS total_cost,
+        SUM(ds.tools_used)             AS total_tool_calls
+      FROM dim_sessions ds
+      LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+      WHERE da.app_id = ?
+        AND ds.start_ts >= '${since}'
+        AND ds.agent IS NOT NULL
+      GROUP BY ds.agent
       ORDER BY total_cost DESC
     `, [appId]) as any[]
-  } catch (e) { console.error('[app-profile] getAppAgents failed:', e); return [] }
+  } catch (e) { console.error('[app-profile] getAppAgents (range) failed:', e); return [] }
 }
 
-export default async function AppProfilePage({ params }: { params: { appId: string } }) {
+export default async function AppProfilePage({
+  params, searchParams,
+}: { params: { appId: string }; searchParams?: { range?: string } }) {
   const appId = decodeURIComponent(params.appId)
+  const range = parseRange(searchParams?.range)
+  const since = rangeSince(range)
 
   let app: any = null
   let sessions: any[] = []
@@ -49,15 +79,17 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
   let prompts: any[] = []
   let allPrompts: any[] = []
   let siblingApps: any[] = []
+  let rangeAgg: any = null
 
   try {
-    const [a, s, ag, pe, pr, allPr] = await Promise.all([
+    const [a, s, ag, pe, pr, allPr, ra] = await Promise.all([
       getApp(appId),
-      getAppSessions(appId),
-      getAppAgents(appId),
-      getAppPeople(appId),
-      getAppPrompts(appId, 6),
-      getAppAllPrompts(appId, 200),
+      getAppSessions(appId, undefined, since),
+      getAppAgents(appId, since),
+      getAppPeople(appId, since),
+      getAppPrompts(appId, 6, since),
+      getAppAllPrompts(appId, 200, since),
+      getAppRangeAggregates(appId, since),
     ])
     app = a
     sessions = s as any[]
@@ -65,6 +97,7 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
     people = pe as any[]
     prompts = pr as any[]
     allPrompts = allPr as any[]
+    rangeAgg = ra
     if (app?.project_id) {
       siblingApps = (await getProjectApps(app.project_id) as any[]).filter(x => x.app_id !== appId)
     }
@@ -72,11 +105,32 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
 
   if (!app) notFound()
 
+  // Range-aware KPIs (fall back to lifetime when since is null).
+  const kpiCost = (rangeAgg?.total_cost ?? app.total_cost) ?? 0
+  const kpiSessions = (rangeAgg?.session_count ?? app.session_count) ?? 0
+  const kpiTurns = (rangeAgg?.total_turns ?? app.total_turns) ?? 0
+  const kpiTokens = (rangeAgg?.total_output_tokens ?? app.total_output_tokens) ?? 0
+  const kpiCommits = rangeAgg?.commits ?? app.commits
+  const kpiAgentCount = (rangeAgg?.agent_count ?? app.agent_count) ?? 0
+
   const maxAgentCost = agents.length > 0 ? agents[0].total_cost ?? 0 : 1
 
   return (
     <div className="page-layout">
       <ProfileBackRail href="/apps" label="Back to apps" />
+
+      {/* Masthead strap with RangeFilter */}
+      <section className="masthead-strap">
+        <Eyebrow dot={false}>
+          App · {app.app_name ?? app.app_id} · {rangeLabel(range)}
+        </Eyebrow>
+        <div className="strap-right">
+          <RangeFilter current={range} />
+          <span className="strap-pill is-muted">
+            {fmt.n(kpiSessions)} session{kpiSessions !== 1 ? 's' : ''} · {fmt.usd(kpiCost)}
+          </span>
+        </div>
+      </section>
 
       {/* Profile head */}
       <section className="profile-head">
@@ -100,10 +154,10 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
         </div>
         <div className="profile-head-right">
           <div className="hero-stat hero-stat-detail">
-            <div className="hero-stat-eyebrow">14-DAY SPEND</div>
-            <div className="hero-stat-value">{fmt.usd(app.total_cost)}</div>
+            <div className="hero-stat-eyebrow">{rangeLabel(range).toUpperCase()} SPEND</div>
+            <div className="hero-stat-value">{fmt.usd(kpiCost)}</div>
             <div className="hero-stat-foot">
-              <em>across</em> {fmt.k(app.total_output_tokens ?? 0)} tokens · {fmt.n(app.total_turns)} turns
+              <em>across</em> {fmt.k(kpiTokens)} tokens · {fmt.n(kpiTurns)} turns
             </div>
           </div>
         </div>
@@ -113,12 +167,12 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
 
       {/* 6-stat strip */}
       <section className="strip">
-        <StatBlock label="Sessions" value={fmt.n(app.session_count)} footnote="14 days" />
+        <StatBlock label="Sessions" value={fmt.n(kpiSessions)} footnote={rangeLabel(range)} />
         <StatBlock label="People" value={people.length > 0 ? fmt.n(people.length) : '—'} footnote="contributors" />
-        <StatBlock label="Agents" value={fmt.n(app.agent_count)} footnote="in rotation" accent />
-        <StatBlock label="Commits" value={app.commits != null ? fmt.n(app.commits) : '—'} footnote="aggregate" />
-        <StatBlock label="Tokens" value={fmt.k(app.total_output_tokens ?? 0)} footnote="aggregate" />
-        <StatBlock label="Errors" value={app.errors != null ? fmt.n(app.errors) : '—'} footnote="across sessions" />
+        <StatBlock label="Agents" value={fmt.n(kpiAgentCount)} footnote="in rotation" accent />
+        <StatBlock label="Commits" value={kpiCommits != null ? fmt.n(kpiCommits) : '—'} footnote={rangeLabel(range)} />
+        <StatBlock label="Tokens" value={fmt.k(kpiTokens)} footnote={rangeLabel(range)} />
+        <StatBlock label="Errors" value={app.errors != null ? fmt.n(app.errors) : '—'} footnote="lifetime" />
       </section>
 
       <Rule weight="thick" />

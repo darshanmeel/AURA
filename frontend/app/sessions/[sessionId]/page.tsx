@@ -10,6 +10,9 @@ import {
   getSessionFiles, getSessionToolMix, getSessionGitCommands,
   getSessionToolExecutions,
   getSessionPrompts as getSessionPromptsWithTools,
+  getSessionPromptHeroes,
+  getSessionThinkingBlocks,
+  getSessionErrorResolutions,
 } from '../../../lib/queries/sessions'
 import { getSessionPrompts } from '../../../lib/queries/prompts'
 import { getSessionFilesWithAttribution } from '../../../lib/queries/files'
@@ -37,21 +40,35 @@ function unwrapTitle(raw: string | null | undefined): string {
   return s.length > 120 ? s.slice(0, 120) + '…' : s
 }
 
-export default async function SessionDetailPage({ params }: { params: { sessionId: string } }) {
+export default async function SessionDetailPage({
+  params, searchParams,
+}: { params: { sessionId: string }; searchParams?: { turns?: string } }) {
   const id = params.sessionId
+  const allTurns = searchParams?.turns === 'all'
   let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = [], toolExecutions: any[] = [], prompts: any[] = [], filesWithAttribution: any[] = [], promptsWithTools: any[] = []
+  let heroes: any = { most_expensive: null, longest: null, most_errored: null }
+  let thinkingBlocks: any[] = []
+  let errorResolutions: any[] = []
   try {
-    const [sess, t, e, f, tm, gc, te, pr, fa, pwt] = await Promise.all([
-      getSession(id), getSessionTurns(id), getSessionErrors(id),
+    const [sess, t, e, f, tm, gc, te, pr, fa, pwt, hp, tb, er] = await Promise.all([
+      getSession(id),
+      getSessionTurns(id, { all: allTurns }),
+      getSessionErrors(id),
       getSessionFiles(id), getSessionToolMix(id), getSessionGitCommands(id),
       getSessionToolExecutions(id), getSessionPrompts(id),
       getSessionFilesWithAttribution(id),
       getSessionPromptsWithTools(id),
+      getSessionPromptHeroes(id),
+      getSessionThinkingBlocks(id),
+      getSessionErrorResolutions(id),
     ])
     s = sess; turns = t as any[]; errors = e as any[]
     files = f as any[]; toolMix = tm as any[]; gitCommands = gc as any[]
     toolExecutions = te as any[]; prompts = pr as any[]
     filesWithAttribution = fa as any[]; promptsWithTools = pwt as any[]
+    heroes = hp ?? heroes
+    thinkingBlocks = tb as any[]
+    errorResolutions = er as any[]
   } catch {}
   if (!s) notFound()
 
@@ -157,6 +174,10 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
         prompts={prompts}
         promptsWithTools={promptsWithTools}
         filesWithAttribution={filesWithAttribution}
+        heroes={heroes}
+        thinkingBlocks={thinkingBlocks}
+        errorResolutions={errorResolutions}
+        allTurns={allTurns}
       />
     </div>
   )

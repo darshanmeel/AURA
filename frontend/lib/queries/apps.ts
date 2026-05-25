@@ -65,27 +65,48 @@ export async function getApp(appId: string) {
   `, [appId])
 }
 
-export async function getAppAgents(appId: string) {
+export async function getAppAgents(appId: string, since: string | null = null) {
+  // Fast path: lifetime mart.
+  if (!since) {
+    return query(`
+      SELECT agent, session_count, total_turns, total_cost, total_tool_calls
+      FROM dim_agents WHERE app_id = ?
+      ORDER BY total_cost DESC
+    `, [appId])
+  }
+  // Range path: re-aggregate from dim_sessions for this app's cwds.
   return query(`
-    SELECT agent, session_count, total_turns, total_cost, total_tool_calls
-    FROM dim_agents WHERE app_id = ?
+    SELECT
+      ds.agent                            AS agent,
+      COUNT(DISTINCT ds.session_id)       AS session_count,
+      SUM(ds.turn_count)                  AS total_turns,
+      SUM(ds.total_cost)                  AS total_cost,
+      SUM(ds.tools_used)                  AS total_tool_calls
+    FROM dim_sessions ds
+    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+    WHERE da.app_id = ?
+      AND ds.start_ts >= '${since}'
+      AND ds.agent IS NOT NULL
+    GROUP BY ds.agent
     ORDER BY total_cost DESC
   `, [appId])
 }
 
-export async function getAppSessions(appId: string, limit = APP_SESSIONS_LIMIT) {
+export async function getAppSessions(appId: string, limit = APP_SESSIONS_LIMIT, since: string | null = null) {
+  const sinceClause = since ? ` AND ds.start_ts >= '${since}'` : ''
   return query(`
     SELECT ds.session_id, ds.start_ts, ds.end_ts, ds.model, ds.agent,
            ds.turn_count, ds.total_cost, ds.session_title
     FROM dim_sessions ds
     LEFT JOIN dim_apps da ON da.cwd = ds.cwd
-    WHERE da.app_id = ?
+    WHERE da.app_id = ?${sinceClause}
     ORDER BY ds.start_ts DESC
     LIMIT ?
   `, [appId, limit])
 }
 
-export async function getAppPeople(appId: string) {
+export async function getAppPeople(appId: string, since: string | null = null) {
+  const sinceClause = since ? ` AND ds.start_ts >= '${since}'` : ''
   return query(`
     SELECT ds.person_id, ds.person_name,
            COUNT(DISTINCT ds.session_id)  AS session_count,
@@ -94,8 +115,29 @@ export async function getAppPeople(appId: string) {
     FROM dim_sessions ds
     LEFT JOIN dim_apps da ON da.cwd = ds.cwd
     WHERE da.app_id = ?
-      AND ds.person_id IS NOT NULL
+      AND ds.person_id IS NOT NULL${sinceClause}
     GROUP BY ds.person_id, ds.person_name
     ORDER BY total_cost DESC
+  `, [appId])
+}
+
+/**
+ * Range-aware aggregates for the app header KPIs. Returns null for `since=null`
+ * to let the page fall back to the lifetime `dim_apps` mart.
+ */
+export async function getAppRangeAggregates(appId: string, since: string | null) {
+  if (!since) return null
+  return queryOne(`
+    SELECT
+      COUNT(DISTINCT ds.session_id)                  AS session_count,
+      SUM(ds.turn_count)                             AS total_turns,
+      SUM(ds.total_cost)                             AS total_cost,
+      SUM(ds.total_output_tokens)                    AS total_output_tokens,
+      SUM(ds.commits)                                AS commits,
+      COUNT(DISTINCT ds.agent)                       AS agent_count
+    FROM dim_sessions ds
+    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+    WHERE da.app_id = ?
+      AND ds.start_ts >= '${since}'
   `, [appId])
 }

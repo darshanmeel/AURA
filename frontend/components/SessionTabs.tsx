@@ -4,6 +4,36 @@ import React, { useState } from 'react'
 import { Eyebrow, Rule, StatBlock, ModelPill, SeverityTag, BarRow, AgentLink } from './atoms'
 import { fmt } from '../lib/fmt'
 
+// ── Types for new enriched data ──────────────────────────────────────────────
+interface ToolSignatureEntry { tool_name: string; calls: number }
+interface CostByModelEntry   { model: string; cost: number }
+interface PromptHero {
+  prompt_id: string
+  prompt_idx: number
+  prompt_text_200: string | null
+  agent: string | null
+  value: number | null
+}
+interface PromptHeroes {
+  most_expensive: PromptHero | null
+  longest: PromptHero | null
+  most_errored: PromptHero | null
+}
+interface ThinkingBlock { assistant_event_uuid: string; thinking_text: string }
+interface ErrorResolution {
+  ts: string; kind: string; tool: string | null; message: string
+  severity: string | null; turn_number: number; resolved_in_turns: number | null
+}
+interface ToolExecution {
+  tool_name: string
+  tool_call_ts: string | Date
+  tool_result_ts?: string | Date | null
+  execution_duration_seconds?: number | null
+  is_error: boolean
+  assistant_event_uuid?: string | null
+  file_path?: string | null
+}
+
 interface SessionTabsProps {
   s: any
   turns: any[]
@@ -15,6 +45,58 @@ interface SessionTabsProps {
   prompts?: any[]
   promptsWithTools?: any[]
   filesWithAttribution?: any[]
+  heroes?: PromptHeroes
+  thinkingBlocks?: ThinkingBlock[]
+  errorResolutions?: ErrorResolution[]
+  allTurns?: boolean
+}
+
+// ── Shortcut letters for tool-signature chips ────────────────────────────────
+const TOOL_SHORTCUT: Record<string, string> = {
+  Read: 'R', Edit: 'E', Bash: 'B', Glob: 'G', Grep: 'Gr',
+  Write: 'W', Agent: 'A', Task: 'T', NotebookEdit: 'NE',
+  WebFetch: 'WF', WebSearch: 'WS', TodoWrite: 'TW',
+}
+function toolShortcut(name: string): string {
+  return TOOL_SHORTCUT[name] ?? name.slice(0, 2)
+}
+
+// ── Cache-hit color ──────────────────────────────────────────────────────────
+function cacheColor(rate: number | null | undefined): string {
+  if (rate == null) return 'var(--muted)'
+  if (rate >= 0.8) return 'var(--accent-green, #4caf82)'
+  if (rate >= 0.5) return 'var(--accent)'
+  return 'var(--warn)'
+}
+
+// ── Compact chip primitive used across the prompt row ────────────────────────
+function Chip({
+  children, color, border, title, mono = true,
+}: {
+  children: React.ReactNode
+  color?: string
+  border?: string
+  title?: string
+  mono?: boolean
+}) {
+  return (
+    <span
+      title={title}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+        padding: '1px 6px',
+        border: `1px solid ${border ?? 'var(--rule)'}`,
+        borderRadius: 3,
+        fontSize: 10,
+        color: color ?? 'var(--ink-2)',
+        fontFamily: mono ? 'var(--mono)' : 'inherit',
+        lineHeight: 1.5,
+        background: 'rgba(255,255,255,0.02)',
+      }}
+    >
+      {children}
+    </span>
+  )
 }
 
 // ── Title unwrap helper (guards against raw JSON content-block arrays) ────────
@@ -190,10 +272,219 @@ function fmtSecs(s: number | null | undefined): string {
   return `${Math.floor(n / 60)}m ${n % 60}s`
 }
 
+// ── Sub-second seconds formatter for TTFT ────────────────────────────────────
+function fmtSecsPrecise(s: number | null | undefined): string {
+  if (s == null) return '—'
+  if (s < 10) return `${s.toFixed(2)}s`
+  if (s < 60) return `${s.toFixed(1)}s`
+  return fmtSecs(s)
+}
+
+// ── Hero strip: 3 cards above the Prompts list ───────────────────────────────
+function HeroCard({
+  label, value, prompt, valueColor,
+}: {
+  label: string
+  value: string
+  prompt: PromptHero | null
+  valueColor?: string
+}) {
+  if (!prompt) {
+    return (
+      <div className="hero-prompt-card" style={{
+        flex: 1, minWidth: 0, padding: '12px 14px', border: '1px solid var(--rule)', borderRadius: 4,
+      }}>
+        <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', fontFamily: 'var(--mono)', textTransform: 'uppercase' }}>{label}</div>
+        <div className="muted" style={{ fontStyle: 'italic', fontSize: 12, marginTop: 6 }}>—</div>
+      </div>
+    )
+  }
+  const preview = (prompt.prompt_text_200 ?? '').slice(0, 110)
+  return (
+    <a
+      href={`#prompt-${prompt.prompt_id}`}
+      className="hero-prompt-card"
+      style={{
+        flex: 1, minWidth: 0, padding: '12px 14px',
+        border: '1px solid var(--rule)', borderRadius: 4,
+        textDecoration: 'none', color: 'inherit',
+        display: 'flex', flexDirection: 'column', gap: 4,
+        transition: 'border-color 0.12s',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', fontFamily: 'var(--mono)', textTransform: 'uppercase' }}>{label}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: valueColor ?? 'var(--ink)', fontFamily: 'var(--mono)' }}>{value}</div>
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
+        <span>#{String(prompt.prompt_idx).padStart(2, '0')}</span>
+        {prompt.agent && <span>· {prompt.agent}</span>}
+      </div>
+      <p style={{
+        margin: 0, fontSize: 12, lineHeight: 1.45, color: 'var(--ink-2)',
+        fontStyle: 'italic',
+        display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as any,
+        overflow: 'hidden',
+      }}>
+        &ldquo;{preview}&rdquo;
+      </p>
+      <div style={{ fontSize: 10, color: 'var(--accent)', fontFamily: 'var(--mono)', marginTop: 'auto' }}>
+        ↓ jump to prompt
+      </div>
+    </a>
+  )
+}
+
+function HeroStrip({ heroes }: { heroes: PromptHeroes }) {
+  if (!heroes.most_expensive && !heroes.longest && !heroes.most_errored) return null
+  return (
+    <div className="hero-prompt-strip" style={{
+      display: 'flex', gap: 12, marginBottom: 20,
+    }}>
+      <HeroCard
+        label="Most expensive"
+        value={heroes.most_expensive?.value != null ? fmt.usd(heroes.most_expensive.value) : '—'}
+        prompt={heroes.most_expensive}
+        valueColor="var(--accent)"
+      />
+      <HeroCard
+        label="Longest"
+        value={fmtSecs(heroes.longest?.value)}
+        prompt={heroes.longest}
+      />
+      <HeroCard
+        label="Most errored"
+        value={heroes.most_errored?.value != null ? `${heroes.most_errored.value} err` : '—'}
+        prompt={heroes.most_errored}
+        valueColor="var(--warn)"
+      />
+    </div>
+  )
+}
+
+// ── Filter chips on Prompts tab ──────────────────────────────────────────────
+type PromptFilter = 'all' | 'human' | 'agent' | 'errored' | 'overkill'
+
+function FilterChips({
+  active, counts, onChange,
+}: {
+  active: PromptFilter
+  counts: Record<PromptFilter, number>
+  onChange: (f: PromptFilter) => void
+}) {
+  const items: { id: PromptFilter; label: string }[] = [
+    { id: 'all',     label: 'All' },
+    { id: 'human',   label: 'Human' },
+    { id: 'agent',   label: 'Agent' },
+    { id: 'errored', label: 'Errored' },
+    { id: 'overkill',label: 'Overkill' },
+  ]
+  return (
+    <div className="prompt-filter-chips" style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
+      {items.map(it => {
+        const isActive = active === it.id
+        return (
+          <button
+            key={it.id}
+            onClick={() => onChange(it.id)}
+            style={{
+              background: 'none', cursor: 'pointer',
+              padding: '4px 10px',
+              border: 'none',
+              borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+              color: isActive ? 'var(--ink)' : 'var(--muted)',
+              fontFamily: 'var(--mono)', fontSize: 12,
+              fontWeight: isActive ? 600 : 400,
+              transition: 'border-color 0.12s, color 0.12s',
+            }}
+          >
+            {it.label}{' '}
+            <span className="muted" style={{ fontSize: 11 }}>({counts[it.id]})</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Tool-signature chip strip (top 5 + collapse rest) ────────────────────────
+function ToolSignatureStrip({ sig }: { sig: ToolSignatureEntry[] | null | undefined }) {
+  if (!sig || sig.length === 0) return null
+  const top = sig.slice(0, 5)
+  const rest = sig.slice(5)
+  const restCount = rest.reduce((a, b) => a + (b.calls ?? 0), 0)
+  return (
+    <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+      {top.map(t => (
+        <Chip key={t.tool_name} title={`${t.tool_name} × ${t.calls}`}>
+          <span style={{ color: 'var(--accent)' }}>{toolShortcut(t.tool_name)}</span>
+          <span style={{ color: 'var(--muted)' }}>:{t.calls}</span>
+        </Chip>
+      ))}
+      {rest.length > 0 && (
+        <Chip title={rest.map(r => `${r.tool_name}:${r.calls}`).join(' ')}>
+          <span className="muted">+{rest.length} more · {restCount}</span>
+        </Chip>
+      )}
+    </span>
+  )
+}
+
+// ── Cost-by-model disclosure under the multi-model pill ──────────────────────
+function MultiModelPill({
+  models, count, costByModel,
+}: {
+  models: string[] | null | undefined
+  count: number | null | undefined
+  costByModel: CostByModelEntry[] | null | undefined
+}) {
+  if (!models || models.length === 0 || (count ?? 0) <= 1) return null
+  const primary = models[0]
+  const more = (count ?? models.length) - 1
+  return (
+    <details style={{ display: 'inline-block' }}>
+      <summary
+        title={models.join(', ')}
+        style={{
+          listStyle: 'none', cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 3,
+          padding: '1px 6px', border: '1px solid var(--accent)',
+          borderRadius: 3, fontSize: 10, fontFamily: 'var(--mono)',
+          color: 'var(--accent)', background: 'rgba(239,130,50,0.06)',
+        }}
+      >
+        <span>{primary.replace('claude-', '')}</span>
+        <span style={{ opacity: 0.7 }}>+{more} more</span>
+      </summary>
+      {costByModel && costByModel.length > 0 && (
+        <div style={{
+          position: 'absolute', marginTop: 4, padding: '6px 10px',
+          background: 'var(--bg)', border: '1px solid var(--rule)', borderRadius: 4,
+          fontSize: 11, fontFamily: 'var(--mono)', zIndex: 10,
+          display: 'flex', flexDirection: 'column', gap: 3,
+        }}>
+          {costByModel.map(cm => (
+            <div key={cm.model} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+              <span className="muted">{cm.model}</span>
+              <span style={{ color: 'var(--accent)' }}>{fmt.usd(cm.cost)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </details>
+  )
+}
+
 // ── Compact message bubble for Messages tab ──────────────────────────────────
 const PREVIEW_LEN = 280
 
-function MessageTurn({ turn }: { turn: any }) {
+function MessageTurn({
+  turn, toolsForTurn = [], thinkingText = null,
+}: {
+  turn: any
+  toolsForTurn?: ToolExecution[]
+  thinkingText?: string | null
+}) {
   const [userExpanded, setUserExpanded] = React.useState(false)
   const [assistExpanded, setAssistExpanded] = React.useState(false)
 
@@ -280,6 +571,59 @@ function MessageTurn({ turn }: { turn: any }) {
         </div>
       )}
 
+      {/* Per-turn tool chips — directly below assistant bubble */}
+      {toolsForTurn.length > 0 && (
+        <div style={{ marginLeft: 44, marginTop: 2 }}>
+          <div style={{
+            fontSize: 10, fontWeight: 600, letterSpacing: '0.08em',
+            color: 'var(--muted)', marginBottom: 4, fontFamily: 'var(--mono)',
+          }}>
+            TOOLS · {toolsForTurn.length}
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {toolsForTurn.map((tc, j) => {
+              const fileName = tc.file_path ? tc.file_path.split(/[/\\]/).pop() : null
+              return (
+                <Chip
+                  key={j}
+                  border={tc.is_error ? 'rgba(220,60,60,0.3)' : 'var(--rule)'}
+                  color={tc.is_error ? 'var(--warn)' : 'var(--ink-2)'}
+                  title={tc.file_path ?? tc.tool_name}
+                >
+                  <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{tc.tool_name}</span>
+                  {fileName && <span className="muted"> · {fileName}</span>}
+                  <span style={{ color: tc.is_error ? 'var(--warn)' : 'var(--accent)', marginLeft: 2 }}>
+                    {tc.is_error ? '✗' : '✓'}
+                  </span>
+                </Chip>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Thinking-block disclosure */}
+      {thinkingText && (
+        <div style={{ marginLeft: 44, marginTop: 4 }}>
+          <details>
+            <summary style={{
+              cursor: 'pointer', fontSize: 11, fontFamily: 'var(--mono)',
+              color: 'var(--accent-2)',
+            }}>
+              💭 show thinking ({thinkingText.length} chars)
+            </summary>
+            <pre style={{
+              marginTop: 6, padding: '10px 12px',
+              background: 'rgba(140,160,200,0.05)',
+              border: '1px solid rgba(140,160,200,0.2)',
+              borderRadius: 4, fontSize: 12, lineHeight: 1.55,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              color: 'var(--ink-2)', fontStyle: 'italic', fontFamily: 'inherit',
+            }}>{thinkingText}</pre>
+          </details>
+        </div>
+      )}
+
       {/* No text placeholder */}
       {!userText && !assistText && (
         <div className="muted" style={{ marginLeft: 44, fontSize: 12, fontStyle: 'italic' }}>
@@ -293,18 +637,66 @@ function MessageTurn({ turn }: { turn: any }) {
 // ── Main component ───────────────────────────────────────────────────────────
 export function SessionTabs({
   s, turns, errors, toolExecutions, gitCommands,
-  files, toolMix, prompts = [], promptsWithTools = [], filesWithAttribution = []
+  files, toolMix, prompts = [], promptsWithTools = [], filesWithAttribution = [],
+  heroes = { most_expensive: null, longest: null, most_errored: null },
+  thinkingBlocks = [],
+  errorResolutions = [],
+  allTurns = false,
 }: SessionTabsProps) {
   // Prefer the enriched prompts (with tool_calls + prompt_origin); fall back to
   // the simpler prompts list if the enriched query failed.
   const promptsToRender: any[] = promptsWithTools.length > 0 ? promptsWithTools : prompts
   const [activeTab, setActiveTab] = useState<'details' | 'prompts' | 'agents' | 'errors' | 'files' | 'tokens' | 'tools' | 'git' | 'messages'>('details')
+  const [promptFilter, setPromptFilter] = useState<PromptFilter>('all')
 
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
-  const maxEdits     = Math.max(...(files ?? []).map((f: any) => f.edit_count ?? 0), 1)
 
   // For the files tab, prefer attributed data; fall back to plain files
   const filePanelData = filesWithAttribution.length ? filesWithAttribution : files
+
+  // Tools grouped by assistant_event_uuid for the Messages tab (per-turn chips)
+  const toolsByUuid = React.useMemo(() => {
+    const m = new Map<string, ToolExecution[]>()
+    for (const te of (toolExecutions ?? []) as ToolExecution[]) {
+      const k = te.assistant_event_uuid ?? null
+      if (!k) continue
+      const arr = m.get(k)
+      if (arr) arr.push(te); else m.set(k, [te])
+    }
+    return m
+  }, [toolExecutions])
+
+  // Thinking blocks indexed by assistant_event_uuid
+  const thinkingByUuid = React.useMemo(() => {
+    const m = new Map<string, string>()
+    for (const tb of (thinkingBlocks ?? [])) m.set(tb.assistant_event_uuid, tb.thinking_text)
+    return m
+  }, [thinkingBlocks])
+
+  // Prompt filter counts (computed once per prompts data)
+  const filterCounts = React.useMemo<Record<PromptFilter, number>>(() => {
+    const c: Record<PromptFilter, number> = { all: 0, human: 0, agent: 0, errored: 0, overkill: 0 }
+    for (const p of promptsToRender) {
+      c.all += 1
+      if (p.prompt_origin === 'human') c.human += 1
+      if (p.prompt_origin === 'agent') c.agent += 1
+      if ((p.errors_caught ?? 0) > 0) c.errored += 1
+      if (p.is_overkill) c.overkill += 1
+    }
+    return c
+  }, [promptsToRender])
+
+  const filteredPrompts = React.useMemo(() => {
+    if (promptFilter === 'all') return promptsToRender
+    return promptsToRender.filter((p: any) => {
+      switch (promptFilter) {
+        case 'human':    return p.prompt_origin === 'human'
+        case 'agent':    return p.prompt_origin === 'agent'
+        case 'errored':  return (p.errors_caught ?? 0) > 0
+        case 'overkill': return !!p.is_overkill
+      }
+    })
+  }, [promptsToRender, promptFilter])
 
   return (
     <div className="session-tabs-container">
@@ -395,32 +787,46 @@ export function SessionTabs({
             </div>
             {errors.length === 0 ? (
               <div className="empty-block">No error events recorded — a clean run.</div>
-            ) : (
-              <table className="ledger-table">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Severity</th>
-                    <th>Kind</th>
-                    <th>Tool</th>
-                    <th>Message</th>
-                    <th className="num">Turn</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {errors.map((e: any, i: number) => (
-                    <tr key={i}>
-                      <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(e.ts)}</td>
-                      <td><SeverityTag severity={e.severity} /></td>
-                      <td><span className="kind-tag mono">{e.kind}</span></td>
-                      <td>{e.tool ? <span className="mono" style={{ color: 'var(--accent)' }}>{e.tool}</span> : <span className="muted">—</span>}</td>
-                      <td className="muted err-msg mono" style={{ fontSize: 11 }}>{e.message}</td>
-                      <td className="num">#{e.turn_number}</td>
+            ) : (() => {
+              // Map turn_number → resolved_in_turns from errorResolutions (defensive)
+              const resMap = new Map<number, number | null>()
+              for (const r of (errorResolutions ?? [])) resMap.set(r.turn_number, r.resolved_in_turns)
+              return (
+                <table className="ledger-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Severity</th>
+                      <th>Kind</th>
+                      <th>Tool</th>
+                      <th>Message</th>
+                      <th className="num">Turn</th>
+                      <th className="num">Resolved in</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+                  </thead>
+                  <tbody>
+                    {errors.map((e: any, i: number) => {
+                      const resolved = resMap.get(e.turn_number)
+                      return (
+                        <tr key={i}>
+                          <td className="mono muted" style={{ fontSize: 11 }}>{fmt.time(e.ts)}</td>
+                          <td><SeverityTag severity={e.severity} /></td>
+                          <td><span className="kind-tag mono">{e.kind}</span></td>
+                          <td>{e.tool ? <span className="mono" style={{ color: 'var(--accent)' }}>{e.tool}</span> : <span className="muted">—</span>}</td>
+                          <td className="muted err-msg mono" style={{ fontSize: 11 }}>{e.message}</td>
+                          <td className="num">#{e.turn_number}</td>
+                          <td className="num mono" style={{ fontSize: 11 }}>
+                            {resolved == null
+                              ? <span className="muted">—</span>
+                              : <span style={{ color: 'var(--accent-green, #4caf82)' }}>+{resolved} turns</span>}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )
+            })()}
           </div>
         )}
 
@@ -434,12 +840,29 @@ export function SessionTabs({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 20 }}>
                   <Eyebrow>Conversation · turn by turn</Eyebrow>
                   <span className="muted" style={{ fontSize: 12 }}>
-                    {turns.length} turn{turns.length !== 1 ? 's' : ''}{turns.length >= 60 ? ' · first 60 shown' : ''}
+                    {turns.length} turn{turns.length !== 1 ? 's' : ''}
+                    {!allTurns && turns.length >= 500 && (
+                      <>
+                        {' · first 500 shown · '}
+                        <a href="?turns=all" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>show all</a>
+                      </>
+                    )}
+                    {allTurns && (
+                      <>
+                        {' · all shown · '}
+                        <a href="?" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>back to 500</a>
+                      </>
+                    )}
                   </span>
                 </div>
                 <div className="messages-feed" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                   {turns.map((t: any) => (
-                    <MessageTurn key={t.turn_number} turn={t} />
+                    <MessageTurn
+                      key={t.turn_number}
+                      turn={t}
+                      toolsForTurn={t.assistant_event_uuid ? (toolsByUuid.get(t.assistant_event_uuid) ?? []) : []}
+                      thinkingText={t.assistant_event_uuid ? (thinkingByUuid.get(t.assistant_event_uuid) ?? null) : null}
+                    />
                   ))}
                 </div>
               </>
@@ -456,21 +879,55 @@ export function SessionTabs({
                 {promptsToRender.length} prompt{promptsToRender.length !== 1 ? 's' : ''} · what was asked, what happened
               </span>
             </div>
+
+            {/* Hero strip — three winner cards */}
+            <HeroStrip heroes={heroes} />
+
+            {/* Filter chips */}
+            {promptsToRender.length > 0 && (
+              <FilterChips active={promptFilter} counts={filterCounts} onChange={setPromptFilter} />
+            )}
+
             {promptsToRender.length === 0 ? (
               <div className="empty-block">No operator prompts recorded for this session.</div>
+            ) : filteredPrompts.length === 0 ? (
+              <div className="empty-block">No prompts match this filter.</div>
             ) : (
               <ol className="prompts" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
-                {promptsToRender.map((p: any, i: number) => {
+                {filteredPrompts.map((p: any, i: number) => {
                   const toolCalls: any[] = Array.isArray(p.tool_calls) ? p.tool_calls : []
                   const origin: string | null = p.prompt_origin ?? null
                   const isAgent = origin === 'agent'
                   const fullText: string = p.prompt_text_full ?? p.prompt_text_200 ?? ''
                   const previewText: string = p.prompt_text_200 ?? ''
 
+                  // New insight columns (all defensively read)
+                  const cacheRate: number | null  = typeof p.cache_hit_rate === 'number' ? p.cache_hit_rate : null
+                  const toolSig: ToolSignatureEntry[] = Array.isArray(p.tool_signature) ? p.tool_signature : []
+                  const subAgents: string[] = Array.isArray(p.sub_agents) ? p.sub_agents : []
+                  const ttft: number | null = typeof p.ttft_seconds === 'number' ? p.ttft_seconds : null
+                  const modelsUsed: string[] = Array.isArray(p.models_used) ? p.models_used : []
+                  const modelCount: number = typeof p.model_count === 'number' ? p.model_count : modelsUsed.length
+                  const costByModel: CostByModelEntry[] = Array.isArray(p.cost_by_model) ? p.cost_by_model : []
+                  const stopReason: string | null = p.final_stop_reason ?? null
+                  const retryCount: number = typeof p.retry_count === 'number' ? p.retry_count : 0
+
+                  // Count Task/Agent dispatches even if subagent_type absent — fall back to tool count
+                  const dispatchCount = toolCalls.filter((tc: any) => tc.tool_name === 'Task' || tc.tool_name === 'Agent').length
+
                   return (
-                    <li key={p.prompt_id ?? i} className="prompt" style={{ borderTop: '1px solid var(--rule)', padding: '16px 0' }}>
-                      {/* Header row */}
-                      <div className="prompt-meta" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <li
+                      key={p.prompt_id ?? i}
+                      id={p.prompt_id ? `prompt-${p.prompt_id}` : undefined}
+                      className="prompt"
+                      style={{
+                        borderTop: '1px solid var(--rule)',
+                        padding: '16px 0',
+                        scrollMarginTop: 80,
+                      }}
+                    >
+                      {/* Header row — meta + origin + agent + model + insight chips */}
+                      <div className="prompt-meta" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                         <span className="mono muted" style={{ fontSize: 11 }}>
                           #{String((p.prompt_idx ?? i) + 1).padStart(2, '0')} · {fmt.date(p.prompt_ts)} · {fmt.time(p.prompt_ts)}
                           {p.duration_seconds != null && ` · ${fmtSecs(p.duration_seconds)}`}
@@ -494,8 +951,38 @@ export function SessionTabs({
                         )}
 
                         {p.agent && !origin && <AgentLink name={p.agent} />}
-                        {p.model_primary && <ModelPill model={p.model_primary} />}
+                        {p.model_primary && modelCount <= 1 && <ModelPill model={p.model_primary} />}
+                        <MultiModelPill models={modelsUsed} count={modelCount} costByModel={costByModel} />
                         {p.is_overkill && p.overkill_reason && <OverkillChip reason={p.overkill_reason} />}
+
+                        {/* Insight chips — only shown when value is meaningful */}
+                        {cacheRate != null && (
+                          <Chip color={cacheColor(cacheRate)} border={cacheColor(cacheRate)} title={`Cache read / (input + write + read)`}>
+                            {Math.round(cacheRate * 100)}% cache
+                          </Chip>
+                        )}
+                        {ttft != null && ttft > 0 && (
+                          <Chip title="Time-to-first-tool (prompt → first tool_call)">→ {fmtSecsPrecise(ttft)}</Chip>
+                        )}
+                        {stopReason && stopReason !== 'end_turn' && (
+                          <Chip color="var(--warn)" border="rgba(220,60,60,0.3)" title={`final stop_reason = ${stopReason}`}>
+                            ⊘ {stopReason === 'tool_use' ? 'interrupted' : stopReason}
+                          </Chip>
+                        )}
+                        {retryCount > 0 && (
+                          <Chip color="var(--warn)" border="rgba(220,60,60,0.3)" title="Consecutive same-target retries after an error">
+                            ⚠ {retryCount} {retryCount === 1 ? 'retry' : 'retries'}
+                          </Chip>
+                        )}
+                        {subAgents.length > 0 ? (
+                          <Chip color="var(--accent)" border="rgba(239,130,50,0.3)" title={subAgents.join(', ')}>
+                            → {subAgents.join(' · ')}
+                          </Chip>
+                        ) : dispatchCount > 0 ? (
+                          <Chip color="var(--accent)" border="rgba(239,130,50,0.3)" title="Task/Agent dispatches (subagent_type unavailable)">
+                            → Task ×{dispatchCount}
+                          </Chip>
+                        ) : null}
                       </div>
 
                       {/* Quote + show-full disclosure */}
@@ -517,6 +1004,13 @@ export function SessionTabs({
                               }}>{fullText}</pre>
                             </details>
                           )}
+                        </div>
+                      )}
+
+                      {/* Tool signature strip — visual fingerprint of what work happened */}
+                      {toolSig.length > 0 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <ToolSignatureStrip sig={toolSig} />
                         </div>
                       )}
 

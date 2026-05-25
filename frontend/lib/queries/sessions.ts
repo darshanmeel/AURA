@@ -127,26 +127,30 @@ export async function getSession(id: string) {
   }
 }
 
-export async function getSessionTurns(id: string) {
+export async function getSessionTurns(id: string, opts: { all?: boolean; limit?: number } = {}) {
+  const limit = opts.all ? null : (opts.limit ?? 500)
+  const limitClause = limit == null ? '' : `LIMIT ${limit}`
   const turns = await query(`
-    SELECT turn_number, user_ts, assistant_ts, model,
+    SELECT turn_number, user_ts, assistant_ts, assistant_event_uuid, model,
            input_tokens, output_tokens, calculated_cost,
            cache_read_input_tokens, ephemeral_5m_input_tokens, ephemeral_1h_input_tokens,
            context_pct, user_prompt, assistant_response
     FROM fact_turns
     WHERE session_id = ?
     ORDER BY turn_number
-    LIMIT 60
+    ${limitClause}
   `, [id])
 
   if (turns.length) return turns
 
   // Fallback: construct turns directly from raw events for real-time responsiveness
+  const fallbackLimit = limit == null ? '' : `LIMIT ${limit}`
   return query(`
-    SELECT 
+    SELECT
       ROW_NUMBER() OVER (ORDER BY ts) as turn_number,
       ts as user_ts,
       ts as assistant_ts,
+      uuid as assistant_event_uuid,
       model,
       COALESCE(input_tokens, 0) as input_tokens,
       COALESCE(output_tokens, 0) as output_tokens,
@@ -155,12 +159,12 @@ export async function getSessionTurns(id: string) {
       COALESCE(ephemeral_5m_input_tokens, 0) as ephemeral_5m_input_tokens,
       COALESCE(ephemeral_1h_input_tokens, 0) as ephemeral_1h_input_tokens,
       COALESCE(context_pct, 0.0) as context_pct,
-      input_message as user_prompt,
-      output_message as assistant_response
+      NULL as user_prompt,
+      NULL as assistant_response
     FROM raw_events
     WHERE session_id = ? AND event_type = 'assistant'
     ORDER BY ts
-    LIMIT 60
+    ${fallbackLimit}
   `, [id])
 }
 
@@ -209,7 +213,8 @@ export async function getSessionToolExecutions(id: string) {
       tool_result_ts,
       execution_duration_seconds,
       is_error,
-      json_extract_string(input_payload, '$.file_path') AS file_path
+      assistant_event_uuid,
+      json_extract_string(CAST(input_payload AS VARCHAR), '$.file_path') AS file_path
     FROM fact_tool_executions
     WHERE session_id = ?
     ORDER BY tool_call_ts
@@ -217,23 +222,148 @@ export async function getSessionToolExecutions(id: string) {
 }
 
 /**
- * Enriched prompts for the session detail page: each prompt row includes its
- * tool calls (joined via the prompt time-window) as an aggregated array.
+ * Enriched prompts for the session detail page. Each prompt row carries
+ * its tool calls (raw list) PLUS eight chip-friendly insight columns:
+ *   - cache_hit_rate     (DOUBLE) cache_read / (input + ephemeral + cache_read)
+ *   - tool_signature     STRUCT[]{tool_name, calls}    top-N tools by count
+ *   - retry_count        (BIGINT) consecutive same-target retries after error
+ *   - sub_agents         VARCHAR[]                     subagent_type values from Task/Agent
+ *   - ttft_seconds       (DOUBLE) prompt_ts → first tool_call_ts
+ *   - models_used        VARCHAR[]                     distinct models in window
+ *   - model_count        (BIGINT)
+ *   - cost_by_model      STRUCT[]{model, cost}         per-model rollup in window
+ *   - final_stop_reason  (VARCHAR) last stop_reason in the window
  *
- * Defensive: prompt_origin is a new column being added by the dbt agent.
- * If it doesn't yet exist the query falls through to the catch in the caller,
- * which returns [] rather than crashing the page.
- *
- * Also defensive against fact_prompts or fact_tool_executions missing entirely.
+ * Defensive: any insight that can't be computed (e.g. no turn rows, missing
+ * raw_events.uuid join) falls back to NULL — the UI tolerates nulls. Whole
+ * query is wrapped in try/catch; on failure the page renders the simpler
+ * prompts list instead of crashing.
  */
 export async function getSessionPrompts(id: string): Promise<any[]> {
   try {
     const rows = await query(`
+      WITH
+      -- Tool calls that fall within each prompt's [prompt_ts, next_prompt_ts) window
+      window_tools AS (
+        SELECT fp.prompt_id,
+               fte.tool_name,
+               fte.tool_call_ts,
+               fte.is_error,
+               json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path')     AS target_file,
+               json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.subagent_type') AS subagent_type
+        FROM fact_prompts fp
+        JOIN fact_tool_executions fte
+          ON fte.session_id = fp.session_id
+          AND fte.tool_call_ts >= fp.prompt_ts
+          AND (fp.next_prompt_ts IS NULL OR fte.tool_call_ts < fp.next_prompt_ts)
+        WHERE fp.session_id = ?
+      ),
+      -- Turns within each prompt window (for cost/model/cache/stop)
+      window_turns AS (
+        SELECT fp.prompt_id,
+               ft.model,
+               ft.calculated_cost,
+               ft.input_tokens,
+               ft.output_tokens,
+               ft.cache_read_input_tokens,
+               ft.ephemeral_5m_input_tokens,
+               ft.ephemeral_1h_input_tokens,
+               ft.assistant_ts,
+               ft.assistant_event_uuid,
+               re.stop_reason
+        FROM fact_prompts fp
+        JOIN fact_turns ft
+          ON ft.session_id = fp.session_id
+          AND ft.assistant_ts >= fp.prompt_ts
+          AND (fp.next_prompt_ts IS NULL OR ft.assistant_ts < fp.next_prompt_ts)
+        LEFT JOIN raw_events re
+          ON re.uuid = ft.assistant_event_uuid
+        WHERE fp.session_id = ?
+      ),
+      -- Per-prompt tool signature (top tools by count, full list — UI slices)
+      sig AS (
+        SELECT prompt_id,
+               ARRAY_AGG(STRUCT_PACK(tool_name := tool_name, calls := calls) ORDER BY calls DESC) AS tool_signature
+        FROM (
+          SELECT prompt_id, tool_name, COUNT(*) AS calls
+          FROM window_tools GROUP BY 1,2
+        ) sub
+        GROUP BY 1
+      ),
+      -- Consecutive same-(tool,target) retries after an error in the same window
+      retries_calc AS (
+        SELECT prompt_id,
+               LAG(is_error) OVER (PARTITION BY prompt_id, tool_name, target_file ORDER BY tool_call_ts) AS prev_err
+        FROM window_tools
+      ),
+      retries AS (
+        SELECT prompt_id, SUM(CASE WHEN prev_err = TRUE THEN 1 ELSE 0 END) AS retry_count
+        FROM retries_calc GROUP BY 1
+      ),
+      -- Subagent dispatches (Agent / Task tools carry subagent_type in input)
+      subs AS (
+        SELECT prompt_id, ARRAY_AGG(DISTINCT subagent_type) FILTER (WHERE subagent_type IS NOT NULL) AS sub_agents
+        FROM window_tools GROUP BY 1
+      ),
+      -- Time-to-first-tool: prompt_ts → MIN(tool_call_ts)
+      ttft AS (
+        SELECT fp.prompt_id,
+               EXTRACT(EPOCH FROM (MIN(fte.tool_call_ts) - fp.prompt_ts)) AS ttft_seconds
+        FROM fact_prompts fp
+        LEFT JOIN fact_tool_executions fte
+          ON fte.session_id = fp.session_id
+          AND fte.tool_call_ts >= fp.prompt_ts
+          AND (fp.next_prompt_ts IS NULL OR fte.tool_call_ts < fp.next_prompt_ts)
+        WHERE fp.session_id = ?
+        GROUP BY fp.prompt_id, fp.prompt_ts
+      ),
+      -- Cache hit rate per prompt
+      cache_hr AS (
+        SELECT prompt_id,
+               CASE WHEN SUM(COALESCE(input_tokens,0)
+                          + COALESCE(ephemeral_5m_input_tokens,0)
+                          + COALESCE(ephemeral_1h_input_tokens,0)
+                          + COALESCE(cache_read_input_tokens,0)) > 0
+                    THEN SUM(COALESCE(cache_read_input_tokens,0))::DOUBLE
+                         / SUM(COALESCE(input_tokens,0)
+                             + COALESCE(ephemeral_5m_input_tokens,0)
+                             + COALESCE(ephemeral_1h_input_tokens,0)
+                             + COALESCE(cache_read_input_tokens,0))
+                    ELSE NULL END AS cache_hit_rate
+        FROM window_turns GROUP BY 1
+      ),
+      -- Distinct models in window
+      mdls AS (
+        SELECT prompt_id,
+               ARRAY_AGG(DISTINCT model) FILTER (WHERE model IS NOT NULL) AS models_used,
+               COUNT(DISTINCT model)                                       AS model_count
+        FROM window_turns GROUP BY 1
+      ),
+      -- Per-(prompt × model) cost
+      cbm AS (
+        SELECT prompt_id,
+               ARRAY_AGG(STRUCT_PACK(model := model, cost := cost) ORDER BY cost DESC) AS cost_by_model
+        FROM (
+          SELECT prompt_id, model, SUM(COALESCE(calculated_cost,0)) AS cost
+          FROM window_turns WHERE model IS NOT NULL
+          GROUP BY 1,2
+        ) sub
+        GROUP BY 1
+      ),
+      -- Final stop_reason in window (latest assistant turn)
+      stop_r AS (
+        SELECT prompt_id,
+               FIRST(stop_reason ORDER BY assistant_ts DESC) AS final_stop_reason
+        FROM window_turns
+        WHERE stop_reason IS NOT NULL
+        GROUP BY 1
+      )
       SELECT
         fp.prompt_id,
         fp.prompt_idx,
         fp.prompt_ts,
         fp.next_prompt_ts,
+        fp.duration_seconds,
         fp.prompt_text_200,
         fp.prompt_text_full,
         fp.prompt_chars,
@@ -245,27 +375,194 @@ export async function getSessionPrompts(id: string): Promise<any[]> {
         fp.turn_count,
         fp.files_edited,
         fp.errors_caught,
+        fp.is_overkill,
+        fp.overkill_reason,
+        fp.summary_200,
+        fp.output_tokens_total,
         COALESCE(
           ARRAY_AGG(STRUCT_PACK(
-            tool_name  := fte.tool_name,
+            tool_name    := fte.tool_name,
             tool_call_ts := fte.tool_call_ts,
-            is_error   := fte.is_error,
-            file_path  := json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path')
+            is_error     := fte.is_error,
+            file_path    := json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path')
           ) ORDER BY fte.tool_call_ts) FILTER (WHERE fte.tool_name IS NOT NULL),
           []
-        ) AS tool_calls
+        ) AS tool_calls,
+        ANY_VALUE(sig.tool_signature)      AS tool_signature,
+        ANY_VALUE(retries.retry_count)     AS retry_count,
+        ANY_VALUE(subs.sub_agents)         AS sub_agents,
+        ANY_VALUE(ttft.ttft_seconds)       AS ttft_seconds,
+        ANY_VALUE(cache_hr.cache_hit_rate) AS cache_hit_rate,
+        ANY_VALUE(mdls.models_used)        AS models_used,
+        ANY_VALUE(mdls.model_count)        AS model_count,
+        ANY_VALUE(cbm.cost_by_model)       AS cost_by_model,
+        ANY_VALUE(stop_r.final_stop_reason) AS final_stop_reason
       FROM fact_prompts fp
       LEFT JOIN fact_tool_executions fte
         ON  fte.session_id = fp.session_id
         AND fte.tool_call_ts >= fp.prompt_ts
         AND (fp.next_prompt_ts IS NULL OR fte.tool_call_ts < fp.next_prompt_ts)
+      LEFT JOIN sig      ON sig.prompt_id      = fp.prompt_id
+      LEFT JOIN retries  ON retries.prompt_id  = fp.prompt_id
+      LEFT JOIN subs     ON subs.prompt_id     = fp.prompt_id
+      LEFT JOIN ttft     ON ttft.prompt_id     = fp.prompt_id
+      LEFT JOIN cache_hr ON cache_hr.prompt_id = fp.prompt_id
+      LEFT JOIN mdls     ON mdls.prompt_id     = fp.prompt_id
+      LEFT JOIN cbm      ON cbm.prompt_id      = fp.prompt_id
+      LEFT JOIN stop_r   ON stop_r.prompt_id   = fp.prompt_id
       WHERE fp.session_id = ?
-      GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+      GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20
       ORDER BY fp.prompt_idx
-    `, [id])
+    `, [id, id, id, id])
     return rows as any[]
   } catch (e) {
     console.error('[sessions] getSessionPrompts failed:', e instanceof Error ? e.message : e)
+    return []
+  }
+}
+
+/**
+ * Hero strip: three "winner" prompts per metric. Each is a sane fallback to
+ * null when the session has no prompts at all.
+ */
+export async function getSessionPromptHeroes(id: string): Promise<{
+  most_expensive: any | null
+  longest: any | null
+  most_errored: any | null
+}> {
+  try {
+    const rows = await query(`
+      WITH p AS (
+        SELECT prompt_id, prompt_idx, prompt_text_200, agent,
+               cost_total, duration_seconds, errors_caught, tool_call_count
+        FROM fact_prompts
+        WHERE session_id = ?
+      ),
+      mx_cost AS (SELECT * FROM p WHERE cost_total IS NOT NULL ORDER BY cost_total DESC NULLS LAST LIMIT 1),
+      mx_dur  AS (SELECT * FROM p WHERE duration_seconds IS NOT NULL ORDER BY duration_seconds DESC NULLS LAST LIMIT 1),
+      mx_err  AS (SELECT * FROM p WHERE errors_caught > 0 ORDER BY errors_caught DESC NULLS LAST, cost_total DESC LIMIT 1)
+      SELECT
+        (SELECT prompt_id        FROM mx_cost) AS cost_prompt_id,
+        (SELECT prompt_idx       FROM mx_cost) AS cost_prompt_idx,
+        (SELECT prompt_text_200  FROM mx_cost) AS cost_prompt_text,
+        (SELECT agent            FROM mx_cost) AS cost_prompt_agent,
+        (SELECT cost_total       FROM mx_cost) AS cost_value,
+        (SELECT prompt_id        FROM mx_dur)  AS dur_prompt_id,
+        (SELECT prompt_idx       FROM mx_dur)  AS dur_prompt_idx,
+        (SELECT prompt_text_200  FROM mx_dur)  AS dur_prompt_text,
+        (SELECT agent            FROM mx_dur)  AS dur_prompt_agent,
+        (SELECT duration_seconds FROM mx_dur)  AS dur_value,
+        (SELECT prompt_id        FROM mx_err)  AS err_prompt_id,
+        (SELECT prompt_idx       FROM mx_err)  AS err_prompt_idx,
+        (SELECT prompt_text_200  FROM mx_err)  AS err_prompt_text,
+        (SELECT agent            FROM mx_err)  AS err_prompt_agent,
+        (SELECT errors_caught    FROM mx_err)  AS err_value
+    `, [id])
+    const r: any = rows[0] ?? {}
+    return {
+      most_expensive: r.cost_prompt_id ? {
+        prompt_id: r.cost_prompt_id, prompt_idx: r.cost_prompt_idx,
+        prompt_text_200: r.cost_prompt_text, agent: r.cost_prompt_agent,
+        value: r.cost_value,
+      } : null,
+      longest: r.dur_prompt_id ? {
+        prompt_id: r.dur_prompt_id, prompt_idx: r.dur_prompt_idx,
+        prompt_text_200: r.dur_prompt_text, agent: r.dur_prompt_agent,
+        value: r.dur_value,
+      } : null,
+      most_errored: r.err_prompt_id ? {
+        prompt_id: r.err_prompt_id, prompt_idx: r.err_prompt_idx,
+        prompt_text_200: r.err_prompt_text, agent: r.err_prompt_agent,
+        value: r.err_value,
+      } : null,
+    }
+  } catch (e) {
+    console.error('[sessions] getSessionPromptHeroes failed:', e instanceof Error ? e.message : e)
+    return { most_expensive: null, longest: null, most_errored: null }
+  }
+}
+
+/**
+ * Thinking-block disclosures for the Messages tab. Returns one row per
+ * assistant event that contained at least one `thinking` content block.
+ * Robust to malformed JSON via a try-LIKE pre-filter; extraction proceeds in
+ * SQL via json_extract on the content array.
+ *
+ * Note: as of 2026-05-25 the source raw_events for the bundled DB contain no
+ * thinking blocks at all — this query returns [] and the UI hides the
+ * disclosure gracefully. Light up when the data starts flowing.
+ */
+export async function getSessionThinkingBlocks(id: string): Promise<Array<{
+  assistant_event_uuid: string
+  thinking_text: string
+}>> {
+  try {
+    const rows = await query(`
+      WITH cand AS (
+        SELECT uuid AS assistant_event_uuid, payload
+        FROM raw_events
+        WHERE session_id = ?
+          AND event_type = 'assistant'
+          AND payload ILIKE '%"type":"thinking"%'
+      ),
+      blocks AS (
+        SELECT assistant_event_uuid,
+               json_extract(CAST(payload AS JSON), '$.message.content') AS content
+        FROM cand
+      )
+      SELECT
+        assistant_event_uuid,
+        STRING_AGG(
+          json_extract_string(b.value, '$.thinking'),
+          E'\n\n---\n\n'
+        ) AS thinking_text
+      FROM blocks,
+           LATERAL (
+             SELECT UNNEST(CAST(content AS JSON[])) AS value
+           ) b
+      WHERE json_extract_string(b.value, '$.type') = 'thinking'
+        AND json_extract_string(b.value, '$.thinking') IS NOT NULL
+      GROUP BY assistant_event_uuid
+    `, [id])
+    return rows as any
+  } catch (e) {
+    console.error('[sessions] getSessionThinkingBlocks failed:', e instanceof Error ? e.message : e)
+    return []
+  }
+}
+
+/**
+ * Per-error resolution distance: for each error in this session, how many
+ * turns later did an Edit/Write occur? Null if never resolved within session.
+ */
+export async function getSessionErrorResolutions(id: string): Promise<Array<{
+  ts: string
+  kind: string
+  tool: string | null
+  message: string
+  severity: string | null
+  turn_number: number
+  resolved_in_turns: number | null
+}>> {
+  try {
+    const rows = await query(`
+      SELECT e.ts, e.kind, e.tool, e.message, e.severity, e.turn_number,
+        (
+          SELECT MIN(ft.turn_number) - e.turn_number
+          FROM fact_turns ft
+          JOIN fact_tool_executions fte
+            ON fte.assistant_event_uuid = ft.assistant_event_uuid
+          WHERE ft.session_id = e.session_id
+            AND ft.turn_number > e.turn_number
+            AND fte.tool_name IN ('Edit','Write','NotebookEdit')
+        ) AS resolved_in_turns
+      FROM fact_errors e
+      WHERE e.session_id = ?
+      ORDER BY e.ts
+    `, [id])
+    return rows as any
+  } catch (e) {
+    console.error('[sessions] getSessionErrorResolutions failed:', e instanceof Error ? e.message : e)
     return []
   }
 }

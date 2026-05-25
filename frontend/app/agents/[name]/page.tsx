@@ -5,9 +5,12 @@ import {
   AppLink, ModelPill, ProviderTag, PersonLink,
 } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
+import { RangeFilter } from '../../../components/RangeFilter'
 import { fmt } from '../../../lib/fmt'
+import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
 import {
   getAgent, getAgentApps, getAgentModels, getAgentSessions, getAgentFiles, getAgentPeople,
+  getAgentRangeAggregates,
 } from '../../../lib/queries/agents'
 import { getAgentPrompts } from '../../../lib/queries/prompts'
 
@@ -39,8 +42,12 @@ function fileKindClass(ext: string | null | undefined): string {
   return ''
 }
 
-export default async function AgentProfilePage({ params }: { params: { name: string } }) {
+export default async function AgentProfilePage({
+  params, searchParams,
+}: { params: { name: string }; searchParams?: { range?: string } }) {
   const name = decodeURIComponent(params.name)
+  const range = parseRange(searchParams?.range)
+  const since = rangeSince(range)
 
   let agent: any = null
   let apps: any[] = []
@@ -49,16 +56,18 @@ export default async function AgentProfilePage({ params }: { params: { name: str
   let files: any[] = []
   let prompts: any[] = []
   let peopleList: any[] = []
+  let rangeAgg: any = null
 
   try {
-    const [ag, ap, mo, se, fi, pr, pe] = await Promise.all([
+    const [ag, ap, mo, se, fi, pr, pe, ra] = await Promise.all([
       getAgent(name),
-      getAgentApps(name),
-      getAgentModels(name),
-      getAgentSessions(name, 12),
-      getAgentFiles(name, 8),
-      getAgentPrompts(name, 6),
-      getAgentPeople(name),
+      getAgentApps(name, since),
+      getAgentModels(name, since),
+      getAgentSessions(name, 12, since),
+      getAgentFiles(name, 8, since),
+      getAgentPrompts(name, 6, since),
+      getAgentPeople(name, since),
+      getAgentRangeAggregates(name, since),
     ])
     agent = ag
     apps = ap as any[]
@@ -67,6 +76,7 @@ export default async function AgentProfilePage({ params }: { params: { name: str
     files = fi as any[]
     prompts = pr as any[]
     peopleList = pe as any[]
+    rangeAgg = ra
   } catch {}
 
   // Show empty state rather than hard 404 when no data yet
@@ -81,12 +91,13 @@ export default async function AgentProfilePage({ params }: { params: { name: str
     )
   }
 
-  const totalCost: number = Number(agent.total_cost ?? 0)
-  const sessionCount: number = Number(agent.session_count ?? 0)
-  const totalTurns: number = Number(agent.total_turns ?? 0)
-  const totalTools: number = Number(agent.total_tool_calls ?? 0)
-  const totalTokens: number = Number(agent.total_output_tokens ?? 0)
-  const appCount: number = Number(agent.app_count ?? 0)
+  // Range-aware KPIs (fall back to lifetime when since is null).
+  const totalCost: number = Number((rangeAgg?.total_cost ?? agent.total_cost) ?? 0)
+  const sessionCount: number = Number((rangeAgg?.session_count ?? agent.session_count) ?? 0)
+  const totalTurns: number = Number((rangeAgg?.total_turns ?? agent.total_turns) ?? 0)
+  const totalTools: number = Number((rangeAgg?.total_tool_calls ?? agent.total_tool_calls) ?? 0)
+  const totalTokens: number = Number((rangeAgg?.total_output_tokens ?? agent.total_output_tokens) ?? 0)
+  const appCount: number = Number((rangeAgg?.app_count ?? agent.app_count) ?? 0)
   const modelsCount: number = models.length
 
   const maxAppCost = apps.length > 0 ? Math.max(Number(apps[0].total_cost ?? 0), 0.0001) : 1
@@ -100,6 +111,19 @@ export default async function AgentProfilePage({ params }: { params: { name: str
   return (
     <div className="page-layout">
       <ProfileBackRail href="/sessions" label="Back" />
+
+      {/* Masthead strap with RangeFilter */}
+      <section className="masthead-strap">
+        <Eyebrow dot={false}>
+          Agent · {name} · {rangeLabel(range)}
+        </Eyebrow>
+        <div className="strap-right">
+          <RangeFilter current={range} />
+          <span className="strap-pill is-muted">
+            {fmt.n(sessionCount)} session{sessionCount !== 1 ? 's' : ''} · {fmt.usd(totalCost)}
+          </span>
+        </div>
+      </section>
 
       {/* Profile head */}
       <section className="profile-head">
@@ -128,7 +152,7 @@ export default async function AgentProfilePage({ params }: { params: { name: str
         </div>
         <div className="profile-head-right">
           <div className="hero-stat hero-stat-detail">
-            <div className="hero-stat-eyebrow">14-DAY SPEND</div>
+            <div className="hero-stat-eyebrow">{rangeLabel(range).toUpperCase()} SPEND</div>
             <div className="hero-stat-value">{fmt.usd(totalCost)}</div>
             <div className="hero-stat-foot">
               <em>across</em> {fmt.k(totalTokens)} tokens
@@ -141,15 +165,15 @@ export default async function AgentProfilePage({ params }: { params: { name: str
 
       {/* 6-stat strip */}
       <section className="strip">
-        <StatBlock label="Sessions" value={fmt.n(sessionCount)} footnote="14 days" />
+        <StatBlock label="Sessions" value={fmt.n(sessionCount)} footnote={rangeLabel(range)} />
         <StatBlock label="Apps" value={fmt.n(appCount)} footnote="serving" />
         <StatBlock label="People" value={peopleList.length > 0 ? fmt.n(peopleList.length) : '—'} footnote="delegating" accent />
-        <StatBlock label="Tool calls" value={fmt.n(totalTools)} footnote="total" />
+        <StatBlock label="Tool calls" value={fmt.n(totalTools)} footnote={rangeLabel(range)} />
         <StatBlock label="Models" value={fmt.n(modelsCount)} footnote="routed to" />
         <StatBlock
           label="Errors"
           value={agent.errors != null ? fmt.n(agent.errors) : '—'}
-          footnote="across sessions"
+          footnote="lifetime"
         />
       </section>
 
