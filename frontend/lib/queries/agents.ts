@@ -1,17 +1,43 @@
 import { query, queryOne } from '../db'
 
-export async function getAllAgents() {
+function tsFilter(col: string, since: string | null): string {
+  if (!since) return ''
+  return `WHERE ${col} >= '${since}'`
+}
+
+export async function getAllAgents(since: string | null = null) {
+  // No range filter: lifetime mart is correct (fast path).
+  if (!since) {
+    return query(`
+      SELECT
+        agent,
+        app_id,
+        project_id,
+        session_count,
+        total_turns,
+        total_cost,
+        total_tool_calls
+      FROM dim_agents
+      ORDER BY total_cost DESC
+    `)
+  }
+  // Range filter: re-aggregate from dim_sessions (one row per agent × app),
+  // mirroring dashboard.getTopAgents shape so the page renders unchanged.
   return query(`
     SELECT
-      agent,
-      app_id,
-      project_id,
-      session_count,
-      total_turns,
-      total_cost,
-      total_tool_calls
-    FROM dim_agents
-    ORDER BY total_cost DESC
+      ds.agent                         AS agent,
+      al.app_id                        AS app_id,
+      al.project_id                    AS project_id,
+      COUNT(DISTINCT ds.session_id)    AS session_count,
+      SUM(ds.turn_count)               AS total_turns,
+      SUM(ds.total_cost)               AS total_cost,
+      SUM(ds.tools_used)               AS total_tool_calls
+    FROM dim_sessions ds
+    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
+    WHERE ds.start_ts >= '${since}'
+      AND ds.agent IS NOT NULL
+    GROUP BY ds.agent, al.app_id, al.project_id
+    ORDER BY total_cost DESC NULLS LAST
   `)
 }
 

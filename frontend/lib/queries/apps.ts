@@ -2,12 +2,49 @@ import { query, queryOne } from '../db'
 
 const APP_SESSIONS_LIMIT = 12
 
-export async function getApps() {
-  return query(`SELECT * FROM dim_apps ORDER BY total_cost DESC`)
+function tsFilter(col: string, since: string | null): string {
+  if (!since) return ''
+  return `WHERE ${col} >= '${since}'`
 }
 
-export async function getAppsTotalCost() {
-  return queryOne(`SELECT SUM(total_cost) AS total_cost FROM dim_sessions`)
+export async function getApps(since: string | null = null) {
+  // No range filter: lifetime mart is the right answer (fast path).
+  if (!since) {
+    return query(`SELECT * FROM dim_apps ORDER BY total_cost DESC`)
+  }
+  // Range filter: re-aggregate from dim_sessions, joining lookup tables
+  // for the naming/identity columns the dashboard's getTopApps pattern uses.
+  // `errors` is not derivable from dim_sessions alone; return NULL and let the
+  // UI render `—` (apps/page.tsx already handles `app.errors != null`).
+  return query(`
+    SELECT
+      COALESCE(da.app_id, al.app_id, ds.cwd)              AS app_id,
+      COALESCE(da.app_name, da.app_id, al.app_id, ds.cwd) AS app_name,
+      COALESCE(da.project_id, al.project_id)              AS project_id,
+      ANY_VALUE(da.cwd)                                    AS cwd,
+      ANY_VALUE(da.all_cwds)                               AS all_cwds,
+      COUNT(DISTINCT ds.session_id)                        AS session_count,
+      SUM(ds.turn_count)                                   AS total_turns,
+      SUM(ds.total_cost)                                   AS total_cost,
+      SUM(ds.total_output_tokens)                          AS total_output_tokens,
+      SUM(ds.commits)                                      AS commits,
+      COUNT(DISTINCT ds.agent)                             AS agent_count,
+      ARRAY_AGG(DISTINCT ds.agent)                         AS agents,
+      MIN(ds.start_ts)                                     AS first_seen,
+      MAX(ds.start_ts)                                     AS last_seen,
+      NULL                                                 AS errors
+    FROM dim_sessions ds
+    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
+    LEFT JOIN dim_apps da ON da.app_id = al.app_id AND da.tenant_id = al.tenant_id
+    WHERE ds.start_ts >= '${since}'
+    GROUP BY 1, 2, 3
+    ORDER BY total_cost DESC NULLS LAST
+  `)
+}
+
+export async function getAppsTotalCost(since: string | null = null) {
+  const wh = tsFilter('start_ts', since)
+  return queryOne(`SELECT SUM(total_cost) AS total_cost FROM dim_sessions ${wh}`)
 }
 
 export async function getProjectApps(projectId: string) {

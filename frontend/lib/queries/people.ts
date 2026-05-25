@@ -1,7 +1,39 @@
 import { query, queryOne } from '../db'
 
-export async function getPeople() {
-  return query(`SELECT * FROM dim_people ORDER BY total_cost DESC`)
+function tsFilter(col: string, since: string | null): string {
+  if (!since) return ''
+  return `WHERE ${col} >= '${since}'`
+}
+
+export async function getPeople(since: string | null = null) {
+  // No range filter: lifetime mart is correct (fast path).
+  // NOTE: dim_people has no last_seen column, so the previous WHERE clause
+  // threw and the page silently showed lifetime data via catch() fallback.
+  if (!since) {
+    return query(`SELECT * FROM dim_people ORDER BY total_cost DESC`)
+  }
+  // Range filter: re-aggregate from dim_sessions, joining int_app_cwd_lookup
+  // to populate the apps[] / agents[] arrays the page renders as chips.
+  return query(`
+    SELECT
+      ds.person_id                                AS person_id,
+      ANY_VALUE(ds.person_name)                   AS person_name,
+      COUNT(DISTINCT ds.session_id)               AS session_count,
+      COUNT(DISTINCT al.app_id)                   AS app_count,
+      ARRAY_AGG(DISTINCT ds.agent)
+        FILTER (WHERE ds.agent IS NOT NULL)        AS agents,
+      ARRAY_AGG(DISTINCT al.app_id)
+        FILTER (WHERE al.app_id IS NOT NULL)       AS apps,
+      SUM(ds.total_cost)                          AS total_cost,
+      SUM(ds.turn_count)                          AS total_turns,
+      SUM(ds.commits)                             AS total_commits
+    FROM dim_sessions ds
+    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
+    WHERE ds.start_ts >= '${since}'
+      AND ds.person_id IS NOT NULL
+    GROUP BY ds.person_id
+    ORDER BY total_cost DESC NULLS LAST
+  `)
 }
 
 export async function getPerson(personId: string) {
