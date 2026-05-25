@@ -232,3 +232,32 @@ export async function getTopPeople(since: string | null = null) {
     LIMIT 6
   `)
 }
+
+export async function getSpendPace() {
+  return queryOne(`
+    SELECT
+      today_cost,
+      today_pace_hourly,
+      avg_30d_cost,
+      avg_30d_turns,
+      avg_30d_tools,
+      today_turn_count,
+      hours_elapsed_today
+    FROM fact_spend_pace
+    WHERE tenant_id = 'local'
+    LIMIT 1
+  `)
+}
+
+export async function getHourlyActivity() {
+  return query(`
+    SELECT
+      day_of_week,
+      hour_of_day,
+      turn_count,
+      total_cost,
+      session_starts
+    FROM fact_hourly_activity
+    ORDER BY day_of_week, hour_of_day
+  `)
+}

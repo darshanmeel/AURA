@@ -12,9 +12,12 @@ import { parseRange, rangeSince, rangeLabel } from '../lib/range'
 import {
   getDashboardKPIs, getDailySpend, getTopApps, getTopProjects, getTopAgents,
   getToolMix, getProviderSplit, getModelBreakdown,
-  getRecentErrors, getTopFiles, getTopPeople
+  getRecentErrors, getTopFiles, getTopPeople,
+  getSpendPace, getHourlyActivity
 } from '../lib/queries/dashboard'
 import { getLoudestPromptOfDay } from '../lib/queries/prompts'
+import { BurnRate } from '../components/BurnRate'
+import { ActivityHeatmap } from '../components/ActivityHeatmap'
 
 export default async function DashboardPage({
   searchParams,
@@ -26,6 +29,8 @@ export default async function DashboardPage({
   let toolMix: any[] = [], providers: any[] = [], models: any[] = [], recentErrors: any[] = []
   let topFiles: any[] = [], topPeople: any[] = []
   let loudestPrompt: { prompt_text_200: string; agent: string; app_id: string; model_primary: string } | null = null
+  let spendPace: any = null
+  let hourlyActivity: any[] = []
 
   // Each query is isolated: a missing table (e.g. dim_sessions before first dbt run)
   // must not blank out the entire dashboard. Log per-query failure, return fallback.
@@ -36,25 +41,29 @@ export default async function DashboardPage({
     }
   }
 
-  const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp] = await Promise.all([
-    safe('kpis',         () => getDashboardKPIs(since),  null),
-    safe('dailySpend',   () => getDailySpend(since),     [] as any[]),
-    safe('topApps',      () => getTopApps(since),        [] as any[]),
-    safe('topProjects',  () => getTopProjects(since),    [] as any[]),
-    safe('topAgents',    () => getTopAgents(since),      [] as any[]),
-    safe('toolMix',      () => getToolMix(since),        [] as any[]),
-    safe('providers',    () => getProviderSplit(since),  [] as any[]),
-    safe('models',       () => getModelBreakdown(since), [] as any[]),
-    safe('recentErrors', () => getRecentErrors(since),   [] as any[]),
-    safe('topFiles',     () => getTopFiles(since),       [] as any[]),
-    safe('topPeople',    () => getTopPeople(since),      [] as any[]),
-    safe('loudestPrompt',() => getLoudestPromptOfDay(),  null),
+  const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp, sp, ha] = await Promise.all([
+    safe('kpis',            () => getDashboardKPIs(since),  null),
+    safe('dailySpend',      () => getDailySpend(since),     [] as any[]),
+    safe('topApps',         () => getTopApps(since),        [] as any[]),
+    safe('topProjects',     () => getTopProjects(since),    [] as any[]),
+    safe('topAgents',       () => getTopAgents(since),      [] as any[]),
+    safe('toolMix',         () => getToolMix(since),        [] as any[]),
+    safe('providers',       () => getProviderSplit(since),  [] as any[]),
+    safe('models',          () => getModelBreakdown(since), [] as any[]),
+    safe('recentErrors',    () => getRecentErrors(since),   [] as any[]),
+    safe('topFiles',        () => getTopFiles(since),       [] as any[]),
+    safe('topPeople',       () => getTopPeople(since),      [] as any[]),
+    safe('loudestPrompt',   () => getLoudestPromptOfDay(),  null),
+    safe('spendPace',       () => getSpendPace(),           null),
+    safe('hourlyActivity',  () => getHourlyActivity(),      [] as any[]),
   ])
   kpis = kpisArr ?? {}
   dailySpend = ds as any[]; topApps = ta as any[]; topProjects = tproj as any[]; topAgents = tag as any[]
   toolMix = tm as any[]; providers = prov as any[]; models = mod as any[]
   recentErrors = re as any[]; topFiles = tf as any[]; topPeople = tp as any[]
   loudestPrompt = lp as any
+  spendPace = sp as any
+  hourlyActivity = ha as any[]
 
   const totalDays = dailySpend.length
   const maxCost = Math.max(...topApps.map((a: any) => a.total_cost ?? 0), 0.001)
@@ -91,6 +100,9 @@ export default async function DashboardPage({
           <span className="strap-pill is-muted">{fmt.n(kpis.total_sessions)} sessions · {topAgents.length} agents</span>
         </div>
       </section>
+
+      {/* Burn rate strip */}
+      <BurnRate pace={spendPace} />
 
       {/* Hero */}
       <section className="hero">
@@ -335,6 +347,8 @@ export default async function DashboardPage({
               </tbody>
             </table>
           )}
+          {/* Activity heatmap */}
+          <ActivityHeatmap data={hourlyActivity} />
         </div>
 
         <aside className="col-side">
