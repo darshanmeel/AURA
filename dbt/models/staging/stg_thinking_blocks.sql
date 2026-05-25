@@ -17,7 +17,11 @@ WITH exploded AS (
         UNNEST(CAST(json_extract(payload, '$.message.content') AS JSON[])) as content_item
     FROM {{ ref('stg_events') }}
     WHERE event_type = 'assistant'
-      AND payload LIKE '%"type":"thinking"%'
+      -- Use looser LIKE (just the field name) — JSONL payloads sometimes
+      -- have whitespace between "type": and "thinking", which broke the
+      -- old strict LIKE. The downstream json_extract_string filter on
+      -- content_item.type = 'thinking' guarantees correctness regardless.
+      AND payload LIKE '%"thinking"%'
 ),
 filtered AS (
     SELECT
