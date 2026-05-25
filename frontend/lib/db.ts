@@ -22,6 +22,12 @@ function normalizeBigInts(v: unknown): unknown {
       : v.toString()
   }
   if (Array.isArray(v)) return v.map(normalizeBigInts)
+  // Date objects have no enumerable own properties, so Object.entries returns [].
+  // Without this guard, normalizeBigInts would convert every Date to {} — that
+  // breaks RSC serialization (React flight sends {} to the client, which then
+  // passes {} to client components like DailyChart) while the server SSR
+  // renders with the real Date, causing hydration mismatches (#418).
+  if (v instanceof Date) return v.toISOString()
   if (v && typeof v === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {

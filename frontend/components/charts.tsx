@@ -36,7 +36,10 @@ export function DailyChart({ data }: { data: DaySpend[] }) {
             fill="var(--accent)"
             opacity={0.7}
           >
-            <title>{dateStr}: ${d.cost.toFixed(4)}, {d.turns} turns</title>
+            {/* Next.js 14 app-page runtime strips multi-child <title> in SVG context
+                (eU() only renders a single non-array child). Use a single template-literal
+                string so the title content survives SSR and matches client hydration. */}
+            <title>{`${dateStr}: $${d.cost.toFixed(4)}, ${d.turns} turns`}</title>
           </rect>
         )
       })}

@@ -43,7 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <span className="meta-dot">·</span>
                 <span className="meta-key">NO. 14</span>
                 <span className="meta-dot">·</span>
-                <span className="meta-key">{dateStr}</span>
+                <span className="meta-key" suppressHydrationWarning>{dateStr}</span>
               </div>
             </div>
             <Rule weight="thick" />

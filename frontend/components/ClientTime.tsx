@@ -29,5 +29,11 @@ export function ClientTime({
       setS(d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }))
     }
   }, [ts, mode])
-  return <>{s}</>
+  // The fragment shape (`<>{s}</>`) causes React to commit text into the
+  // parent element. With Next's streamed Client Component boundaries the
+  // SSR slot can be empty while the client renders the placeholder first
+  // — Next reports that as #418. Wrap in a span with
+  // suppressHydrationWarning so the swap from placeholder → formatted
+  // time after mount is treated as expected, not a mismatch.
+  return <span suppressHydrationWarning>{s}</span>
 }
