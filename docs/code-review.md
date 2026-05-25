@@ -109,16 +109,16 @@ dbt_running = threading.Event()
 
 ```python
 # session_meta.py
-person_name = person_info.get("name", "Darshan Meel")  # hard-coded
+person_name = person_info.get("name", "<some hard-coded name>")  # hard-coded
 ```
 
 ```sql
 -- dim_sessions.sql
-COALESCE(sm.person_id,   'darshan')       AS person_id,
-COALESCE(sm.person_name, 'Darshan Meel')  AS person_name,
+COALESCE(sm.person_id,   '<hard-coded id>')   AS person_id,
+COALESCE(sm.person_name, '<hard-coded name>') AS person_name,
 ```
 
-Any user who clones this repo and has no `~/.aura/people.json` will have their sessions attributed to "Darshan Meel". This is a correctness bug for the multi-user use case.
+Any user who clones this repo and has no `~/.aura/people.json` will have their sessions attributed to the hard-coded fallback. This is a correctness bug for the multi-user use case.
 
 **Fix in session_meta.py:** Fall back to `getpass.getuser()` for both id and name (it is already used for `person_id`):
 

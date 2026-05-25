@@ -150,8 +150,8 @@ By default, every session is attributed to the host OS user (`getpass.getuser()`
 
 ```json
 {
-  "darshan": { "name": "Darshan Singh", "role": "Founding engineer" },
-  "alice":   { "name": "Alice Liu",     "role": "Designer" }
+  "alice": { "name": "Alice Liu", "role": "Founding engineer" },
+  "bob":   { "name": "Bob Chen",  "role": "Designer" }
 }
 ```
 
@@ -248,8 +248,6 @@ The following columns contain sensitive content and will be masked or hashed pri
 ## Documentation
 
 - [docs/code-review.md](docs/code-review.md) — full codebase audit with prioritized improvement notes
-- [docs/design-match-audit.md](docs/design-match-audit.md) — comparison between the original design mockup and the current implementation
-- [docs/superpowers/specs/](docs/superpowers/specs/) — original spec documents for each major release
 
 ---
 

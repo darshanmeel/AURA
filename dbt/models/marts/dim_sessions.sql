@@ -145,9 +145,10 @@ SELECT
     COALESCE(ag.agent_count, 1)                     AS agent_count,
     -- session_title fallback: prompt preview → session_id
     COALESCE(fp.first_prompt_200, s.session_id)     AS session_title,
-    -- person columns from session_meta; fallback to current-user defaults
-    COALESCE(sm.person_id,   'darshan')             AS person_id,
-    COALESCE(sm.person_name, 'Darshan Meel')        AS person_name,
+    -- person columns from session_meta; fallback to a neutral 'unknown' when
+    -- session_meta has not been written (older sessions before backfill).
+    COALESCE(sm.person_id,   'unknown')             AS person_id,
+    COALESCE(sm.person_name, 'Unknown')             AS person_name,
     COALESCE(sm.commits, 0)                         AS commits,
     CASE WHEN s.end_ts IS NULL THEN 'active' ELSE 'completed' END AS status,
     CASE
