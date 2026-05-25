@@ -114,6 +114,8 @@ Environment variables (all have sensible defaults):
 | `AURA_SNAPSHOT_INTERVAL` | `2` | Seconds between snapshot refreshes |
 | `AURA_DBT_RUN_INTERVAL_MINUTES` | `5` | How often `dbt build` runs |
 | `CLAUDE_LOGS_DIR` | `~/.claude/projects` | Host-side path to mount into the watcher |
+| `AURA_REDACT_PAYLOAD` | `true` | Set to `false` to disable secret/base64 redaction in payload (raw JSONL passes through unchanged) |
+| `AURA_MODEL_WINDOWS_JSON` | `{}` | Optional JSON object to override model context window sizes, e.g. `{"new-model-id":1000000}` |
 
 ---
 

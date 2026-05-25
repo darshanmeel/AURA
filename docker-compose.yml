@@ -16,6 +16,19 @@ services:
       - AURA_LOGS_DIR=/logs/claude
       - AURA_SNAPSHOT_INTERVAL=2
       - AURA_DBT_RUN_INTERVAL_MINUTES=5
+      # Set to false to disable secret/base64 redaction (raw JSONL passes through unchanged).
+      # WARNING: disabling means any API keys or tokens in payloads are stored verbatim.
+      - AURA_REDACT_PAYLOAD=true
+      # Optional JSON object to override model context window sizes without rebuilding.
+      # Example: AURA_MODEL_WINDOWS_JSON={"claude-opus-5-20260601":1000000}
+      - AURA_MODEL_WINDOWS_JSON=
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; p='/data/aura_read.duckdb'; exit(0 if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < 60 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    mem_limit: 512m
     restart: unless-stopped
 
   frontend:
@@ -29,4 +42,11 @@ services:
       - NODE_ENV=production
     depends_on:
       - watcher
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 512m
     restart: unless-stopped
