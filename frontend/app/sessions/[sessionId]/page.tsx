@@ -72,8 +72,14 @@ export default async function SessionDetailPage({
   } catch {}
   if (!s) notFound()
 
-  const cacheHitTot = (s.cache_read_total ?? 0) + (s.ephemeral_5m_total ?? 0) + (s.ephemeral_1h_total ?? 0)
-  const cacheHitRate = cacheHitTot > 0 ? (s.cache_read_total ?? 0) / cacheHitTot : null
+  // DuckDB HUGEINT/BIGINT cache columns come back as BigInt; mixing BigInt
+  // with Number(0) from a missing field throws "Cannot mix BigInt and other
+  // types" at runtime. Wrap each in Number() to keep the math Number-only.
+  const cacheReadN = Number(s.cache_read_total ?? 0)
+  const cache5mN   = Number(s.ephemeral_5m_total ?? 0)
+  const cache1hN   = Number(s.ephemeral_1h_total ?? 0)
+  const cacheHitTot = cacheReadN + cache5mN + cache1hN
+  const cacheHitRate = cacheHitTot > 0 ? cacheReadN / cacheHitTot : null
 
   const displayTitle = unwrapTitle(s.session_title ?? s.session_id)
   // Split title on · for italic second part, matching design pattern

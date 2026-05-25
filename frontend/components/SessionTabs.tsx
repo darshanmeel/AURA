@@ -1089,15 +1089,18 @@ export function SessionTabs({
               }
               // Per-agent prompt rollup from the prompts array we already have
               const byAgent: Record<string, { prompts: number; tools: number; files: number; cost: number; tokens: number; errors: number }> = {}
+              // Wrap each field in Number() — DuckDB HUGEINT/BIGINT columns
+              // come back as BigInt and 0 + BigInt throws "Cannot mix BigInt
+              // and other types" at runtime in the browser bundle.
               for (const p of (prompts ?? [])) {
                 const a = p.agent ?? 'main'
                 if (!byAgent[a]) byAgent[a] = { prompts: 0, tools: 0, files: 0, cost: 0, tokens: 0, errors: 0 }
                 byAgent[a].prompts += 1
-                byAgent[a].tools   += p.tool_call_count     ?? 0
-                byAgent[a].files   += p.files_edited        ?? 0
-                byAgent[a].cost    += p.cost_total          ?? 0
-                byAgent[a].tokens  += p.output_tokens_total ?? 0
-                byAgent[a].errors  += p.errors_caught       ?? 0
+                byAgent[a].tools   += Number(p.tool_call_count     ?? 0)
+                byAgent[a].files   += Number(p.files_edited        ?? 0)
+                byAgent[a].cost    += Number(p.cost_total          ?? 0)
+                byAgent[a].tokens  += Number(p.output_tokens_total ?? 0)
+                byAgent[a].errors  += Number(p.errors_caught       ?? 0)
               }
               const totalCost = Math.max(...Object.values(byAgent).map(v => v.cost), 0.001)
               return (

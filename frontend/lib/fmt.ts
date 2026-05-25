@@ -1,26 +1,41 @@
+// Coerce BigInt → Number at the formatter boundary. DuckDB HUGEINT/BIGINT
+// columns sometimes arrive as BigInt despite lib/db.ts converting top-level
+// values — nested structs or array element fields slip through, and any
+// arithmetic mixing BigInt with Number (Math.round, /1000, .toFixed) throws
+// "Cannot mix BigInt and other types". Doing the coercion here means every
+// callsite is safe without per-site Number() wrapping.
+function num(v: number | bigint | null | undefined): number | null {
+  if (v == null) return null
+  return typeof v === 'bigint' ? Number(v) : v
+}
+
 export const fmt = {
-  usd: (v: number | null | undefined) => {
-    if (v == null) return '$—'
-    if (v < 0.01) return `$${v.toFixed(4)}`
-    if (v < 1) return `$${v.toFixed(3)}`
-    return `$${v.toFixed(2)}`
+  usd: (v: number | bigint | null | undefined) => {
+    const n = num(v)
+    if (n == null) return '$—'
+    if (n < 0.01) return `$${n.toFixed(4)}`
+    if (n < 1) return `$${n.toFixed(3)}`
+    return `$${n.toFixed(2)}`
   },
 
-  n: (v: number | null | undefined) => {
-    if (v == null) return '—'
-    return new Intl.NumberFormat().format(Math.round(v))
+  n: (v: number | bigint | null | undefined) => {
+    const x = num(v)
+    if (x == null) return '—'
+    return new Intl.NumberFormat().format(Math.round(x))
   },
 
-  k: (v: number | null | undefined) => {
-    if (v == null) return '—'
-    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`
-    if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`
-    return String(Math.round(v))
+  k: (v: number | bigint | null | undefined) => {
+    const x = num(v)
+    if (x == null) return '—'
+    if (x >= 1_000_000) return `${(x / 1_000_000).toFixed(1)}M`
+    if (x >= 1_000) return `${(x / 1_000).toFixed(1)}k`
+    return String(Math.round(x))
   },
 
-  pct: (v: number | null | undefined) => {
-    if (v == null) return '—'
-    return `${(v * 100).toFixed(1)}%`
+  pct: (v: number | bigint | null | undefined) => {
+    const x = num(v)
+    if (x == null) return '—'
+    return `${(x * 100).toFixed(1)}%`
   },
 
   date: (v: string | Date | null | undefined) => {

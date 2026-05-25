@@ -12,6 +12,26 @@ async function getInstance(): Promise<DuckDBInstance> {
   return instance
 }
 
+// Recursive BigInt → Number/string normalization. BigInt within JS safe-integer
+// range becomes Number; anything outside stays as string so token IDs and
+// rare overflow values don't silently lose precision.
+function normalizeBigInts(v: unknown): unknown {
+  if (typeof v === 'bigint') {
+    return v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER)
+      ? Number(v)
+      : v.toString()
+  }
+  if (Array.isArray(v)) return v.map(normalizeBigInts)
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = normalizeBigInts(val)
+    }
+    return out
+  }
+  return v
+}
+
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined
   try {
@@ -36,19 +56,10 @@ export async function query<T = Record<string, unknown>>(sql: string, params: un
       sql.slice(0, 80).replace(/\s+/g, ' ').trim()
     )
     const rows = result.getRowObjectsJS()
-    return rows.map(row =>
-      Object.fromEntries(
-        Object.entries(row).map(([k, v]) => {
-          if (typeof v === 'bigint') {
-            // Safe integer range → number; otherwise string to preserve precision
-            return [k, v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER)
-              ? Number(v)
-              : v.toString()]
-          }
-          return [k, v]
-        })
-      )
-    ) as unknown as T[]
+    // Walk recursively — top-level only conversion left BigInt inside
+    // ARRAY_AGG(STRUCT_PACK(...)) and array columns, which then triggered
+    // "Cannot mix BigInt and other types" downstream in any arithmetic.
+    return rows.map(row => normalizeBigInts(row)) as unknown as T[]
   } finally {
     conn.closeSync()
   }
