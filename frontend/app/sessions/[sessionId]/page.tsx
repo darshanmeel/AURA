@@ -16,29 +16,7 @@ import {
 } from '../../../lib/queries/sessions'
 import { getSessionPrompts } from '../../../lib/queries/prompts'
 import { getSessionFilesWithAttribution } from '../../../lib/queries/files'
-
-/**
- * Defensively unwrap a session_title that may contain raw JSON content-block arrays.
- * Pattern: '[{"type":"text","text":"..."}]'
- */
-function unwrapTitle(raw: string | null | undefined): string {
-  if (!raw) return ''
-  const s = raw.trim()
-  if (s.startsWith('[{') && s.includes('"type"')) {
-    try {
-      const blocks = JSON.parse(s)
-      if (Array.isArray(blocks)) {
-        const text = blocks
-          .filter((b: any) => b.type === 'text' && b.text)
-          .map((b: any) => b.text as string)
-          .join(' ')
-          .trim()
-        if (text) return text.length > 120 ? text.slice(0, 120) + '…' : text
-      }
-    } catch { /* fall through */ }
-  }
-  return s.length > 120 ? s.slice(0, 120) + '…' : s
-}
+import { promptToPlain } from '../../../lib/prompt-display'
 
 export default async function SessionDetailPage({
   params, searchParams,
@@ -81,7 +59,7 @@ export default async function SessionDetailPage({
   const cacheHitTot = cacheReadN + cache5mN + cache1hN
   const cacheHitRate = cacheHitTot > 0 ? cacheReadN / cacheHitTot : null
 
-  const displayTitle = unwrapTitle(s.session_title ?? s.session_id)
+  const displayTitle = promptToPlain(s.session_title ?? s.session_id, 120)
   // Split title on · for italic second part, matching design pattern
   const [titlePart, ...restParts] = displayTitle.split('·')
   const titleMain = titlePart.trim()

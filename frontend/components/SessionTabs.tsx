@@ -3,6 +3,7 @@
 import React, { useState } from 'react'
 import { Eyebrow, Rule, StatBlock, ModelPill, SeverityTag, BarRow, AgentLink } from './atoms'
 import { fmt } from '../lib/fmt'
+import { PromptText } from './PromptText'
 
 // ── Types for new enriched data ──────────────────────────────────────────────
 interface ToolSignatureEntry { tool_name: string; calls: number }
@@ -99,25 +100,7 @@ function Chip({
   )
 }
 
-// ── Title unwrap helper (guards against raw JSON content-block arrays) ────────
-function unwrapTitle(raw: string | null | undefined): string {
-  if (!raw) return ''
-  const s = raw.trim()
-  if (s.startsWith('[{') && s.includes('"type"')) {
-    try {
-      const blocks = JSON.parse(s)
-      if (Array.isArray(blocks)) {
-        const text = blocks
-          .filter((b: any) => b.type === 'text' && b.text)
-          .map((b: any) => b.text as string)
-          .join(' ')
-          .trim()
-        if (text) return text
-      }
-    } catch { /* fall through */ }
-  }
-  return s
-}
+
 
 // ── Inline TurnChart (ported from design's session.jsx) ─────────────────────
 // Stacks bars [cacheR, cacheW, out, in] per turn, overlays a context-% line.
@@ -299,7 +282,6 @@ function HeroCard({
       </div>
     )
   }
-  const preview = (prompt.prompt_text_200 ?? '').slice(0, 110)
   return (
     <a
       href={`#prompt-${prompt.prompt_id}`}
@@ -326,7 +308,7 @@ function HeroCard({
         display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as any,
         overflow: 'hidden',
       }}>
-        &ldquo;{preview}&rdquo;
+        &ldquo;<PromptText text={prompt.prompt_text_200} maxLen={110} />&rdquo;
       </p>
       <div style={{ fontSize: 10, color: 'var(--accent)', fontFamily: 'var(--mono)', marginTop: 'auto' }}>
         ↓ jump to prompt
@@ -528,7 +510,7 @@ function MessageTurn({
               USER
             </div>
             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              {userTrunc ? userText.slice(0, PREVIEW_LEN) + '…' : userText}
+              <PromptText text={userTrunc ? userText.slice(0, PREVIEW_LEN) : userText} />
             </p>
             {userText.length > PREVIEW_LEN && (
               <button
@@ -989,19 +971,21 @@ export function SessionTabs({
                       {previewText && (
                         <div style={{ marginBottom: 10 }}>
                           <p className="prompt-text" style={{ fontStyle: 'italic', color: 'var(--ink-2)', margin: 0, lineHeight: 1.6 }}>
-                            &ldquo;{unwrapTitle(previewText)}&rdquo;
+                            &ldquo;<PromptText text={previewText} maxLen={200} />&rdquo;
                           </p>
                           {fullText.length > previewText.length && (
                             <details style={{ marginTop: 6 }}>
                               <summary style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--mono)' }}>
                                 show full ({fullText.length} chars)
                               </summary>
-                              <pre style={{
+                              <div style={{
                                 marginTop: 8, padding: '10px 12px',
                                 background: 'rgba(255,255,255,0.03)', border: '1px solid var(--rule)',
                                 borderRadius: 4, fontSize: 12, lineHeight: 1.55,
-                                whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--ink)',
-                              }}>{fullText}</pre>
+                                color: 'var(--ink)',
+                              }}>
+                                <PromptText text={fullText} block style={{ margin: 0 }} />
+                              </div>
                             </details>
                           )}
                         </div>

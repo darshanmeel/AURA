@@ -5,38 +5,7 @@ import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill, AppLink } from '../../c
 import { RangeFilter } from '../../components/RangeFilter'
 import { parseRange } from '../../lib/range'
 import { fmt } from '../../lib/fmt'
-
-function trunc200(s: string | null | undefined): string {
-  if (!s) return ''
-  return s.length > 200 ? s.slice(0, 200) + '…' : s
-}
-
-/**
- * Defensively unwrap a session_title that may contain raw JSON content-block arrays.
- * Pattern: '[{"type":"text","text":"..."}]' or '[{"type":"text","text":"..."},...]'
- * Returns the plain text of the first text block, or the original string.
- */
-function unwrapTitle(raw: string | null | undefined): string {
-  if (!raw) return ''
-  const s = raw.trim()
-  // Detect JSON content-block array: starts with [{ and contains "type"
-  if (s.startsWith('[{') && s.includes('"type"')) {
-    try {
-      const blocks = JSON.parse(s)
-      if (Array.isArray(blocks)) {
-        const text = blocks
-          .filter((b: any) => b.type === 'text' && b.text)
-          .map((b: any) => b.text as string)
-          .join(' ')
-          .trim()
-        if (text) return trunc200(text)
-      }
-    } catch {
-      // fall through to original
-    }
-  }
-  return trunc200(s)
-}
+import { promptToPlain } from '../../lib/prompt-display'
 
 function SessionsPageInner() {
   const searchParams = useSearchParams()
@@ -202,8 +171,8 @@ function SessionsPageInner() {
               {filtered.map((s: any) => {
                 // Prefer app_id from dim_apps join; fall back to cwd last segment
                 const appDisplay = s.app_id ?? s.cwd?.split(/[/\\]/).pop()
-                // Prompt preview: defensively unwrap JSON content-block titles
-                const titleText = unwrapTitle(s.session_title)
+                // Prompt preview: unwrap JSON blocks and strip command tags
+                const titleText = promptToPlain(s.session_title, 200)
 
                 return (
                   <tr

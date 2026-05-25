@@ -13,25 +13,12 @@ import {
 } from '../../../lib/queries/apps'
 import { getAppPrompts, getAppAllPrompts } from '../../../lib/queries/prompts'
 import { query } from '../../../lib/db'
+import { PromptText } from '../../../components/PromptText'
+import { promptToPlain } from '../../../lib/prompt-display'
 
 function trunc200(s: string | null | undefined): string {
   if (!s) return ''
   return s.length > 200 ? s.slice(0, 200) + '…' : s
-}
-
-function unwrapTitle(raw: string | null | undefined): string {
-  if (!raw) return ''
-  const s = raw.trim()
-  if (s.startsWith('[{') && s.includes('"type"')) {
-    try {
-      const blocks = JSON.parse(s)
-      if (Array.isArray(blocks)) {
-        const text = blocks.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text as string).join(' ').trim()
-        if (text) return trunc200(text)
-      }
-    } catch { /* fall through */ }
-  }
-  return trunc200(s)
 }
 
 async function getAppAgents(appId: string, since: string | null = null) {
@@ -336,7 +323,7 @@ export default async function AppProfilePage({
                     <td>{s.agent ? <AgentLink name={s.agent} /> : '—'}</td>
                     <td>
                       <a href={`/sessions/${s.session_id}`} className="sess-title-sm">
-                        {unwrapTitle(s.session_title) || s.session_id?.slice(0, 12)}
+                        {promptToPlain(s.session_title, 120) || s.session_id?.slice(0, 12)}
                       </a>
                     </td>
                     <td>{s.model ? <ModelPill model={s.model} /> : '—'}</td>
@@ -369,7 +356,7 @@ export default async function AppProfilePage({
                       {p.agent && <AgentLink name={p.agent} />}
                     </div>
                     <p className="prompt-text">
-                      &ldquo;{trunc200(p.prompt_text_200)}&rdquo;
+                      &ldquo;<PromptText text={p.prompt_text_200} maxLen={200} />&rdquo;
                     </p>
                     <div className="prompt-mini-stats">
                       {p.turn_count != null && <span>{p.turn_count} turns</span>}
@@ -425,7 +412,7 @@ export default async function AppProfilePage({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   {p.prompt_text_200 && (
                     <p style={{ fontStyle: 'italic', color: 'var(--ink-2)', marginBottom: 10, lineHeight: 1.6 }}>
-                      &ldquo;{trunc200(p.prompt_text_200)}&rdquo;
+                      &ldquo;<PromptText text={p.prompt_text_200} maxLen={200} />&rdquo;
                     </p>
                   )}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>

@@ -7,6 +7,7 @@ import {
 } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
 import { RangeFilter } from '../../../components/RangeFilter'
+import { PromptText } from '../../../components/PromptText'
 import { fmt } from '../../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
 import {
@@ -278,7 +279,7 @@ export default async function PersonProfilePage({
                       </span>
                       {p.agent && <AgentLink name={p.agent} />}
                     </div>
-                    <p className="prompt-text">&ldquo;{trunc200(p.prompt_text_200)}&rdquo;</p>
+                    <p className="prompt-text">&ldquo;<PromptText text={p.prompt_text_200} maxLen={200} />&rdquo;</p>
                     <div className="prompt-mini-stats">
                       {p.turn_count != null && <span>{p.turn_count} turns</span>}
                       {p.tool_call_count != null && <span>{p.tool_call_count} tools</span>}
