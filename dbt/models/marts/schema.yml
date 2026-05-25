@@ -44,3 +44,13 @@ models:
       - name: agent
         tests:
           - not_null
+
+  - name: fact_prompts
+    columns:
+      - name: prompt_id
+        tests:
+          - not_null
+          - unique
+      - name: cache_hit_rate
+        tests:
+          - not_null
