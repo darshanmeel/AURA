@@ -89,6 +89,14 @@ examples (JSONL adapter pitfalls, SCD on pricing, etc.).
 Target ~800–1500 tokens. Bounded, but not micro-compressed — bad
 summaries cause bad MAIN decisions.
 
+## Terminal is always free
+
+All agent dispatches and long-running commands MUST run in the background
+(`run_in_background: true` on Agent, or background mode on Bash). MAIN
+never blocks the terminal waiting on a sub-process. The harness notifies
+on completion — there is no need to poll. Foreground is reserved for
+fast one-shot reads / edits (< a few seconds).
+
 ## Commit and push
 
 ```
