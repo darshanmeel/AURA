@@ -1,11 +1,11 @@
 export const dynamic = 'force-dynamic'
 
 import { notFound } from 'next/navigation'
-import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill } from '../../../components/atoms'
+import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill, PersonLink } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
 import { ClickableRow } from '../../../components/ClickableRow'
 import { fmt } from '../../../lib/fmt'
-import { getApp, getAppSessions, getProjectApps } from '../../../lib/queries/apps'
+import { getApp, getAppSessions, getProjectApps, getAppPeople } from '../../../lib/queries/apps'
 import { getAppPrompts, getAppAllPrompts } from '../../../lib/queries/prompts'
 import { query } from '../../../lib/db'
 
@@ -45,21 +45,24 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
   let app: any = null
   let sessions: any[] = []
   let agents: any[] = []
+  let people: any[] = []
   let prompts: any[] = []
   let allPrompts: any[] = []
   let siblingApps: any[] = []
 
   try {
-    const [a, s, ag, pr, allPr] = await Promise.all([
+    const [a, s, ag, pe, pr, allPr] = await Promise.all([
       getApp(appId),
       getAppSessions(appId),
       getAppAgents(appId),
+      getAppPeople(appId),
       getAppPrompts(appId, 6),
       getAppAllPrompts(appId, 200),
     ])
     app = a
     sessions = s as any[]
     agents = ag
+    people = pe as any[]
     prompts = pr as any[]
     allPrompts = allPr as any[]
     if (app?.project_id) {
@@ -111,7 +114,7 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
       {/* 6-stat strip */}
       <section className="strip">
         <StatBlock label="Sessions" value={fmt.n(app.session_count)} footnote="14 days" />
-        <StatBlock label="People" value="—" footnote="contributors" />
+        <StatBlock label="People" value={people.length > 0 ? fmt.n(people.length) : '—'} footnote="contributors" />
         <StatBlock label="Agents" value={fmt.n(app.agent_count)} footnote="in rotation" accent />
         <StatBlock label="Commits" value={app.commits != null ? fmt.n(app.commits) : '—'} footnote="aggregate" />
         <StatBlock label="Tokens" value={fmt.k(app.total_output_tokens ?? 0)} footnote="aggregate" />
@@ -162,6 +165,54 @@ export default async function AppProfilePage({ params }: { params: { appId: stri
             </table>
           ) : (
             <div className="empty-block">No agent data yet — dim_agents will populate after dbt runs.</div>
+          )}
+
+          {/* People in this app */}
+          <Rule />
+          <div className="section-head" style={{ marginTop: 28 }}>
+            <h2 className="h-section">People — in this app</h2>
+            <span className="section-meta">cost split by operator</span>
+          </div>
+          {people.length > 0 ? (() => {
+            const maxPeopleCost = Math.max(Number(people[0].total_cost ?? 0), 0.0001)
+            return (
+              <table className="ledger">
+                <thead>
+                  <tr>
+                    <th>Person</th>
+                    <th className="num">Sessions</th>
+                    <th className="num">Turns</th>
+                    <th className="num">Cost</th>
+                    <th>Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {people.map((pe: any) => (
+                    <tr key={pe.person_id}>
+                      <td>
+                        <PersonLink
+                          personId={pe.person_id}
+                          personName={pe.person_name ?? pe.person_id}
+                        />
+                      </td>
+                      <td className="num">{fmt.n(pe.session_count)}</td>
+                      <td className="num">{fmt.n(pe.total_turns)}</td>
+                      <td className="num strong">{fmt.usd(pe.total_cost)}</td>
+                      <td>
+                        <div className="tbar">
+                          <div
+                            className="tbar-fill"
+                            style={{ width: `${(Number(pe.total_cost ?? 0) / maxPeopleCost) * 100}%` }}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          })() : (
+            <div className="empty-block">—</div>
           )}
 
           {/* Other apps in this project */}

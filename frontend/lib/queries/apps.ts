@@ -47,3 +47,18 @@ export async function getAppSessions(appId: string, limit = APP_SESSIONS_LIMIT) 
     LIMIT ?
   `, [appId, limit])
 }
+
+export async function getAppPeople(appId: string) {
+  return query(`
+    SELECT ds.person_id, ds.person_name,
+           COUNT(DISTINCT ds.session_id)  AS session_count,
+           SUM(ds.turn_count)             AS total_turns,
+           SUM(ds.total_cost)             AS total_cost
+    FROM dim_sessions ds
+    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+    WHERE da.app_id = ?
+      AND ds.person_id IS NOT NULL
+    GROUP BY ds.person_id, ds.person_name
+    ORDER BY total_cost DESC
+  `, [appId])
+}
