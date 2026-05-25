@@ -39,8 +39,8 @@ export default async function PeoplePage() {
         </h1>
         <p className="hero-lede">
           {people.length} operator{people.length !== 1 ? 's' : ''},{' '}
-          {[...new Set(people.flatMap((p: any) => p.apps ?? []))].length} apps,{' '}
-          {[...new Set(people.flatMap((p: any) => p.agents ?? []))].length} agents.
+          {Array.from(new Set(people.flatMap((p: any) => p.apps ?? []))).length} apps,{' '}
+          {Array.from(new Set(people.flatMap((p: any) => p.agents ?? []))).length} agents.
           Click anyone to see what they delegate, what they spend, and what they actually type into the prompt.
         </p>
       </section>
