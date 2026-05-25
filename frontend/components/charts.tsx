@@ -52,7 +52,7 @@ export function DailyChart({ data }: { data: DaySpend[] }) {
             fontSize={9}
             fill="var(--muted)"
           >
-            {new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            {new Date(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}
           </text>
         )
       })}
