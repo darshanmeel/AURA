@@ -95,10 +95,14 @@ first_prompt AS (
     WHERE user_prompt IS NOT NULL
     GROUP BY tenant_id, session_id
 ),
--- App and project IDs from the cwd-parsing mart.
+-- App and project IDs from the cwd-lookup intermediate model.
+-- int_app_cwd_lookup emits one row per distinct cwd variant (unnested from
+-- dim_apps.all_cwds), so every session cwd — including non-canonical variants
+-- like trailing-slash differences or alternate checkout paths — resolves to an
+-- app_id instead of silently returning NULL.
 app_lookup AS (
     SELECT tenant_id, cwd, app_id, project_id AS app_project_id
-    FROM {{ ref('dim_apps') }}
+    FROM {{ ref('int_app_cwd_lookup') }}
 ),
 skills_per_session AS (
     SELECT

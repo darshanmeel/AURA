@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: fact_model_calls
+    columns:
+      - name: event_uuid
+        tests:
+          - not_null
+          - unique
+      - name: calculated_cost
+        tests:
+          - not_null
+      - name: model
+        tests:
+          - not_null
+
+  - name: fact_turns
+    columns:
+      - name: turn_id
+        tests:
+          - not_null
+
+  - name: dim_sessions
+    columns:
+      - name: session_id
+        tests:
+          - not_null
+          - unique
+      - name: tenant_id
+        tests:
+          - not_null
+
+  - name: dim_apps
+    columns:
+      - name: app_id
+        tests:
+          - not_null
+      - name: project_id
+        tests:
+          - not_null
+
+  - name: dim_agents
+    columns:
+      - name: agent
+        tests:
+          - not_null
