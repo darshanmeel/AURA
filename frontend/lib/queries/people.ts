@@ -38,8 +38,9 @@ export async function getPersonApps(personId: string) {
            SUM(ds.turn_count)               AS total_turns,
            SUM(ds.total_cost)               AS total_cost
     FROM dim_sessions ds
-    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+    INNER JOIN dim_apps da ON da.cwd = ds.cwd
     WHERE ds.person_id = ?
+      AND da.app_id IS NOT NULL
     GROUP BY da.app_id, da.app_name
     ORDER BY total_cost DESC
   `, [personId])

@@ -6,3 +6,4 @@ sources:
     tables:
       - name: raw_events
       - name: raw_session_skills
+      - name: session_meta
