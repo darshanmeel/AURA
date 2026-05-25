@@ -5,7 +5,9 @@ import { Eyebrow, Rule, StatBlock, BarRow, ProviderTag, ModelPill, AgentLink, Pe
 import { ClickableRow } from '../components/ClickableRow'
 import { DailyChart } from '../components/charts'
 import { SideRail, SideSection } from '../components/panels'
+import { RangeFilter } from '../components/RangeFilter'
 import { fmt } from '../lib/fmt'
+import { parseRange, rangeSince, rangeLabel } from '../lib/range'
 import {
   getDashboardKPIs, getDailySpend, getTopApps, getTopProjects, getTopAgents,
   getToolMix, getProviderSplit, getModelBreakdown,
@@ -13,16 +15,21 @@ import {
 } from '../lib/queries/dashboard'
 import { getLoudestPromptOfDay } from '../lib/queries/prompts'
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: { searchParams?: { range?: string } }) {
+  const range = parseRange(searchParams?.range)
+  const since = rangeSince(range)
+
   let kpis: any = {}, dailySpend: any[] = [], topApps: any[] = [], topProjects: any[] = [], topAgents: any[] = []
   let toolMix: any[] = [], providers: any[] = [], models: any[] = [], recentErrors: any[] = []
   let topFiles: any[] = [], topPeople: any[] = []
   let loudestPrompt: { prompt_text_200: string; agent: string; app_id: string; model_primary: string } | null = null
   try {
     const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp] = await Promise.all([
-      getDashboardKPIs(), getDailySpend(), getTopApps(), getTopProjects(), getTopAgents(),
-      getToolMix(), getProviderSplit(), getModelBreakdown(),
-      getRecentErrors(), getTopFiles(), getTopPeople(),
+      getDashboardKPIs(since), getDailySpend(since), getTopApps(since), getTopProjects(since), getTopAgents(since),
+      getToolMix(since), getProviderSplit(since), getModelBreakdown(since),
+      getRecentErrors(since), getTopFiles(since), getTopPeople(since),
       getLoudestPromptOfDay().catch(() => null)
     ])
     kpis = kpisArr ?? {}
@@ -44,14 +51,25 @@ export default async function DashboardPage() {
     .slice(0, 3)
     .map(p => `${p.provider ?? 'Unknown'} (${fmt.usd(p.cost)})`)
     .join(' · ')
-  const heroLede = `${providers.length} provider${providers.length !== 1 ? 's' : ''} — ${providerSummary || '—'} — ${fmt.usd(kpis.total_cost)} total over ${totalDays} days.`
+  const heroLede = `${providers.length} provider${providers.length !== 1 ? 's' : ''} — ${providerSummary || '—'} — ${fmt.usd(kpis.total_cost)} total over ${rangeLabel(range)}.`
+
+  const rangeLabelUp = rangeLabel(range).toUpperCase()
+
+  // Projected 30d: when range is 'all', fall back to totalDays from dailySpend
+  const effectiveDays = range === 'all' ? Math.max(1, totalDays || 1)
+    : range === '30d' ? 30
+    : range === '7d' ? 7
+    : 1
+  const dailyAvg = (kpis.total_cost ?? 0) / effectiveDays
+  const proj30 = dailyAvg * 30
 
   return (
     <div className="page page-layout">
       {/* Masthead strap */}
       <section className="masthead-strap">
-        <Eyebrow>{totalDays} days · {providers.length} providers · {fmt.n(kpis.total_people)} people · {fmt.n(kpis.total_apps)} apps</Eyebrow>
+        <Eyebrow>{rangeLabel(range)} · {providers.length} providers · {fmt.n(kpis.total_people)} people · {fmt.n(kpis.total_apps)} apps</Eyebrow>
         <div className="strap-right">
+          <RangeFilter current={range} />
           <span className="strap-pill"><StatusDot status={kpis.last_session ? 'active' : 'completed'} label={`pipeline live · ${fmt.time(kpis.last_session)}`} /></span>
           <span className="strap-pill is-muted">{fmt.n(kpis.total_sessions)} sessions · {topAgents.length} agents</span>
         </div>
@@ -75,7 +93,7 @@ export default async function DashboardPage() {
         </div>
         <div className="hero-right">
           <div className="hero-stat">
-            <div className="hero-stat-eyebrow">{totalDays}-DAY SPEND</div>
+            <div className="hero-stat-eyebrow">{rangeLabelUp} SPEND</div>
             <div className="hero-stat-value">{fmt.usd(kpis.total_cost)}</div>
             <div className="hero-stat-foot">
               <em>against</em> {fmt.k((kpis.total_input_tokens ?? 0) + (kpis.total_output_tokens ?? 0))} tokens · {fmt.n(kpis.total_tool_calls)} tool calls · {fmt.n(kpis.total_commits ?? 0)} commits
@@ -93,14 +111,10 @@ export default async function DashboardPage() {
       <section className="strip">
         <StatBlock label="Active now" value={fmt.n(kpis.active_sessions)} footnote="sessions in-flight" />
         <StatBlock label="Cache hit" value={fmt.pct(kpis.cache_hit_rate)} footnote="read / (read + write)" />
-        <StatBlock label="Tool calls" value={fmt.k(kpis.total_tool_calls)} footnote={`last ${totalDays} days`} />
+        <StatBlock label="Tool calls" value={fmt.k(kpis.total_tool_calls)} footnote={rangeLabel(range)} />
         <StatBlock label="Commits" value={fmt.n(kpis.total_commits ?? 0)} footnote={`across ${fmt.n(kpis.total_apps)} apps`} />
         <StatBlock label="Errors" value={fmt.n(recentErrors.length)} footnote="recorded recently" accent />
-        {(() => {
-          const dailyAvg = (kpis.total_cost ?? 0) / Math.max(1, totalDays || 14)
-          const proj30 = dailyAvg * 30
-          return <StatBlock label="Projected · 30d" value={`$${proj30.toFixed(0)}`} footnote={`@$${dailyAvg.toFixed(2)} / day`} />
-        })()}
+        <StatBlock label="Projected · 30d" value={`$${proj30.toFixed(0)}`} footnote={`@$${dailyAvg.toFixed(2)} / day`} />
       </section>
 
       <Rule weight="thick" />
@@ -283,7 +297,7 @@ export default async function DashboardPage() {
             </span>
           </div>
           {recentErrors.length === 0 ? (
-            <div className="empty-block">No errors recorded — a quiet fortnight.</div>
+            <div className="empty-block">No errors recorded — a quiet {rangeLabel(range)}.</div>
           ) : (
             <table className="ledger ledger-errors">
               <thead><tr><th>When</th><th>Severity</th><th>Kind</th><th>Tool</th><th>Message</th><th>Session</th></tr></thead>
