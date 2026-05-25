@@ -57,5 +57,30 @@ SELECT
     a.context_pct,
     a.is_sidechain
 FROM {{ ref('stg_assistant_messages') }} a
+-- Parent join intentionally narrowed: parent_uuid in Claude transcripts points
+-- to WHATEVER preceded — often another assistant event in a tool-use chain
+-- (`[{type:tool_use,...}, {type:text,...}]`). An unfiltered join then surfaces
+-- assistant text as `user_prompt`. Filter to real user prompts:
+--   - event_type='user'
+--   - userType='external' (excludes isMeta noise)
+--   - isMeta!='true' (excludes claude-internal compact-summary events)
+--   - content-shape filter (NOT starting with '['): excludes tool_result
+--     feedback. Claude packs tool returns into userType=external user events
+--     with content=[{type:tool_result,...}] — they are NOT real prompts.
+--     fact_prompts.sql uses the same shape check; mirror it here so int_turns
+--     and fact_prompts agree on what counts as a "real" prompt. Without this
+--     filter, 16k of 17k matched parents were tool_result containers and the
+--     COALESCE chain returned NULL for user_prompt in 98.5% of rows.
+-- Sidechain user prompts (parent-agent → sub-agent dispatches) stay — they
+-- are real prompts from the sub-agent's perspective. fact_prompts.prompt_origin
+-- classifies them as 'agent'.
 LEFT JOIN {{ ref('stg_events') }} u
-    ON a.parent_uuid = u.uuid AND a.tenant_id = u.tenant_id
+    ON a.parent_uuid = u.uuid
+   AND a.tenant_id   = u.tenant_id
+   AND u.event_type  = 'user'
+   AND json_extract_string(u.payload, '$.userType') = 'external'
+   AND COALESCE(json_extract_string(u.payload, '$.isMeta'), 'false') != 'true'
+   AND substr(
+         trim(COALESCE(json_extract_string(u.payload, '$.message.content'), '')),
+         1, 1
+       ) != '['
