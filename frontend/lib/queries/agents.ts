@@ -68,6 +68,20 @@ export async function getAgentSessions(name: string, limit = 12) {
   `, [name, limit])
 }
 
+export async function getAgentPeople(name: string) {
+  return query(`
+    SELECT ds.person_id, ds.person_name,
+           COUNT(DISTINCT ds.session_id)  AS session_count,
+           SUM(ds.turn_count)             AS total_turns,
+           SUM(ds.total_cost)             AS total_cost
+    FROM dim_sessions ds
+    WHERE ds.agent = ?
+      AND ds.person_id IS NOT NULL
+    GROUP BY ds.person_id, ds.person_name
+    ORDER BY total_cost DESC
+  `, [name])
+}
+
 export async function getAgentFiles(name: string, limit = 8) {
   return query(`
     SELECT fsf.file_path, fsf.file_ext,

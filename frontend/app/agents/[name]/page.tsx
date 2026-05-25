@@ -2,12 +2,12 @@ export const dynamic = 'force-dynamic'
 
 import {
   Eyebrow, Rule, StatBlock,
-  AppLink, ModelPill, ProviderTag,
+  AppLink, ModelPill, ProviderTag, PersonLink,
 } from '../../../components/atoms'
 import { ProfileBackRail } from '../../../components/panels'
 import { fmt } from '../../../lib/fmt'
 import {
-  getAgent, getAgentApps, getAgentModels, getAgentSessions, getAgentFiles,
+  getAgent, getAgentApps, getAgentModels, getAgentSessions, getAgentFiles, getAgentPeople,
 } from '../../../lib/queries/agents'
 import { getAgentPrompts } from '../../../lib/queries/prompts'
 
@@ -48,15 +48,17 @@ export default async function AgentProfilePage({ params }: { params: { name: str
   let sessions: any[] = []
   let files: any[] = []
   let prompts: any[] = []
+  let peopleList: any[] = []
 
   try {
-    const [ag, ap, mo, se, fi, pr] = await Promise.all([
+    const [ag, ap, mo, se, fi, pr, pe] = await Promise.all([
       getAgent(name),
       getAgentApps(name),
       getAgentModels(name),
       getAgentSessions(name, 12),
       getAgentFiles(name, 8),
       getAgentPrompts(name, 6),
+      getAgentPeople(name),
     ])
     agent = ag
     apps = ap as any[]
@@ -64,6 +66,7 @@ export default async function AgentProfilePage({ params }: { params: { name: str
     sessions = se as any[]
     files = fi as any[]
     prompts = pr as any[]
+    peopleList = pe as any[]
   } catch {}
 
   // Show empty state rather than hard 404 when no data yet
@@ -104,7 +107,7 @@ export default async function AgentProfilePage({ params }: { params: { name: str
           <span className="agent-glyph" aria-hidden="true">⌬</span>
           <div>
             <Eyebrow dot={false}>
-              agent · serving — people in {fmt.n(appCount)} apps
+              agent · serving {peopleList.length > 0 ? peopleList.length : '—'} people in {fmt.n(appCount)} apps
             </Eyebrow>
             <h1
               className="display display-sm"
@@ -140,7 +143,7 @@ export default async function AgentProfilePage({ params }: { params: { name: str
       <section className="strip">
         <StatBlock label="Sessions" value={fmt.n(sessionCount)} footnote="14 days" />
         <StatBlock label="Apps" value={fmt.n(appCount)} footnote="serving" />
-        <StatBlock label="People" value="—" footnote="delegating" accent />
+        <StatBlock label="People" value={peopleList.length > 0 ? fmt.n(peopleList.length) : '—'} footnote="delegating" accent />
         <StatBlock label="Tool calls" value={fmt.n(totalTools)} footnote="total" />
         <StatBlock label="Models" value={fmt.n(modelsCount)} footnote="routed to" />
         <StatBlock
@@ -157,8 +160,57 @@ export default async function AgentProfilePage({ params }: { params: { name: str
         {/* ── Main column ── */}
         <div className="col-main">
 
-          {/* Apps served */}
+          {/* People delegating */}
           <div className="section-head">
+            <h2 className="h-section">People — delegating</h2>
+            <span className="section-meta">who reaches for {name}</span>
+          </div>
+          {peopleList.length > 0 ? (() => {
+            const maxPeopleCost = Math.max(Number(peopleList[0].total_cost ?? 0), 0.0001)
+            return (
+              <table className="ledger">
+                <thead>
+                  <tr>
+                    <th>Person</th>
+                    <th className="num">Sessions</th>
+                    <th className="num">Turns</th>
+                    <th className="num">Cost</th>
+                    <th>Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {peopleList.map((p: any) => (
+                    <tr key={p.person_id}>
+                      <td>
+                        <PersonLink
+                          personId={p.person_id}
+                          personName={p.person_name ?? p.person_id}
+                        />
+                      </td>
+                      <td className="num">{fmt.n(p.session_count)}</td>
+                      <td className="num">{fmt.n(p.total_turns)}</td>
+                      <td className="num strong">{fmt.usd(p.total_cost)}</td>
+                      <td>
+                        <div className="tbar">
+                          <div
+                            className="tbar-fill"
+                            style={{ width: `${(Number(p.total_cost ?? 0) / maxPeopleCost) * 100}%` }}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          })() : (
+            <div className="empty-block">No people data yet — dim_sessions needs person_id populated.</div>
+          )}
+
+          <Rule />
+
+          {/* Apps served */}
+          <div className="section-head" style={{ marginTop: 28 }}>
             <h2 className="h-section">Apps — served</h2>
             <span className="section-meta">where this agent works</span>
           </div>
