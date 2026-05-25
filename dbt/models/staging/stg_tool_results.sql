@@ -31,4 +31,16 @@ WITH unioned_results AS (
         ON tc.event_uuid = json_extract_string(e.payload, '$.sourceToolAssistantUUID')
     WHERE e.event_type = 'user' AND json_extract(e.payload, '$.toolUseResult') IS NOT NULL
 )
+-- Claude's JSONL routinely emits BOTH a tool_result block in the user message
+-- content array AND a top-level toolUseResult metadata field for the same
+-- tool_use_id. UNION ALL above keeps both, which doubles fact_tool_executions
+-- via the LEFT JOIN. Dedup to one row per (tenant_id, tool_use_id), preferring
+-- the row with non-empty output_text so we don't lose payload to the metadata
+-- fallback when both are present.
 SELECT * FROM unioned_results
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY tenant_id, tool_use_id
+    ORDER BY
+        CASE WHEN output_text IS NOT NULL AND LENGTH(output_text) > 0 THEN 0 ELSE 1 END,
+        ts
+) = 1

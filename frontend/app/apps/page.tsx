@@ -1,7 +1,9 @@
 export const dynamic = 'force-dynamic'
 
 import { Eyebrow, Rule, StatBlock } from '../../components/atoms'
+import { RangeFilter } from '../../components/RangeFilter'
 import { fmt } from '../../lib/fmt'
+import { parseRange, rangeSince, rangeLabel } from '../../lib/range'
 import { getApps, getAppsTotalCost } from '../../lib/queries/apps'
 
 function trunc200(s: string | null | undefined): string {
@@ -9,10 +11,15 @@ function trunc200(s: string | null | undefined): string {
   return s.length > 200 ? s.slice(0, 200) + '…' : s
 }
 
-export default async function AppsPage() {
+export default async function AppsPage({
+  searchParams,
+}: { searchParams?: { range?: string } }) {
+  const range = parseRange(searchParams?.range)
+  const since = rangeSince(range)
+
   let apps: any[] = [], totalCostRow: any = null
   try {
-    [apps, totalCostRow] = await Promise.all([getApps(), getAppsTotalCost()])
+    [apps, totalCostRow] = await Promise.all([getApps(since), getAppsTotalCost(since)])
   } catch {}
 
   const totalCost: number = totalCostRow?.total_cost ?? apps.reduce((a: number, x: any) => a + (x.total_cost ?? 0), 0)
@@ -21,8 +28,9 @@ export default async function AppsPage() {
     <div className="page-layout">
       {/* Masthead strap */}
       <section className="masthead-strap">
-        <Eyebrow>Apps · {apps.length} projects · 14 days</Eyebrow>
+        <Eyebrow>Apps · {apps.length} projects · {rangeLabel(range)}</Eyebrow>
         <div className="strap-right">
+          <RangeFilter current={range} />
           <span className="strap-pill is-muted">{fmt.usd(totalCost)} aggregate</span>
         </div>
       </section>
@@ -68,7 +76,7 @@ export default async function AppsPage() {
                   )}
                 </div>
                 <div className="app-card-cost">
-                  <div className="muted tiny">14-day spend</div>
+                  <div className="muted tiny">{rangeLabel(range)} spend</div>
                   <div className="app-card-cost-v">{fmt.usd(app.total_cost)}</div>
                 </div>
               </div>

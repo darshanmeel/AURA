@@ -32,13 +32,13 @@ export async function getDashboardKPIs(since: string | null = null) {
       MIN(start_ts)                                                         AS first_session,
       MAX(start_ts)                                                         AS last_session,
       (SELECT prompt_text_200 FROM fact_prompts
-       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day'
+       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day' AND prompt_origin = 'human'
        ORDER BY output_tokens_total DESC LIMIT 1)                          AS editor_quote,
       (SELECT agent FROM fact_prompts
-       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day'
+       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day' AND prompt_origin = 'human'
        ORDER BY output_tokens_total DESC LIMIT 1)                          AS editor_quote_agent,
       (SELECT app_id FROM fact_prompts
-       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day'
+       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day' AND prompt_origin = 'human'
        ORDER BY output_tokens_total DESC LIMIT 1)                          AS editor_quote_app
     FROM dim_sessions
     ${wh}
@@ -114,7 +114,7 @@ export async function getTopProjects(since: string | null = null) {
       LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
       LEFT JOIN dim_apps da ON da.app_id = al.app_id
       ${wh}
-      GROUP BY app_id, app_name, al.project_id
+      GROUP BY 1, 2, al.project_id
       ORDER BY total_cost DESC NULLS LAST
     `)
   ])

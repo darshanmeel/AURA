@@ -2,13 +2,21 @@ export const dynamic = 'force-dynamic'
 
 import { Eyebrow, Rule, StatBlock, AgentLink, TBar } from '../../components/atoms'
 import { ClickableRow } from '../../components/ClickableRow'
+import { InlineLink } from '../../components/InlineLink'
+import { RangeFilter } from '../../components/RangeFilter'
 import { fmt } from '../../lib/fmt'
+import { parseRange, rangeSince, rangeLabel } from '../../lib/range'
 import { getAllAgents } from '../../lib/queries/agents'
 
-export default async function AgentsPage() {
+export default async function AgentsPage({
+  searchParams,
+}: { searchParams?: { range?: string } }) {
+  const range = parseRange(searchParams?.range)
+  const since = rangeSince(range)
+
   let agents: any[] = []
   try {
-    agents = await getAllAgents() as any[]
+    agents = await getAllAgents(since) as any[]
   } catch (e) { console.error('[agents] data load failed:', e) }
 
   const totalCost = agents.reduce((s: number, a: any) => s + (a.total_cost ?? 0), 0)
@@ -24,8 +32,9 @@ export default async function AgentsPage() {
   return (
     <div className="page-layout">
       <section className="masthead-strap">
-        <Eyebrow>Agents · {uniqueNames} unique · {agents.length} app assignments</Eyebrow>
+        <Eyebrow>Agents · {uniqueNames} unique · {agents.length} app assignments · {rangeLabel(range)}</Eyebrow>
         <div className="strap-right">
+          <RangeFilter current={range} />
           <span className="strap-pill is-muted">{fmt.usd(totalCost)} aggregate</span>
         </div>
       </section>
@@ -81,7 +90,7 @@ export default async function AgentsPage() {
                 </td>
                 <td>
                   {ag.app_id
-                    ? <a href={`/apps/${encodeURIComponent(ag.app_id)}`} className="inline-link" style={{ fontSize: 12 }} onClick={e => e.stopPropagation()}>{ag.app_id}</a>
+                    ? <InlineLink href={`/apps/${encodeURIComponent(ag.app_id)}`} style={{ fontSize: 12 }}>{ag.app_id}</InlineLink>
                     : <span className="muted">—</span>}
                 </td>
                 <td className="muted" style={{ fontSize: 12 }}>{ag.project_id ?? '—'}</td>

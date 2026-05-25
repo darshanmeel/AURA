@@ -1,5 +1,8 @@
 {{ config(materialized='table') }}
 
+-- session_stats: per (session, model) costs, so we can pick the dominant
+-- model in the aggregated_sessions step via FIRST(model ORDER BY total_cost DESC).
+-- model MUST be in the GROUP BY because we SELECT it as a non-aggregate column.
 WITH session_stats AS (
     SELECT
         tenant_id,
@@ -19,7 +22,7 @@ WITH session_stats AS (
         SUM(ephemeral_1h_input_tokens)           AS ephemeral_1h_total,
         SUM(cache_read_input_tokens)             AS cache_read_total
     FROM {{ ref('fact_turns') }}
-    GROUP BY tenant_id, session_id, cwd, project_id, git_branch, claude_version
+    GROUP BY tenant_id, session_id, model, cwd, project_id, git_branch, claude_version
 ),
 aggregated_sessions AS (
     SELECT
@@ -81,18 +84,46 @@ agent_per_session AS (
     GROUP BY e.tenant_id, e.session_id
 ),
 -- First external user prompt per session (200-char truncation) for title fallback.
+-- Mirrors fact_prompts' extraction logic against stg_events (we cannot ref()
+-- fact_prompts here because it joins back to dim_sessions for cwd → app_id,
+-- which would create a circular DAG). Filters: external userType, not isMeta,
+-- string content only (array content = tool_result, not a real prompt).
+-- This is the architectural fix for session_title=UUID — pulling from raw
+-- prompt events directly (instead of int_turns.user_prompt) means sessions
+-- whose first assistant message has parent_uuid pointing at a tool_result
+-- event still resolve a title, because every external user prompt is
+-- considered, not just ones reachable via the turn-join graph.
+-- Primary order: earliest prompt_ts. Tiebreaker at same ts: prefer human
+-- (userType='external' with sidechain=false) over agent (sidechain=true).
+first_prompt_raw AS (
+    SELECT
+        e.tenant_id,
+        e.session_id,
+        e.ts                                                        AS prompt_ts,
+        e.is_sidechain,
+        json_extract_string(e.payload, '$.message.content')         AS prompt_text
+    FROM {{ ref('stg_events') }} e
+    WHERE e.event_type = 'user'
+      AND json_extract_string(e.payload, '$.userType') = 'external'
+      AND COALESCE(json_extract_string(e.payload, '$.isMeta'), 'false') != 'true'
+      -- Exclude tool_result events (array content); only string content is a prompt
+      AND substr(trim(json_extract_string(e.payload, '$.message.content')), 1, 1) != '['
+      AND json_extract_string(e.payload, '$.message.content') IS NOT NULL
+),
 first_prompt AS (
     SELECT
         tenant_id,
         session_id,
         FIRST(
-            SUBSTR(user_prompt, 1, 200)
-            || CASE WHEN length(user_prompt) > 200 THEN '…' ELSE '' END
-            ORDER BY user_ts
+            SUBSTR(prompt_text, 1, 200)
+            || CASE WHEN length(prompt_text) > 200 THEN '…' ELSE '' END
+            ORDER BY prompt_ts ASC, CASE WHEN is_sidechain THEN 1 ELSE 0 END
         )                                                                   AS first_prompt_200,
-        FIRST(user_ts ORDER BY user_ts)                                     AS first_user_ts
-    FROM {{ ref('int_turns') }}
-    WHERE user_prompt IS NOT NULL
+        FIRST(
+            prompt_ts
+            ORDER BY prompt_ts ASC, CASE WHEN is_sidechain THEN 1 ELSE 0 END
+        )                                                                   AS first_user_ts
+    FROM first_prompt_raw
     GROUP BY tenant_id, session_id
 ),
 -- App and project IDs from the cwd-lookup intermediate model.

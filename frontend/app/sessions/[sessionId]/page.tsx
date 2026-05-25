@@ -8,7 +8,8 @@ import { fmt } from '../../../lib/fmt'
 import {
   getSession, getSessionTurns, getSessionErrors,
   getSessionFiles, getSessionToolMix, getSessionGitCommands,
-  getSessionToolExecutions
+  getSessionToolExecutions,
+  getSessionPrompts as getSessionPromptsWithTools,
 } from '../../../lib/queries/sessions'
 import { getSessionPrompts } from '../../../lib/queries/prompts'
 import { getSessionFilesWithAttribution } from '../../../lib/queries/files'
@@ -38,18 +39,19 @@ function unwrapTitle(raw: string | null | undefined): string {
 
 export default async function SessionDetailPage({ params }: { params: { sessionId: string } }) {
   const id = params.sessionId
-  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = [], toolExecutions: any[] = [], prompts: any[] = [], filesWithAttribution: any[] = []
+  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = [], toolExecutions: any[] = [], prompts: any[] = [], filesWithAttribution: any[] = [], promptsWithTools: any[] = []
   try {
-    const [sess, t, e, f, tm, gc, te, pr, fa] = await Promise.all([
+    const [sess, t, e, f, tm, gc, te, pr, fa, pwt] = await Promise.all([
       getSession(id), getSessionTurns(id), getSessionErrors(id),
       getSessionFiles(id), getSessionToolMix(id), getSessionGitCommands(id),
       getSessionToolExecutions(id), getSessionPrompts(id),
-      getSessionFilesWithAttribution(id)
+      getSessionFilesWithAttribution(id),
+      getSessionPromptsWithTools(id),
     ])
     s = sess; turns = t as any[]; errors = e as any[]
     files = f as any[]; toolMix = tm as any[]; gitCommands = gc as any[]
     toolExecutions = te as any[]; prompts = pr as any[]
-    filesWithAttribution = fa as any[]
+    filesWithAttribution = fa as any[]; promptsWithTools = pwt as any[]
   } catch {}
   if (!s) notFound()
 
@@ -153,6 +155,7 @@ export default async function SessionDetailPage({ params }: { params: { sessionI
         files={files}
         toolMix={toolMix}
         prompts={prompts}
+        promptsWithTools={promptsWithTools}
         filesWithAttribution={filesWithAttribution}
       />
     </div>

@@ -1,16 +1,29 @@
 import { query, queryOne } from '../db'
 
-export async function getErrors() {
+function tsFilter(col: string, since: string | null): string {
+  if (!since) return ''
+  return `WHERE ${col} >= '${since}'`
+}
+
+function andTsFilter(col: string, since: string | null): string {
+  if (!since) return ''
+  return `AND ${col} >= '${since}'`
+}
+
+export async function getErrors(since: string | null = null) {
+  const wh = tsFilter('e.ts', since)
   return query(`
     SELECT e.ts, e.kind, e.tool, e.message, e.severity, e.session_id, e.turn_number
     FROM fact_errors e
+    ${wh}
     ORDER BY e.ts DESC
     LIMIT 500
   `)
 }
 
 /** Five KPI numbers for the errors hero strip. */
-export async function getErrorsSummary() {
+export async function getErrorsSummary(since: string | null = null) {
+  const wh = since ? `WHERE ts >= '${since}'` : `WHERE ts >= NOW() - INTERVAL '14 days'`
   return queryOne(`
     SELECT
       COUNT(*)                                              AS total_events,
@@ -20,16 +33,17 @@ export async function getErrorsSummary() {
       COUNT(DISTINCT session_id)                            AS sessions_affected,
       SUM(CASE WHEN kind = 'tool_error' THEN 1 ELSE 0 END) AS tool_failures
     FROM fact_errors
-    WHERE ts >= NOW() - INTERVAL '14 days'
+    ${wh}
   `)
 }
 
 /** Per-kind counts for the chip filter row. */
-export async function getErrorsByKind() {
+export async function getErrorsByKind(since: string | null = null) {
+  const wh = since ? `WHERE ts >= '${since}'` : `WHERE ts >= NOW() - INTERVAL '14 days'`
   return query(`
     SELECT kind, COUNT(*) AS cnt
     FROM fact_errors
-    WHERE ts >= NOW() - INTERVAL '14 days'
+    ${wh}
     GROUP BY kind
     ORDER BY cnt DESC
   `)
@@ -39,9 +53,10 @@ export async function getErrorsByKind() {
  * Full error rows, optionally filtered by kind.
  * Joins dim_sessions to surface session_title + agent for the "Session" column.
  */
-export async function getErrorsFiltered(kind?: string) {
+export async function getErrorsFiltered(kind?: string, since?: string | null) {
   const params: unknown[] = []
   const kindClause = kind && kind !== 'All' ? `AND e.kind = ?` : ''
+  const tsClause = since ? `AND e.ts >= '${since}'` : `AND e.ts >= NOW() - INTERVAL '14 days'`
   if (kind && kind !== 'All') params.push(kind)
 
   return query(`
@@ -52,8 +67,9 @@ export async function getErrorsFiltered(kind?: string) {
       COALESCE(ds.agent, 'main')               AS agent
     FROM fact_errors e
     LEFT JOIN dim_sessions ds USING (session_id)
-    WHERE e.ts >= NOW() - INTERVAL '14 days'
+    WHERE 1=1
     ${kindClause}
+    ${tsClause}
     ORDER BY e.ts DESC
     LIMIT 500
   `, params)

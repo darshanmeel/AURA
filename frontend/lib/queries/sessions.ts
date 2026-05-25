@@ -12,7 +12,7 @@ export interface SessionFilters {
   q?: string
 }
 
-export async function getSessions(filters: SessionFilters = {}) {
+export async function getSessions(filters: SessionFilters = {}, since: string | null = null) {
   const conditions: string[] = []
   const params: unknown[] = []
 
@@ -23,6 +23,7 @@ export async function getSessions(filters: SessionFilters = {}) {
     conditions.push("(ds.session_title ILIKE ? OR ds.session_id ILIKE ? OR ds.cwd ILIKE ?)")
     params.push(`%${filters.q}%`, `%${filters.q}%`, `%${filters.q}%`)
   }
+  if (since) { conditions.push('ds.start_ts >= ?'); params.push(since) }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   const sortMap: Record<string, string> = {
@@ -49,7 +50,7 @@ export async function getSessions(filters: SessionFilters = {}) {
   `, params)
 }
 
-export async function getSessionsStats(filters: SessionFilters = {}) {
+export async function getSessionsStats(filters: SessionFilters = {}, since: string | null = null) {
   const conditions: string[] = []
   const params: unknown[] = []
 
@@ -60,6 +61,7 @@ export async function getSessionsStats(filters: SessionFilters = {}) {
     conditions.push("(ds.session_title ILIKE ? OR ds.session_id ILIKE ? OR ds.cwd ILIKE ?)")
     params.push(`%${filters.q}%`, `%${filters.q}%`, `%${filters.q}%`)
   }
+  if (since) { conditions.push('ds.start_ts >= ?'); params.push(since) }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   return queryOne(`
@@ -201,15 +203,69 @@ export async function getSessionGitCommands(id: string) {
 
 export async function getSessionToolExecutions(id: string) {
   return query(`
-    SELECT 
-      tool_name, 
-      tool_call_ts, 
-      tool_result_ts, 
-      execution_duration_seconds, 
+    SELECT
+      tool_name,
+      tool_call_ts,
+      tool_result_ts,
+      execution_duration_seconds,
       is_error,
       json_extract_string(input_payload, '$.file_path') AS file_path
     FROM fact_tool_executions
     WHERE session_id = ?
     ORDER BY tool_call_ts
   `, [id])
+}
+
+/**
+ * Enriched prompts for the session detail page: each prompt row includes its
+ * tool calls (joined via the prompt time-window) as an aggregated array.
+ *
+ * Defensive: prompt_origin is a new column being added by the dbt agent.
+ * If it doesn't yet exist the query falls through to the catch in the caller,
+ * which returns [] rather than crashing the page.
+ *
+ * Also defensive against fact_prompts or fact_tool_executions missing entirely.
+ */
+export async function getSessionPrompts(id: string): Promise<any[]> {
+  try {
+    const rows = await query(`
+      SELECT
+        fp.prompt_id,
+        fp.prompt_idx,
+        fp.prompt_ts,
+        fp.next_prompt_ts,
+        fp.prompt_text_200,
+        fp.prompt_text_full,
+        fp.prompt_chars,
+        fp.prompt_origin,
+        fp.agent,
+        fp.model_primary,
+        fp.tool_call_count,
+        fp.cost_total,
+        fp.turn_count,
+        fp.files_edited,
+        fp.errors_caught,
+        COALESCE(
+          ARRAY_AGG(STRUCT_PACK(
+            tool_name  := fte.tool_name,
+            tool_call_ts := fte.tool_call_ts,
+            is_error   := fte.is_error,
+            file_path  := json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path')
+          ) ORDER BY fte.tool_call_ts) FILTER (WHERE fte.tool_name IS NOT NULL),
+          []
+        ) AS tool_calls
+      FROM fact_prompts fp
+      LEFT JOIN fact_tool_executions fte
+        ON  fte.session_id = fp.session_id
+        AND fte.tool_call_ts >= fp.prompt_ts
+        AND (fp.next_prompt_ts IS NULL OR fte.tool_call_ts < fp.next_prompt_ts)
+      WHERE fp.session_id = ?
+      GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+      ORDER BY fp.prompt_idx
+    `, [id])
+    return rows as any[]
+  } catch (e) {
+    console.error('[sessions] getSessionPrompts failed:', e instanceof Error ? e.message : e)
+    return []
+  }
 }

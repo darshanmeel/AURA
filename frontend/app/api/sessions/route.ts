@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessions, getSessionsStats } from '../../../lib/queries/sessions'
+import { parseRange, rangeSince } from '../../../lib/range'
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,7 +12,12 @@ export async function GET(req: NextRequest) {
       sort: p.get('sort') ?? undefined,
       q: p.get('q') ?? undefined,
     }
-    const [sessions, stats] = await Promise.all([getSessions(filters), getSessionsStats(filters)])
+    const range = parseRange(p.get('range') ?? undefined)
+    const since = rangeSince(range)
+    const [sessions, stats] = await Promise.all([
+      getSessions(filters, since),
+      getSessionsStats(filters, since),
+    ])
     return NextResponse.json({ sessions, stats })
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

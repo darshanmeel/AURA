@@ -5,3 +5,6 @@ aura:
       type: duckdb
       path: /data/aura.duckdb
       # Note: This path is relative to the docker volume mount at /data
+      settings:
+        threads: 1
+        preserve_insertion_order: false

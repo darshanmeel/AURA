@@ -12,7 +12,10 @@ services:
       - ${CLAUDE_LOGS_DIR:-~/.claude/projects}:/logs/claude:ro
     environment:
       - AURA_DB_PATH=/data/aura.duckdb
-      - AURA_READ_DB_PATH=/data/aura_read.duckdb
+      # NOTE: the snapshot writes a file whose BASENAME matches the source
+      # (`aura.duckdb`) so DuckDB views compiled with `aura.main.x` refs
+      # still resolve. The read DB therefore lives in a sibling directory.
+      - AURA_READ_DB_PATH=/data/read/aura.duckdb
       - AURA_LOGS_DIR=/logs/claude
       - AURA_SNAPSHOT_INTERVAL=2
       - AURA_DBT_RUN_INTERVAL_MINUTES=5
@@ -23,12 +26,12 @@ services:
       # Example: AURA_MODEL_WINDOWS_JSON={"claude-opus-5-20260601":1000000}
       - AURA_MODEL_WINDOWS_JSON=
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, time; p='/data/aura_read.duckdb'; exit(0 if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < 60 else 1)"]
+      test: ["CMD", "python", "-c", "import os, time; p='/data/read/aura.duckdb'; exit(0 if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < 60 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 60s
-    mem_limit: 512m
+    mem_limit: 2g
     restart: unless-stopped
 
   frontend:
@@ -38,12 +41,12 @@ services:
     volumes:
       - aura_data:/data:ro
     environment:
-      - AURA_READ_DB_PATH=/data/aura_read.duckdb
+      - AURA_READ_DB_PATH=/data/read/aura.duckdb
       - NODE_ENV=production
     depends_on:
       - watcher
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/"]
+      test: ["CMD-SHELL", "wget -q --spider http://$(hostname):3000/"]
       interval: 30s
       timeout: 5s
       retries: 3

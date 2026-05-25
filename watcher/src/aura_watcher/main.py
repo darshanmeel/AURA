@@ -13,40 +13,55 @@ from aura_watcher.snapshot import take_snapshot
 from aura_watcher.session_meta import write_session_meta
 
 def process_file(file_path, writer, adapter, cp_manager):
+    if dbt_running.is_set():
+        return
     try:
         if not os.path.exists(file_path):
             return
 
+        # Read & parse outside the DB lock (no I/O contention there).
         checkpoint = cp_manager.get_checkpoint(file_path)
         offset = checkpoint["last_offset"]
-        
+
         with open(file_path, 'rb') as f:
             f.seek(offset)
             lines = f.readlines()
             new_offset = f.tell()
-            last_uuid = checkpoint["last_line_uuid"]
-            
-            events = []
-            for line in lines:
+
+        if new_offset <= offset:
+            return  # No new bytes
+
+        last_uuid = checkpoint["last_line_uuid"]
+        events = []
+        skill_batches: list[list[dict]] = []
+        for line in lines:
+            try:
+                if not line.strip(): continue
+                raw = json.loads(line.decode('utf-8'))
+                event = adapter.parse_line(raw, file_path, offset)
+                if event:
+                    events.append(event)
+                    last_uuid = event["uuid"]
                 try:
-                    if not line.strip(): continue
-                    raw = json.loads(line.decode('utf-8'))
-                    event = adapter.parse_line(raw, file_path, offset)
-                    if event:
-                        events.append(event)
-                        last_uuid = event["uuid"]
-                    try:
-                        skills = adapter.parse_skills(raw, file_path)
-                        if skills:
-                            writer.insert_session_skills(skills)
-                    except Exception as e:
-                        print(f"Error parsing skills: {e}")
+                    skills = adapter.parse_skills(raw, file_path)
+                    if skills:
+                        skill_batches.append(skills)
                 except Exception as e:
-                    print(f"Error parsing line in {file_path}: {e}")
-            
+                    print(f"Error parsing skills: {e}")
+            except Exception as e:
+                print(f"Error parsing line in {file_path}: {e}")
+
+        # ALL DuckDB writes serialize through _snapshot_lock so the snapshot
+        # worker's force_checkpoint never races with concurrent inserts
+        # (DuckDB rejects parallel `duckdb.connect()` from different threads
+        # against the same file: "Unique file handle conflict").
+        with _snapshot_lock:
+            if dbt_running.is_set():
+                return
+            for sk in skill_batches:
+                writer.insert_session_skills(sk)
             if events:
                 writer.insert_events(events)
-            
             if new_offset > offset:
                 cp_manager.update_checkpoint(file_path, new_offset, last_uuid)
     except Exception as e:
@@ -65,10 +80,18 @@ class JSONLHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('.jsonl'):
             session_id = os.path.basename(os.path.dirname(event.src_path))
-            write_session_meta(self.writer, session_id, event.src_path)
+            # write_session_meta opens its own DuckDB connection — must
+            # serialize through _snapshot_lock for the same reason
+            # process_file does (parallel connect() = file handle conflict).
+            with _snapshot_lock:
+                if not dbt_running.is_set():
+                    write_session_meta(self.writer, session_id, event.src_path)
             process_file(event.src_path, self.writer, self.adapter, self.cp_manager)
 
 dbt_running = threading.Event()
+# Held by snapshot_worker while take_snapshot is running; dbt_worker acquires it
+# to guarantee no snapshot connection is open before launching dbt.
+_snapshot_lock = threading.Lock()
 
 def snapshot_worker(src, dst, interval):
     print(f"Snapshot worker started: {src} -> {dst} every {interval}s")
@@ -79,7 +102,9 @@ def snapshot_worker(src, dst, interval):
                 continue
 
             if os.path.exists(src):
-                take_snapshot(src, dst)
+                with _snapshot_lock:
+                    if not dbt_running.is_set():
+                        take_snapshot(src, dst)
         except Exception as e:
             print(f"[snapshot] Warning: {e}")
         time.sleep(interval)
@@ -92,29 +117,48 @@ def dbt_worker(interval_mins):
     while True:
         try:
             dbt_running.set()
-            time.sleep(1)  # Allow snapshot worker to finish any active run
+            # Block until any in-flight snapshot releases its DuckDB connection,
+            # then hold the lock for the full dbt run so no new snapshot starts.
+            with _snapshot_lock:
+                time.sleep(1)  # Allow any in-flight process_file writes to drain
 
-            print("Invoking dbt seed...")
-            res = subprocess.run(
-                ["dbt", "seed", "--profiles-dir", "."],
-                cwd="/app/dbt",
-                capture_output=True,
-                text=True
-            )
-            print(f"dbt seed stdout: {res.stdout}")
-            if res.stderr:
-                print(f"dbt seed stderr: {res.stderr}")
-                
-            print("Invoking dbt build...")
-            res2 = subprocess.run(
-                ["dbt", "build", "--profiles-dir", "."],
-                cwd="/app/dbt",
-                capture_output=True,
-                text=True
-            )
-            print(f"dbt build stdout: {res2.stdout}")
-            if res2.stderr:
-                print(f"dbt build stderr: {res2.stderr}")
+                print("Invoking dbt seed...")
+                res = subprocess.run(
+                    ["dbt", "seed", "--profiles-dir", ".", "--no-partial-parse"],
+                    cwd="/app/dbt",
+                    capture_output=True,
+                    text=True
+                )
+                print(f"dbt seed stdout: {res.stdout}")
+                if res.stderr:
+                    print(f"dbt seed stderr: {res.stderr}")
+
+                # `dbt run` (not `dbt build`) — we want models to refresh even when
+                # data-quality tests fail. dbt build skips downstream models on test
+                # failure, which leaves the dashboard stale on a single bad row.
+                # Tests still run, just decoupled (see below).
+                print("Invoking dbt run...")
+                res2 = subprocess.run(
+                    ["dbt", "run", "--profiles-dir", ".", "--no-partial-parse"],
+                    cwd="/app/dbt",
+                    capture_output=True,
+                    text=True
+                )
+                print(f"dbt run stdout: {res2.stdout}")
+                if res2.stderr:
+                    print(f"dbt run stderr: {res2.stderr}")
+
+                # Tests run separately for observability — failures logged, never
+                # block model materialization.
+                print("Invoking dbt test...")
+                res3 = subprocess.run(
+                    ["dbt", "test", "--profiles-dir", ".", "--no-partial-parse"],
+                    cwd="/app/dbt",
+                    capture_output=True,
+                    text=True
+                )
+                if res3.returncode != 0:
+                    print(f"dbt test failures (non-blocking): {res3.stdout}")
         except Exception as e:
             print(f"Error running DBT build: {e}")
         finally:
@@ -136,10 +180,12 @@ def main():
     adapter = ClaudeAdapter()
     cp_manager = CheckpointManager(writer)
 
-    # Start Snapshot Worker BEFORE backfill so UI gets data ASAP
-    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval), daemon=True).start()
-
-    # Initial Backfill
+    # Initial Backfill BEFORE starting the snapshot worker.
+    # Rationale: DuckDB does not allow two parallel `duckdb.connect()` calls
+    # against the same file from different threads — they collide with
+    # "Unique file handle conflict: Cannot attach <db> ... already attached".
+    # The snapshot worker (which opens its own connection for force_checkpoint)
+    # therefore MUST NOT race with backfill's bulk inserts.
     print("Running initial backfill...")
     files = glob.glob(os.path.join(logs_dir, "**", "*.jsonl"), recursive=True)
     for f in files:
@@ -161,7 +207,10 @@ def main():
         except Exception as e:
             print(f"Error writing session_meta for {session_id}: {e}")
 
-    # Start DBT worker in the background (AFTER backfill to avoid lock contention)
+    # NOW start the snapshot worker — backfill writes have all flushed.
+    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval), daemon=True).start()
+
+    # Start DBT worker in the background.
     threading.Thread(target=dbt_worker, args=(dbt_interval,), daemon=True).start()
 
     # Start Watchdog

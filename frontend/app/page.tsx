@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import React from 'react'
 import { Eyebrow, Rule, StatBlock, BarRow, ProviderTag, ModelPill, AgentLink, PersonLink, SeverityTag, TBar, StackBar, StatusDot } from '../components/atoms'
 import { ClickableRow } from '../components/ClickableRow'
+import { ClientTime } from '../components/ClientTime'
 import { DailyChart } from '../components/charts'
 import { SideRail, SideSection } from '../components/panels'
 import { RangeFilter } from '../components/RangeFilter'
@@ -25,19 +26,35 @@ export default async function DashboardPage({
   let toolMix: any[] = [], providers: any[] = [], models: any[] = [], recentErrors: any[] = []
   let topFiles: any[] = [], topPeople: any[] = []
   let loudestPrompt: { prompt_text_200: string; agent: string; app_id: string; model_primary: string } | null = null
-  try {
-    const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp] = await Promise.all([
-      getDashboardKPIs(since), getDailySpend(since), getTopApps(since), getTopProjects(since), getTopAgents(since),
-      getToolMix(since), getProviderSplit(since), getModelBreakdown(since),
-      getRecentErrors(since), getTopFiles(since), getTopPeople(since),
-      getLoudestPromptOfDay().catch(() => null)
-    ])
-    kpis = kpisArr ?? {}
-    dailySpend = ds as any[]; topApps = ta as any[]; topProjects = tproj as any[]; topAgents = tag as any[]
-    toolMix = tm as any[]; providers = prov as any[]; models = mod as any[]
-    recentErrors = re as any[]; topFiles = tf as any[]; topPeople = tp as any[]
-    loudestPrompt = lp as any
-  } catch (e) { console.error('[dashboard] data load failed:', e) }
+
+  // Each query is isolated: a missing table (e.g. dim_sessions before first dbt run)
+  // must not blank out the entire dashboard. Log per-query failure, return fallback.
+  const safe = async <T,>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> => {
+    try { return await fn() } catch (e) {
+      console.error(`[dashboard] ${label} failed:`, e instanceof Error ? e.message : e)
+      return fallback
+    }
+  }
+
+  const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp] = await Promise.all([
+    safe('kpis',         () => getDashboardKPIs(since),  null),
+    safe('dailySpend',   () => getDailySpend(since),     [] as any[]),
+    safe('topApps',      () => getTopApps(since),        [] as any[]),
+    safe('topProjects',  () => getTopProjects(since),    [] as any[]),
+    safe('topAgents',    () => getTopAgents(since),      [] as any[]),
+    safe('toolMix',      () => getToolMix(since),        [] as any[]),
+    safe('providers',    () => getProviderSplit(since),  [] as any[]),
+    safe('models',       () => getModelBreakdown(since), [] as any[]),
+    safe('recentErrors', () => getRecentErrors(since),   [] as any[]),
+    safe('topFiles',     () => getTopFiles(since),       [] as any[]),
+    safe('topPeople',    () => getTopPeople(since),      [] as any[]),
+    safe('loudestPrompt',() => getLoudestPromptOfDay(),  null),
+  ])
+  kpis = kpisArr ?? {}
+  dailySpend = ds as any[]; topApps = ta as any[]; topProjects = tproj as any[]; topAgents = tag as any[]
+  toolMix = tm as any[]; providers = prov as any[]; models = mod as any[]
+  recentErrors = re as any[]; topFiles = tf as any[]; topPeople = tp as any[]
+  loudestPrompt = lp as any
 
   const totalDays = dailySpend.length
   const maxCost = Math.max(...topApps.map((a: any) => a.total_cost ?? 0), 0.001)
@@ -70,7 +87,7 @@ export default async function DashboardPage({
         <Eyebrow>{rangeLabel(range)} · {providers.length} providers · {fmt.n(kpis.total_people)} people · {fmt.n(kpis.total_apps)} apps</Eyebrow>
         <div className="strap-right">
           <RangeFilter current={range} />
-          <span className="strap-pill"><StatusDot status={kpis.last_session ? 'active' : 'completed'} label={`pipeline live · ${fmt.time(kpis.last_session)}`} /></span>
+          <span className="strap-pill"><StatusDot status={kpis.last_session ? 'active' : 'completed'} label={<>pipeline live · <ClientTime ts={kpis.last_session} /></>} /></span>
           <span className="strap-pill is-muted">{fmt.n(kpis.total_sessions)} sessions · {topAgents.length} agents</span>
         </div>
       </section>
@@ -305,8 +322,8 @@ export default async function DashboardPage({
                 {recentErrors.map((e: any, i: number) => (
                   <tr key={i} className="clickable">
                     <td className="mono muted" style={{ whiteSpace: 'nowrap' }}>
-                      <div>{fmt.date(e.ts)}</div>
-                      <div className="tiny">{fmt.time(e.ts)}</div>
+                      <div><ClientTime ts={e.ts} mode="date" /></div>
+                      <div className="tiny"><ClientTime ts={e.ts} /></div>
                     </td>
                     <td><SeverityTag severity={e.severity} /></td>
                     <td><span className="kind-tag" style={{ background: 'var(--rule)', padding: '2px 6px', borderRadius: 2, fontSize: 11 }}>{e.kind}</span></td>

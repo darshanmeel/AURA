@@ -1,6 +1,9 @@
 'use client'
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { Suspense, useState, useEffect, useMemo } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Eyebrow, Rule, StatBlock, AgentLink, ModelPill, AppLink } from '../../components/atoms'
+import { RangeFilter } from '../../components/RangeFilter'
+import { parseRange } from '../../lib/range'
 import { fmt } from '../../lib/fmt'
 
 function trunc200(s: string | null | undefined): string {
@@ -35,7 +38,10 @@ function unwrapTitle(raw: string | null | undefined): string {
   return trunc200(s)
 }
 
-export default function SessionsPage() {
+function SessionsPageInner() {
+  const searchParams = useSearchParams()
+  const range = parseRange(searchParams?.get('range') ?? undefined)
+
   const [sessions, setSessions] = useState<any[]>([])
   const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -51,6 +57,7 @@ export default function SessionsPage() {
     if (provider) params.set('provider', provider)
     if (status) params.set('status', status)
     if (sort) params.set('sort', sort)
+    params.set('range', range)
     setLoading(true)
     setFetchError(false)
     fetch(`/api/sessions?${params}`)
@@ -67,7 +74,7 @@ export default function SessionsPage() {
         setFetchError(true)
         setLoading(false)
       })
-  }, [q, provider, status, sort])
+  }, [q, provider, status, sort, range])
 
   // Client-side filter for search (server already does provider/status/sort filtering)
   const filtered = useMemo(() => sessions, [sessions])
@@ -84,6 +91,7 @@ export default function SessionsPage() {
       <section className="masthead-strap">
         <Eyebrow>Sessions · all providers</Eyebrow>
         <div className="strap-right">
+          <RangeFilter current={range} />
           <span className="strap-pill is-muted">
             {fmt.n(totalCount)} session{totalCount !== 1 ? 's' : ''}
             {filtered.length < totalCount ? ` · showing ${fmt.n(filtered.length)}` : ''}
@@ -253,5 +261,13 @@ export default function SessionsPage() {
         </section>
       )}
     </div>
+  )
+}
+
+export default function SessionsPage() {
+  return (
+    <Suspense fallback={<div className="muted eyebrow" style={{ padding: '24px 0' }}>Loading…</div>}>
+      <SessionsPageInner />
+    </Suspense>
   )
 }

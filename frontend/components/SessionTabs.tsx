@@ -13,6 +13,7 @@ interface SessionTabsProps {
   files: any[]
   toolMix: any[]
   prompts?: any[]
+  promptsWithTools?: any[]
   filesWithAttribution?: any[]
 }
 
@@ -292,8 +293,11 @@ function MessageTurn({ turn }: { turn: any }) {
 // ── Main component ───────────────────────────────────────────────────────────
 export function SessionTabs({
   s, turns, errors, toolExecutions, gitCommands,
-  files, toolMix, prompts = [], filesWithAttribution = []
+  files, toolMix, prompts = [], promptsWithTools = [], filesWithAttribution = []
 }: SessionTabsProps) {
+  // Prefer the enriched prompts (with tool_calls + prompt_origin); fall back to
+  // the simpler prompts list if the enriched query failed.
+  const promptsToRender: any[] = promptsWithTools.length > 0 ? promptsWithTools : prompts
   const [activeTab, setActiveTab] = useState<'details' | 'prompts' | 'agents' | 'errors' | 'files' | 'tokens' | 'tools' | 'git' | 'messages'>('details')
 
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
@@ -449,51 +453,125 @@ export function SessionTabs({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 20 }}>
               <Eyebrow>Prompts · in their voice</Eyebrow>
               <span className="muted" style={{ fontSize: 12 }}>
-                {prompts.length} prompt{prompts.length !== 1 ? 's' : ''} · what was asked, what happened
+                {promptsToRender.length} prompt{promptsToRender.length !== 1 ? 's' : ''} · what was asked, what happened
               </span>
             </div>
-            {prompts.length === 0 ? (
+            {promptsToRender.length === 0 ? (
               <div className="empty-block">No operator prompts recorded for this session.</div>
             ) : (
               <ol className="prompts" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
-                {prompts.map((p: any, i: number) => (
-                  <li key={p.prompt_id ?? i} className="prompt" style={{ borderTop: '1px solid var(--rule)', padding: '16px 0' }}>
-                    {/* Header row: date · time · agent · model · overkill */}
-                    <div className="prompt-meta" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                      <span className="mono muted" style={{ fontSize: 11 }}>
-                        #{String((p.prompt_idx ?? i) + 1).padStart(2, '0')} · {fmt.date(p.prompt_ts)} · {fmt.time(p.prompt_ts)}
-                        {p.duration_seconds != null && ` · ${fmtSecs(p.duration_seconds)}`}
-                      </span>
-                      {p.agent && <AgentLink name={p.agent} />}
-                      {p.model_primary && <ModelPill model={p.model_primary} />}
-                      {p.is_overkill && p.overkill_reason && <OverkillChip reason={p.overkill_reason} />}
-                    </div>
+                {promptsToRender.map((p: any, i: number) => {
+                  const toolCalls: any[] = Array.isArray(p.tool_calls) ? p.tool_calls : []
+                  const origin: string | null = p.prompt_origin ?? null
+                  const isAgent = origin === 'agent'
+                  const fullText: string = p.prompt_text_full ?? p.prompt_text_200 ?? ''
+                  const previewText: string = p.prompt_text_200 ?? ''
 
-                    {/* Quote */}
-                    {p.prompt_text_200 && (
-                      <p className="prompt-text" style={{ fontStyle: 'italic', color: 'var(--ink-2)', margin: '0 0 10px', lineHeight: 1.6 }}>
-                        &ldquo;{unwrapTitle(p.prompt_text_200)}&rdquo;
-                      </p>
-                    )}
+                  return (
+                    <li key={p.prompt_id ?? i} className="prompt" style={{ borderTop: '1px solid var(--rule)', padding: '16px 0' }}>
+                      {/* Header row */}
+                      <div className="prompt-meta" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                        <span className="mono muted" style={{ fontSize: 11 }}>
+                          #{String((p.prompt_idx ?? i) + 1).padStart(2, '0')} · {fmt.date(p.prompt_ts)} · {fmt.time(p.prompt_ts)}
+                          {p.duration_seconds != null && ` · ${fmtSecs(p.duration_seconds)}`}
+                        </span>
 
-                    {/* Mini stats row */}
-                    <div className="prompt-mini-stats" style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-                      {p.turn_count != null && <span>{fmt.n(p.turn_count)} turns</span>}
-                      {p.tool_call_count != null && <span>{fmt.n(p.tool_call_count)} tools</span>}
-                      {p.files_edited != null && <span>{fmt.n(p.files_edited)} files</span>}
-                      {p.output_tokens_total != null && <span>{fmt.k(p.output_tokens_total)} tok</span>}
-                      {p.cost_total != null && <span style={{ color: 'var(--accent)' }}>{fmt.usd(p.cost_total)}</span>}
-                      {p.errors_caught > 0 && <span style={{ color: 'var(--warn)' }}>{p.errors_caught} err</span>}
-                    </div>
+                        {origin && (
+                          <span style={{
+                            display: 'inline-block',
+                            padding: '1px 7px',
+                            borderRadius: 3,
+                            fontSize: 10,
+                            fontFamily: 'var(--mono)',
+                            fontWeight: 600,
+                            letterSpacing: '0.04em',
+                            background: isAgent ? 'rgba(239,130,50,0.12)' : 'rgba(80,180,120,0.12)',
+                            color: isAgent ? 'var(--accent)' : 'var(--accent-green, #4caf82)',
+                            border: `1px solid ${isAgent ? 'rgba(239,130,50,0.3)' : 'rgba(80,180,120,0.3)'}`,
+                          }}>
+                            {isAgent ? `agent → ${p.agent ?? 'sidechain'}` : 'human'}
+                          </span>
+                        )}
 
-                    {/* Summary */}
-                    {p.summary_200 && (
-                      <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.55, margin: '8px 0 0' }}>
-                        {p.summary_200}
-                      </p>
-                    )}
-                  </li>
-                ))}
+                        {p.agent && !origin && <AgentLink name={p.agent} />}
+                        {p.model_primary && <ModelPill model={p.model_primary} />}
+                        {p.is_overkill && p.overkill_reason && <OverkillChip reason={p.overkill_reason} />}
+                      </div>
+
+                      {/* Quote + show-full disclosure */}
+                      {previewText && (
+                        <div style={{ marginBottom: 10 }}>
+                          <p className="prompt-text" style={{ fontStyle: 'italic', color: 'var(--ink-2)', margin: 0, lineHeight: 1.6 }}>
+                            &ldquo;{unwrapTitle(previewText)}&rdquo;
+                          </p>
+                          {fullText.length > previewText.length && (
+                            <details style={{ marginTop: 6 }}>
+                              <summary style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--mono)' }}>
+                                show full ({fullText.length} chars)
+                              </summary>
+                              <pre style={{
+                                marginTop: 8, padding: '10px 12px',
+                                background: 'rgba(255,255,255,0.03)', border: '1px solid var(--rule)',
+                                borderRadius: 4, fontSize: 12, lineHeight: 1.55,
+                                whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--ink)',
+                              }}>{fullText}</pre>
+                            </details>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Mini stats */}
+                      <div className="prompt-mini-stats" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, fontSize: 12, color: 'var(--muted)' }}>
+                        {p.turn_count != null && <span><strong>{fmt.n(p.turn_count)}</strong> turns</span>}
+                        {p.tool_call_count != null && <span><strong>{fmt.n(p.tool_call_count)}</strong> tools</span>}
+                        {p.files_edited != null && p.files_edited > 0 && <span><strong>{fmt.n(p.files_edited)}</strong> files</span>}
+                        {p.output_tokens_total != null && <span><strong>{fmt.k(p.output_tokens_total)}</strong> tok</span>}
+                        {p.cost_total != null && <span style={{ color: 'var(--accent)' }}><strong>{fmt.usd(p.cost_total)}</strong></span>}
+                        {p.errors_caught != null && p.errors_caught > 0 && (
+                          <span style={{ color: 'var(--warn)' }}><strong>{p.errors_caught}</strong> err</span>
+                        )}
+                      </div>
+
+                      {/* Per-prompt tool calls — collapsed by default to keep the list scannable */}
+                      {toolCalls.length > 0 && (
+                        <details style={{ marginTop: 8 }}>
+                          <summary style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--mono)' }}>
+                            show {toolCalls.length} tool call{toolCalls.length !== 1 ? 's' : ''}
+                          </summary>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                            {toolCalls.map((tc: any, j: number) => {
+                              const fileName = tc.file_path ? tc.file_path.split(/[/\\]/).pop() : null
+                              return (
+                                <span key={j} style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                                  padding: '2px 7px',
+                                  background: tc.is_error ? 'rgba(220,60,60,0.08)' : 'rgba(255,255,255,0.04)',
+                                  border: `1px solid ${tc.is_error ? 'rgba(220,60,60,0.25)' : 'var(--rule)'}`,
+                                  borderRadius: 3, fontSize: 11, fontFamily: 'var(--mono)',
+                                  color: tc.is_error ? 'var(--warn)' : 'var(--ink-2)',
+                                }}>
+                                  <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{tc.tool_name}</span>
+                                  {fileName && <span className="muted"> · {fileName}</span>}
+                                  <span className="muted"> · {fmt.time(tc.tool_call_ts)}</span>
+                                  <span style={{ color: tc.is_error ? 'var(--warn)' : 'var(--accent)' }}>
+                                    {tc.is_error ? ' ✗' : ' ✓'}
+                                  </span>
+                                </span>
+                              )
+                            })}
+                          </div>
+                        </details>
+                      )}
+
+                      {/* Summary */}
+                      {p.summary_200 && (
+                        <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.55, margin: '8px 0 0' }}>
+                          {p.summary_200}
+                        </p>
+                      )}
+                    </li>
+                  )
+                })}
               </ol>
             )}
           </div>

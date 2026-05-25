@@ -1,8 +1,11 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { Suspense, useState, useEffect } from 'react'
 import { Eyebrow, Rule, StatBlock, SeverityTag, AgentLink } from '../../components/atoms'
+import { RangeFilter } from '../../components/RangeFilter'
 import { fmt } from '../../lib/fmt'
+import { parseRange, rangeSince, rangeLabel } from '../../lib/range'
+import { useSearchParams } from 'next/navigation'
 
 function unwrapTitle(raw: string | null | undefined): string {
   if (!raw) return ''
@@ -32,13 +35,19 @@ interface ErrorRow {
   agent?: string
 }
 
-export default function ErrorsPage() {
+function ErrorsPageInner() {
+  const searchParams = useSearchParams()
+  const range = parseRange(searchParams?.get('range') ?? undefined)
+  const since = rangeSince(range)
+
   const [allErrors, setAllErrors] = useState<ErrorRow[]>([])
   const [loading, setLoading]     = useState(true)
   const [activeKind, setActiveKind] = useState<string>('All')
 
   useEffect(() => {
-    fetch('/api/errors')
+    const params = new URLSearchParams()
+    if (since) params.append('since', since)
+    fetch(`/api/errors?${params.toString()}`)
       .then(r => r.json())
       .then(d => {
         // endpoint returns { errors: [...] } or a bare array
@@ -47,7 +56,7 @@ export default function ErrorsPage() {
         setLoading(false)
       })
       .catch(() => setLoading(false))
-  }, [])
+  }, [since])
 
   // ── Derived counts ─────────────────────────────────────────────────────────
   const bySev: Record<string, number> = {}
@@ -68,8 +77,9 @@ export default function ErrorsPage() {
     <div className="page-layout">
       {/* ── MASTHEAD STRAP ───────────────────────────────────────────── */}
       <section className="masthead-strap">
-        <Eyebrow>Errors · across all sessions · 14 days</Eyebrow>
+        <Eyebrow>Errors · across all sessions · {rangeLabel(range)}</Eyebrow>
         <div className="strap-right">
+          <RangeFilter current={range} />
           <span className="strap-pill is-muted">{fmt.n(allErrors.length)} events</span>
         </div>
       </section>
@@ -95,7 +105,7 @@ export default function ErrorsPage() {
         <StatBlock
           label="Total events"
           value={fmt.n(allErrors.length)}
-          footnote="14 days"
+          footnote={rangeLabel(range)}
         />
         <StatBlock
           label="Hard errors"
@@ -224,5 +234,13 @@ export default function ErrorsPage() {
         <div className="muted" style={{ fontFamily: 'var(--mono)', fontSize: 11, marginTop: 8, letterSpacing: '0.04em' }}>{fmt.n(filtered.length)} error{filtered.length !== 1 ? 's' : ''} shown</div>
       </section>
     </div>
+  )
+}
+
+export default function ErrorsPage() {
+  return (
+    <Suspense fallback={<div className="muted eyebrow" style={{ padding: '24px 0' }}>Loading…</div>}>
+      <ErrorsPageInner />
+    </Suspense>
   )
 }

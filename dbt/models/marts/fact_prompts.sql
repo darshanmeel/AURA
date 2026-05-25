@@ -11,6 +11,7 @@ WITH external_user_events AS (
         e.uuid              AS prompt_id,
         e.ts                AS prompt_ts,
         e.parent_uuid,
+        e.is_sidechain,
         e.payload,
         json_extract_string(e.payload, '$.userType')   AS user_type,
         json_extract_string(e.payload, '$.isMeta')     AS is_meta,
@@ -111,6 +112,7 @@ spans AS (
         w.prompt_ts,
         w.next_prompt_ts,
         w.prompt_idx,
+        w.is_sidechain,
         SUBSTR(w.prompt_text, 1, 200)
             || CASE WHEN length(w.prompt_text) > 200 THEN '…' ELSE '' END   AS prompt_text_200,
         w.prompt_text                                                       AS prompt_text_full,
@@ -222,5 +224,7 @@ SELECT
              || tool_call_count::VARCHAR || ' tools, '
              || files_edited::VARCHAR || ' files'
         ELSE NULL
-    END                         AS overkill_reason
+    END                         AS overkill_reason,
+    is_sidechain,
+    CASE WHEN is_sidechain THEN 'agent' ELSE 'human' END AS prompt_origin
 FROM scored

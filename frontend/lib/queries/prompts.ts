@@ -64,6 +64,7 @@ export async function getLoudestPromptOfDay() {
     SELECT prompt_text_200, agent, app_id, model_primary, output_tokens_total
     FROM fact_prompts
     WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day'
+      AND prompt_origin = 'human'
     ORDER BY output_tokens_total DESC
     LIMIT 1
   `).then(rs => rs[0] ?? null)

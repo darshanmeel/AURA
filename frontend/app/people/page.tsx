@@ -1,16 +1,23 @@
 export const dynamic = 'force-dynamic'
 
 import { Eyebrow, Rule, Avatar, TBar } from '../../components/atoms'
+import { RangeFilter } from '../../components/RangeFilter'
 import { fmt } from '../../lib/fmt'
+import { parseRange, rangeSince, rangeLabel } from '../../lib/range'
 import { getPeople } from '../../lib/queries/people'
 
-export default async function PeoplePage() {
+export default async function PeoplePage({
+  searchParams,
+}: { searchParams?: { range?: string } }) {
+  const range = parseRange(searchParams?.range)
+  const since = rangeSince(range)
+
   let people: any[] = []
   let totalCost = 0
   let totalSessions = 0
 
   try {
-    people = (await getPeople()) as any[]
+    people = (await getPeople(since)) as any[]
     totalCost = people.reduce((a: number, p: any) => a + Number(p.total_cost ?? 0), 0)
     totalSessions = people.reduce((a: number, p: any) => a + Number(p.session_count ?? 0), 0)
   } catch {}
@@ -22,9 +29,10 @@ export default async function PeoplePage() {
       {/* Masthead strap */}
       <section className="masthead-strap">
         <Eyebrow dot={false}>
-          People · {people.length} operator{people.length !== 1 ? 's' : ''} · 14 days
+          People · {people.length} operator{people.length !== 1 ? 's' : ''} · {rangeLabel(range)}
         </Eyebrow>
         <div className="strap-right">
+          <RangeFilter current={range} />
           <span className="strap-pill is-muted">
             {totalSessions} session{totalSessions !== 1 ? 's' : ''} · {fmt.usd(totalCost)} aggregate
           </span>

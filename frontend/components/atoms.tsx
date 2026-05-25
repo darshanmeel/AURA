@@ -112,7 +112,7 @@ export function StackBar({ segments }: { segments: { pct: number; cls: string; t
   )
 }
 
-export function StatusDot({ status, label }: { status: 'active' | 'completed'; label?: string }) {
+export function StatusDot({ status, label }: { status: 'active' | 'completed'; label?: React.ReactNode }) {
   return (
     <span className={`status status-${status}`}>
       <span className="status-dot" />
