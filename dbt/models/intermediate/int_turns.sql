@@ -1,49 +1,94 @@
 {{ config(materialized='view') }}
 
+-- real_user_prompts: one row per genuine human-typed prompt in a session.
+-- Excludes:
+--   - tool_result containers (content starts with '[')
+--   - isMeta=true events (claude-internal compact-summary events)
+-- Sidechain user prompts (parent-agent dispatching sub-agents) are kept;
+-- they are real prompts from the sub-agent's perspective.
+--
+-- user_prompt extraction: try plain-string content first (most common).
+-- If content is a JSON array, walk up to 8 positions for a text-type block.
+-- The 8-position limit covers real sessions where tool_result blocks precede
+-- the actual text block. list_filter would be cleaner but this is readable.
+WITH real_user_prompts AS (
+    SELECT
+        tenant_id,
+        session_id,
+        uuid    AS user_event_uuid,
+        ts      AS user_ts,
+        COALESCE(
+            CASE
+                WHEN NOT starts_with(
+                    COALESCE(json_extract_string(payload, '$.message.content'), ''), '[')
+                THEN json_extract_string(payload, '$.message.content')
+            END,
+            json_extract_string(payload, '$.message.content[0].text'),
+            json_extract_string(payload, '$.message.content[1].text'),
+            json_extract_string(payload, '$.message.content[2].text'),
+            json_extract_string(payload, '$.message.content[3].text'),
+            json_extract_string(payload, '$.message.content[4].text'),
+            json_extract_string(payload, '$.message.content[5].text'),
+            json_extract_string(payload, '$.message.content[6].text'),
+            json_extract_string(payload, '$.message.content[7].text')
+        ) AS user_prompt
+    FROM {{ ref('stg_events') }}
+    WHERE event_type = 'user'
+      AND json_extract_string(payload, '$.userType') = 'external'
+      AND COALESCE(json_extract_string(payload, '$.isMeta'), 'false') != 'true'
+      AND substr(
+            trim(COALESCE(json_extract_string(payload, '$.message.content'), '')),
+            1, 1
+          ) != '['
+)
+
 SELECT
     a.tenant_id,
     a.session_id,
     a.project_id,
     ROW_NUMBER() OVER (PARTITION BY a.tenant_id, a.session_id ORDER BY a.ts) AS turn_number,
-    a.message_id as turn_id,
-    u.uuid as user_event_uuid,
-    a.uuid as assistant_event_uuid,
-    u.ts as user_ts,
-    a.ts as assistant_ts,
-    -- Prompt: handle both plain-string content and content-block arrays.
-    -- Try plain string first (most common for external prompts), then walk
-    -- up to 8 array positions for the first text block. This covers user
-    -- messages where several tool_result blocks precede the actual text.
-    -- NOTE: a proper fix would use list_filter + unnest to avoid the fixed
-    -- depth limit, but 8 positions covers the vast majority of real sessions.
+    a.message_id                    AS turn_id,
+    u.user_event_uuid,
+    a.uuid                          AS assistant_event_uuid,
+    u.user_ts,
+    a.ts                            AS assistant_ts,
+    -- user_prompt: attached via ASOF JOIN — the most recent real user prompt
+    -- at or before the assistant message timestamp in the same session.
+    -- parent_uuid was previously used for this join but it points to whatever
+    -- event immediately preceded the assistant turn (usually a tool_result user
+    -- event or another assistant event in a tool-use chain), so ~all rows
+    -- matched a tool_result container whose content starts with '[' and was
+    -- excluded by the shape filter, yielding NULL for every turn.
+    -- ASOF JOIN resolves the correct "which human prompt does this turn answer"
+    -- even across long tool-use chains.
+    u.user_prompt,
+    -- assistant_response: type-guarded COALESCE walks up to 20 content block
+    -- positions, returning text only for blocks where type='text'.
+    -- Thinking blocks (type='thinking') and tool-use blocks (type='tool_use')
+    -- are skipped. 20 positions covers the observed maximum leading-block depth
+    -- across all sessions (profiled: max first-text-block index was 12).
     COALESCE(
-        -- Plain string content (no leading '[')
-        CASE
-            WHEN NOT starts_with(COALESCE(json_extract_string(u.payload, '$.message.content'), ''), '[')
-            THEN json_extract_string(u.payload, '$.message.content')
-        END,
-        json_extract_string(u.payload, '$.message.content[0].text'),
-        json_extract_string(u.payload, '$.message.content[1].text'),
-        json_extract_string(u.payload, '$.message.content[2].text'),
-        json_extract_string(u.payload, '$.message.content[3].text'),
-        json_extract_string(u.payload, '$.message.content[4].text'),
-        json_extract_string(u.payload, '$.message.content[5].text'),
-        json_extract_string(u.payload, '$.message.content[6].text'),
-        json_extract_string(u.payload, '$.message.content[7].text')
-    ) as user_prompt,
-    -- Assistant response: walk up to 8 array positions for the first text
-    -- block (skipping thinking blocks that may appear before the text block).
-    -- NOTE: a proper fix would use list_filter + unnest.
-    COALESCE(
-        json_extract_string(a.payload, '$.message.content[0].text'),
-        json_extract_string(a.payload, '$.message.content[1].text'),
-        json_extract_string(a.payload, '$.message.content[2].text'),
-        json_extract_string(a.payload, '$.message.content[3].text'),
-        json_extract_string(a.payload, '$.message.content[4].text'),
-        json_extract_string(a.payload, '$.message.content[5].text'),
-        json_extract_string(a.payload, '$.message.content[6].text'),
-        json_extract_string(a.payload, '$.message.content[7].text')
-    ) as assistant_response,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[0].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[0].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[1].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[1].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[2].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[2].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[3].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[3].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[4].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[4].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[5].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[5].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[6].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[6].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[7].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[7].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[8].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[8].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[9].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[9].text')  END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[10].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[10].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[11].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[11].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[12].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[12].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[13].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[13].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[14].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[14].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[15].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[15].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[16].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[16].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[17].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[17].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[18].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[18].text') END,
+        CASE WHEN json_extract_string(a.payload, '$.message.content[19].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[19].text') END
+    ) AS assistant_response,
     a.cwd,
     a.git_branch,
     a.claude_version,
@@ -57,30 +102,13 @@ SELECT
     a.context_pct,
     a.is_sidechain
 FROM {{ ref('stg_assistant_messages') }} a
--- Parent join intentionally narrowed: parent_uuid in Claude transcripts points
--- to WHATEVER preceded — often another assistant event in a tool-use chain
--- (`[{type:tool_use,...}, {type:text,...}]`). An unfiltered join then surfaces
--- assistant text as `user_prompt`. Filter to real user prompts:
---   - event_type='user'
---   - userType='external' (excludes isMeta noise)
---   - isMeta!='true' (excludes claude-internal compact-summary events)
---   - content-shape filter (NOT starting with '['): excludes tool_result
---     feedback. Claude packs tool returns into userType=external user events
---     with content=[{type:tool_result,...}] — they are NOT real prompts.
---     fact_prompts.sql uses the same shape check; mirror it here so int_turns
---     and fact_prompts agree on what counts as a "real" prompt. Without this
---     filter, 16k of 17k matched parents were tool_result containers and the
---     COALESCE chain returned NULL for user_prompt in 98.5% of rows.
--- Sidechain user prompts (parent-agent → sub-agent dispatches) stay — they
--- are real prompts from the sub-agent's perspective. fact_prompts.prompt_origin
--- classifies them as 'agent'.
-LEFT JOIN {{ ref('stg_events') }} u
-    ON a.parent_uuid = u.uuid
-   AND a.tenant_id   = u.tenant_id
-   AND u.event_type  = 'user'
-   AND json_extract_string(u.payload, '$.userType') = 'external'
-   AND COALESCE(json_extract_string(u.payload, '$.isMeta'), 'false') != 'true'
-   AND substr(
-         trim(COALESCE(json_extract_string(u.payload, '$.message.content'), '')),
-         1, 1
-       ) != '['
+-- ASOF JOIN: for each assistant message, attach the most recent real user
+-- prompt at or before the assistant's timestamp within the same session.
+-- DuckDB ASOF requires the LEFT-side column first in the inequality
+-- (`a.ts >= u.user_ts`). Writing it as `u.user_ts <= a.ts` parses but
+-- matches nothing — verified by direct test where flipping the operands
+-- went from 0/4591 to 4591/4591 matched turns.
+ASOF LEFT JOIN real_user_prompts u
+    ON  u.tenant_id  = a.tenant_id
+    AND u.session_id = a.session_id
+    AND a.ts        >= u.user_ts
