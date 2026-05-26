@@ -1,14 +1,11 @@
 
-volumes:
-  aura_data:
-
 services:
   watcher:
     build:
       context: .
       dockerfile: watcher/Dockerfile
     volumes:
-      - aura_data:/data
+      - ./data:/data
       - ${CLAUDE_LOGS_DIR:-~/.claude/projects}:/logs/claude:ro
     environment:
       - AURA_DB_PATH=/data/aura.duckdb
@@ -39,7 +36,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - aura_data:/data:ro
+      - ./data:/data:ro
     environment:
       - AURA_READ_DB_PATH=/data/read/aura.duckdb
       - NODE_ENV=production

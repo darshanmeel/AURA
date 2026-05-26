@@ -224,6 +224,7 @@ __marimo__/
 *.duckdb
 *.duckdb.wal
 aura_data/
+data/
 dbt/target/
 dbt/logs/
 dbt/.user.yml
