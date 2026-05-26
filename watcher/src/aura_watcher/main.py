@@ -188,9 +188,12 @@ def main():
     # therefore MUST NOT race with backfill's bulk inserts.
     print("Running initial backfill...")
     files = glob.glob(os.path.join(logs_dir, "**", "*.jsonl"), recursive=True)
-    for f in files:
+    print(f"Found {len(files)} files to backfill", flush=True)
+    for idx, f in enumerate(files):
         process_file(f, writer, adapter, cp_manager)
-    print(f"Backfill complete. Processed {len(files)} files.")
+        if (idx + 1) % 50 == 0:
+            print(f"Backfill progress: {idx + 1}/{len(files)} files processed", flush=True)
+    print(f"Backfill complete. Processed {len(files)} files.", flush=True)
 
     # Backfill session_meta for any sessions not yet recorded
     from aura_watcher.session_meta import ensure_session_meta_table
