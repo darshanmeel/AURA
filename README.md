@@ -225,6 +225,10 @@ Filterable ledger of every session, then a per-turn breakdown of one session wit
 Hard errors, warnings, and tool failures, filterable by kind and tool.
 ![Errors](docs/screenshots/09-errors.png)
 
+### Observability
+Pipeline health at a glance — bronze freshness, last dbt run status, recent watcher errors, and ingestion volume for 1h / 1d / 7d windows. Polls every 10 s. Drill-down sub-pages for Watcher and dbt expose `watcher_errors` rows and per-model run results.
+![Observability](docs/screenshots/10-observability.png)
+
 ---
 
 ## Notable behaviour
