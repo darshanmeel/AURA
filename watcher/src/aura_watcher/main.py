@@ -180,12 +180,13 @@ def main():
     adapter = ClaudeAdapter()
     cp_manager = CheckpointManager(writer)
 
-    # Initial Backfill BEFORE starting the snapshot worker.
-    # Rationale: DuckDB does not allow two parallel `duckdb.connect()` calls
-    # against the same file from different threads — they collide with
-    # "Unique file handle conflict: Cannot attach <db> ... already attached".
-    # The snapshot worker (which opens its own connection for force_checkpoint)
-    # therefore MUST NOT race with backfill's bulk inserts.
+    # Start snapshot and dbt workers BEFORE backfill — they run independently
+    # on whatever data exists. Backfill continues in background without blocking.
+    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval), daemon=True).start()
+    threading.Thread(target=dbt_worker, args=(dbt_interval,), daemon=True).start()
+
+    # Run backfill in background (does not block snapshot/dbt workers).
+    # Backfill uses _snapshot_lock to serialize with snapshot writes.
     print("Running initial backfill...")
     files = glob.glob(os.path.join(logs_dir, "**", "*.jsonl"), recursive=True)
     print(f"Found {len(files)} files to backfill", flush=True)
@@ -209,12 +210,6 @@ def main():
                 write_session_meta(writer, session_id, f)
         except Exception as e:
             print(f"Error writing session_meta for {session_id}: {e}")
-
-    # NOW start the snapshot worker — backfill writes have all flushed.
-    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval), daemon=True).start()
-
-    # Start DBT worker in the background.
-    threading.Thread(target=dbt_worker, args=(dbt_interval,), daemon=True).start()
 
     # Start Watchdog
     handler = JSONLHandler(writer, adapter, cp_manager)
