@@ -15,10 +15,11 @@ function andTsFilter(col: string, since: string | null): string {
 
 export async function getDashboardKPIs(since: string | null = null) {
   const wh = tsFilter('start_ts', since)
+  const spendWh = since ? `WHERE date >= '${since}'::DATE` : ''
   return queryOne(`
     SELECT
       COUNT(DISTINCT session_id)                                            AS total_sessions,
-      SUM(total_cost)                                                       AS total_cost,
+      (SELECT SUM(daily_cost) FROM fact_daily_spend ${spendWh})            AS total_cost,
       SUM(turn_count)                                                       AS total_turns,
       SUM(tools_used)                                                       AS total_tool_calls,
       SUM(commits)                                                          AS total_commits,
@@ -61,21 +62,37 @@ export async function getDailySpend(since: string | null = null) {
 }
 
 export async function getTopApps(since: string | null = null) {
-  const wh = tsFilter('ds.start_ts', since)
+  // Fast path: lifetime mart (no date filter).
+  if (!since) {
+    return query(`
+      SELECT
+        da.app_id,
+        COALESCE(da.app_name, da.app_id) AS app_name,
+        da.total_cost,
+        da.session_count,
+        da.total_turns,
+        NULL::BIGINT                     AS agent_count,
+        NULL::VARCHAR[]                  AS agents
+      FROM dim_apps da
+      ORDER BY total_cost DESC NULLS LAST
+      LIMIT ${TOP_N}
+    `)
+  }
+  // Range path: read from pre-aggregated int_entity_spend (date-grain table).
   return query(`
     SELECT
-      COALESCE(da.app_id, ds.cwd)                   AS app_id,
-      COALESCE(da.app_name, da.app_id, ds.cwd)      AS app_name,
-      SUM(ds.total_cost)                             AS total_cost,
-      COUNT(DISTINCT ds.session_id)                  AS session_count,
-      SUM(ds.turn_count)                             AS total_turns,
-      COUNT(DISTINCT ds.agent)                       AS agent_count,
-      ARRAY_AGG(DISTINCT ds.agent)                   AS agents
-    FROM dim_sessions ds
-    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
-    LEFT JOIN dim_apps da ON da.app_id = al.app_id
-    ${wh}
-    GROUP BY 1, 2
+      es.entity_id                                   AS app_id,
+      COALESCE(da.app_name, da.app_id, es.entity_id) AS app_name,
+      SUM(es.total_cost)                             AS total_cost,
+      SUM(es.session_count)                          AS session_count,
+      SUM(es.total_turns)                            AS total_turns,
+      NULL::BIGINT                                   AS agent_count,
+      NULL::VARCHAR[]                                AS agents
+    FROM int_entity_spend es
+    LEFT JOIN dim_apps da ON da.app_id = es.entity_id AND da.tenant_id = es.tenant_id
+    WHERE es.entity_type = 'app'
+      AND es.date >= '${since}'::DATE
+    GROUP BY es.entity_id, COALESCE(da.app_name, da.app_id, es.entity_id)
     ORDER BY total_cost DESC NULLS LAST
     LIMIT ${TOP_N}
   `)
@@ -128,20 +145,36 @@ export async function getTopProjects(since: string | null = null) {
 }
 
 export async function getTopAgents(since: string | null = null) {
-  const wh = tsFilter('ds.start_ts', since)
+  // Fast path: lifetime mart (no date filter).
+  if (!since) {
+    return query(`
+      SELECT
+        agent,
+        app_id,
+        project_id,
+        session_count,
+        total_turns,
+        total_cost,
+        total_tool_calls
+      FROM dim_agents
+      ORDER BY total_cost DESC NULLS LAST
+      LIMIT 20
+    `)
+  }
+  // Range path: read from pre-aggregated int_entity_spend (date-grain table).
   return query(`
     SELECT
-      ds.agent,
-      al.app_id,
-      al.project_id,
-      COUNT(DISTINCT ds.session_id)   AS session_count,
-      SUM(ds.turn_count)              AS total_turns,
-      SUM(ds.total_cost)              AS total_cost,
-      SUM(ds.tools_used)              AS total_tool_calls
-    FROM dim_sessions ds
-    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
-    ${wh}
-    GROUP BY ds.agent, al.app_id, al.project_id
+      es.entity_id                     AS agent,
+      NULL::VARCHAR                    AS app_id,
+      NULL::VARCHAR                    AS project_id,
+      SUM(es.session_count)            AS session_count,
+      SUM(es.total_turns)              AS total_turns,
+      SUM(es.total_cost)               AS total_cost,
+      SUM(es.total_tool_calls)         AS total_tool_calls
+    FROM int_entity_spend es
+    WHERE es.entity_type = 'agent'
+      AND es.date >= '${since}'::DATE
+    GROUP BY es.entity_id
     ORDER BY total_cost DESC NULLS LAST
     LIMIT 20
   `)
@@ -160,10 +193,10 @@ export async function getToolMix(since: string | null = null) {
 }
 
 export async function getProviderSplit(since: string | null = null) {
-  const wh = tsFilter('start_ts', since)
+  const wh = since ? `WHERE date >= '${since}'::DATE` : ''
   return query(`
-    SELECT provider, SUM(total_cost) AS cost, COUNT(DISTINCT session_id) AS sessions
-    FROM dim_sessions
+    SELECT provider, SUM(daily_cost) AS cost, SUM(session_count) AS sessions
+    FROM fact_daily_spend
     ${wh}
     GROUP BY provider
     ORDER BY cost DESC
@@ -171,10 +204,10 @@ export async function getProviderSplit(since: string | null = null) {
 }
 
 export async function getModelBreakdown(since: string | null = null) {
-  const wh = tsFilter('start_ts', since)
+  const wh = since ? `WHERE date >= '${since}'::DATE` : ''
   return query(`
-    SELECT model, SUM(total_cost) AS cost, COUNT(DISTINCT session_id) AS sessions
-    FROM dim_sessions
+    SELECT model, SUM(daily_cost) AS cost, SUM(session_count) AS sessions
+    FROM fact_daily_spend
     ${wh}
     GROUP BY model
     ORDER BY cost DESC
@@ -217,17 +250,33 @@ export async function getTopFiles(since: string | null = null) {
 }
 
 export async function getTopPeople(since: string | null = null) {
-  const wh = tsFilter('start_ts', since)
+  // Fast path: lifetime mart (no date filter).
+  if (!since) {
+    return query(`
+      SELECT
+        person_id,
+        person_name,
+        total_cost,
+        session_count,
+        total_commits
+      FROM dim_people
+      ORDER BY total_cost DESC NULLS LAST
+      LIMIT 6
+    `)
+  }
+  // Range path: read from pre-aggregated int_entity_spend (date-grain table).
   return query(`
     SELECT
-      person_id,
-      person_name,
-      SUM(total_cost)   AS total_cost,
-      COUNT(DISTINCT session_id) AS session_count,
-      SUM(commits)      AS total_commits
-    FROM dim_sessions
-    ${wh}
-    GROUP BY person_id, person_name
+      es.entity_id                     AS person_id,
+      ANY_VALUE(dp.person_name)        AS person_name,
+      SUM(es.total_cost)               AS total_cost,
+      SUM(es.session_count)            AS session_count,
+      SUM(es.commits)                  AS total_commits
+    FROM int_entity_spend es
+    LEFT JOIN dim_people dp ON dp.person_id = es.entity_id
+    WHERE es.entity_type = 'person'
+      AND es.date >= '${since}'::DATE
+    GROUP BY es.entity_id
     ORDER BY total_cost DESC NULLS LAST
     LIMIT 6
   `)

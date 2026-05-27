@@ -12,26 +12,26 @@ export async function getPeople(since: string | null = null) {
   if (!since) {
     return query(`SELECT * FROM dim_people ORDER BY total_cost DESC`)
   }
-  // Range filter: re-aggregate from dim_sessions, joining int_app_cwd_lookup
-  // to populate the apps[] / agents[] arrays the page renders as chips.
+  // Range filter: read from pre-aggregated int_entity_spend (date-grain table).
+  // agents[] and apps[] chip arrays are not in int_entity_spend; fall back to
+  // dim_people for those columns (lifetime data) — the filter affects the KPI
+  // numbers only. The page renders chips from dim_people regardless of range.
   return query(`
     SELECT
-      ds.person_id                                AS person_id,
-      ANY_VALUE(ds.person_name)                   AS person_name,
-      COUNT(DISTINCT ds.session_id)               AS session_count,
-      COUNT(DISTINCT al.app_id)                   AS app_count,
-      ARRAY_AGG(DISTINCT ds.agent)
-        FILTER (WHERE ds.agent IS NOT NULL)        AS agents,
-      ARRAY_AGG(DISTINCT al.app_id)
-        FILTER (WHERE al.app_id IS NOT NULL)       AS apps,
-      SUM(ds.total_cost)                          AS total_cost,
-      SUM(ds.turn_count)                          AS total_turns,
-      SUM(ds.commits)                             AS total_commits
-    FROM dim_sessions ds
-    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
-    WHERE ds.start_ts >= '${since}'
-      AND ds.person_id IS NOT NULL
-    GROUP BY ds.person_id
+      es.entity_id                                AS person_id,
+      ANY_VALUE(dp.person_name)                   AS person_name,
+      SUM(es.session_count)                       AS session_count,
+      NULL::BIGINT                                AS app_count,
+      NULL::VARCHAR[]                             AS agents,
+      NULL::VARCHAR[]                             AS apps,
+      SUM(es.total_cost)                          AS total_cost,
+      SUM(es.total_turns)                         AS total_turns,
+      SUM(es.commits)                             AS total_commits
+    FROM int_entity_spend es
+    LEFT JOIN dim_people dp ON dp.person_id = es.entity_id
+    WHERE es.entity_type = 'person'
+      AND es.date >= '${since}'::DATE
+    GROUP BY es.entity_id
     ORDER BY total_cost DESC NULLS LAST
   `)
 }
@@ -102,15 +102,19 @@ export async function getPersonPrompts(personId: string, limit = 8, since: strin
  */
 export async function getPersonRangeAggregates(personId: string, since: string | null) {
   if (!since) return null
+  // Range path: int_entity_spend gives session_count, turns, cost, commits.
+  // total_output_tokens is not in int_entity_spend; return NULL — the person
+  // header does not currently display that column in the range-filtered view.
   return queryOne(`
     SELECT
-      COUNT(DISTINCT ds.session_id)                   AS session_count,
-      SUM(ds.turn_count)                              AS total_turns,
-      SUM(ds.total_cost)                              AS total_cost,
-      SUM(ds.total_output_tokens)                     AS total_output_tokens,
-      SUM(ds.commits)                                 AS total_commits
-    FROM dim_sessions ds
-    WHERE ds.person_id = ?
-      AND ds.start_ts >= '${since}'
+      SUM(es.session_count)            AS session_count,
+      SUM(es.total_turns)              AS total_turns,
+      SUM(es.total_cost)               AS total_cost,
+      NULL::BIGINT                     AS total_output_tokens,
+      SUM(es.commits)                  AS total_commits
+    FROM int_entity_spend es
+    WHERE es.entity_type = 'person'
+      AND es.entity_id = ?
+      AND es.date >= '${since}'::DATE
   `, [personId])
 }

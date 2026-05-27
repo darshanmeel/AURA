@@ -12,32 +12,33 @@ export async function getApps(since: string | null = null) {
   if (!since) {
     return query(`SELECT * FROM dim_apps ORDER BY total_cost DESC`)
   }
-  // Range filter: re-aggregate from dim_sessions, joining lookup tables
-  // for the naming/identity columns the dashboard's getTopApps pattern uses.
-  // `errors` is not derivable from dim_sessions alone; return NULL and let the
-  // UI render `—` (apps/page.tsx already handles `app.errors != null`).
+  // Range filter: read from pre-aggregated int_entity_spend (date-grain table).
+  // `errors` is not derivable without a timestamp on fact_errors; return NULL
+  // and let the UI render `—` (apps/page.tsx already handles `app.errors != null`).
   return query(`
     SELECT
-      COALESCE(da.app_id, al.app_id, ds.cwd)              AS app_id,
-      COALESCE(da.app_name, da.app_id, al.app_id, ds.cwd) AS app_name,
-      COALESCE(da.project_id, al.project_id)              AS project_id,
+      es.entity_id                                         AS app_id,
+      COALESCE(da.app_name, da.app_id, es.entity_id)      AS app_name,
+      COALESCE(es.project_id, da.project_id)              AS project_id,
       ANY_VALUE(da.cwd)                                    AS cwd,
       ANY_VALUE(da.all_cwds)                               AS all_cwds,
-      COUNT(DISTINCT ds.session_id)                        AS session_count,
-      SUM(ds.turn_count)                                   AS total_turns,
-      SUM(ds.total_cost)                                   AS total_cost,
-      SUM(ds.total_output_tokens)                          AS total_output_tokens,
-      SUM(ds.commits)                                      AS commits,
-      COUNT(DISTINCT ds.agent)                             AS agent_count,
-      ARRAY_AGG(DISTINCT ds.agent)                         AS agents,
-      MIN(ds.start_ts)                                     AS first_seen,
-      MAX(ds.start_ts)                                     AS last_seen,
+      SUM(es.session_count)                                AS session_count,
+      SUM(es.total_turns)                                  AS total_turns,
+      SUM(es.total_cost)                                   AS total_cost,
+      SUM(es.total_output_tokens)                          AS total_output_tokens,
+      SUM(es.commits)                                      AS commits,
+      NULL::BIGINT                                         AS agent_count,
+      NULL::VARCHAR[]                                      AS agents,
+      MIN(da.first_seen)                                   AS first_seen,
+      MAX(da.last_seen)                                    AS last_seen,
       NULL                                                 AS errors
-    FROM dim_sessions ds
-    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
-    LEFT JOIN dim_apps da ON da.app_id = al.app_id AND da.tenant_id = al.tenant_id
-    WHERE ds.start_ts >= '${since}'
-    GROUP BY 1, 2, 3
+    FROM int_entity_spend es
+    LEFT JOIN dim_apps da ON da.app_id = es.entity_id AND da.tenant_id = es.tenant_id
+    WHERE es.entity_type = 'app'
+      AND es.date >= '${since}'::DATE
+    GROUP BY es.entity_id,
+             COALESCE(da.app_name, da.app_id, es.entity_id),
+             COALESCE(es.project_id, da.project_id)
     ORDER BY total_cost DESC NULLS LAST
   `)
 }
@@ -74,7 +75,9 @@ export async function getAppAgents(appId: string, since: string | null = null) {
       ORDER BY total_cost DESC
     `, [appId])
   }
-  // Range path: re-aggregate from dim_sessions for this app's cwds.
+  // Range path: dim_agents has no date grain; re-aggregate from dim_sessions
+  // (app-scoped queries are narrow enough that a full int_entity_spend scan
+  // is no cheaper than a targeted dim_sessions join filtered by app).
   return query(`
     SELECT
       ds.agent                            AS agent,
@@ -83,7 +86,7 @@ export async function getAppAgents(appId: string, since: string | null = null) {
       SUM(ds.total_cost)                  AS total_cost,
       SUM(ds.tools_used)                  AS total_tool_calls
     FROM dim_sessions ds
-    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+    LEFT JOIN dim_apps da ON da.cwd = ds.cwd AND da.tenant_id = ds.tenant_id
     WHERE da.app_id = ?
       AND ds.start_ts >= '${since}'
       AND ds.agent IS NOT NULL
@@ -127,17 +130,20 @@ export async function getAppPeople(appId: string, since: string | null = null) {
  */
 export async function getAppRangeAggregates(appId: string, since: string | null) {
   if (!since) return null
+  // Range path: int_entity_spend gives session_count, turns, cost, commits.
+  // total_output_tokens and agent_count are not in int_entity_spend; return NULL.
+  // The app header KPI grid only renders columns that are non-null.
   return queryOne(`
     SELECT
-      COUNT(DISTINCT ds.session_id)                  AS session_count,
-      SUM(ds.turn_count)                             AS total_turns,
-      SUM(ds.total_cost)                             AS total_cost,
-      SUM(ds.total_output_tokens)                    AS total_output_tokens,
-      SUM(ds.commits)                                AS commits,
-      COUNT(DISTINCT ds.agent)                       AS agent_count
-    FROM dim_sessions ds
-    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
-    WHERE da.app_id = ?
-      AND ds.start_ts >= '${since}'
+      SUM(es.session_count)            AS session_count,
+      SUM(es.total_turns)              AS total_turns,
+      SUM(es.total_cost)               AS total_cost,
+      NULL::BIGINT                     AS total_output_tokens,
+      SUM(es.commits)                  AS commits,
+      NULL::BIGINT                     AS agent_count
+    FROM int_entity_spend es
+    WHERE es.entity_type = 'app'
+      AND es.entity_id = ?
+      AND es.date >= '${since}'::DATE
   `, [appId])
 }
