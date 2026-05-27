@@ -1,20 +1,12 @@
 import type { Metadata } from 'next'
 import './globals.css'
 import { Colophon, Rule } from '@/components/atoms'
+import NavLinks from '@/components/NavLinks'
 
 export const metadata: Metadata = {
   title: 'AURA — Spend, with receipts.',
   description: 'Local analytics for Claude Code agent transcripts',
 }
-
-const NAV_LINKS = [
-  { href: '/', label: 'Dashboard' },
-  { href: '/apps', label: 'Apps' },
-  { href: '/agents', label: 'Agents' },
-  { href: '/people', label: 'People' },
-  { href: '/sessions', label: 'Sessions' },
-  { href: '/errors', label: 'Errors' },
-]
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const now = new Date()
@@ -33,11 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <span className="brand-sub" style={{ marginLeft: '8px' }}><em>Agent Usage & Resource Analytics</em></span>
                 </a>
               </div>
-              <nav className="topnav">
-                {NAV_LINKS.map(({ href, label }) => (
-                  <a key={href} href={href} className="topnav-link">{label}</a>
-                ))}
-              </nav>
+              <NavLinks />
               <div className="masthead-meta">
                 <span className="meta-key">VOL. I</span>
                 <span className="meta-dot">·</span>

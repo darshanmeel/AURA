@@ -50,35 +50,71 @@ export async function getPersonSessions(personId: string, since: string | null =
 }
 
 export async function getPersonAgents(personId: string, since: string | null = null) {
-  const sinceClause = since ? ` AND ds.start_ts >= '${since}'` : ''
+  // Fast path: lifetime mart.
+  if (!since) {
+    return query(`
+      SELECT ds.agent,
+             COUNT(DISTINCT ds.session_id) AS session_count,
+             SUM(ds.turn_count)            AS total_turns,
+             SUM(ds.total_cost)            AS total_cost
+      FROM dim_sessions ds
+      WHERE ds.person_id = ?
+        AND ds.agent IS NOT NULL
+      GROUP BY ds.agent
+      ORDER BY total_cost DESC
+    `, [personId])
+  }
+  // Range path: join fact_model_calls for accurate date-filtered cost.
   return query(`
-    SELECT ds.agent,
-           COUNT(DISTINCT ds.session_id) AS session_count,
-           SUM(ds.turn_count)            AS total_turns,
-           SUM(ds.total_cost)            AS total_cost
-    FROM dim_sessions ds
-    WHERE ds.person_id = ?
-      AND ds.agent IS NOT NULL${sinceClause}
-    GROUP BY ds.agent
+    SELECT
+      fmc.agent,
+      COUNT(DISTINCT fmc.session_id)   AS session_count,
+      SUM(ds.turn_count)               AS total_turns,
+      SUM(fmc.calculated_cost)         AS total_cost
+    FROM fact_model_calls fmc
+    JOIN dim_sessions ds ON ds.session_id = fmc.session_id
+    WHERE ds.person_id = '${personId}'
+      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+      AND fmc.agent IS NOT NULL
+    GROUP BY fmc.agent
     ORDER BY total_cost DESC
-  `, [personId])
+  `)
 }
 
 export async function getPersonApps(personId: string, since: string | null = null) {
-  const sinceClause = since ? ` AND ds.start_ts >= '${since}'` : ''
+  // Fast path: lifetime mart.
+  if (!since) {
+    return query(`
+      SELECT da.app_id,
+             COALESCE(da.app_name, da.app_id) AS app_name,
+             COUNT(DISTINCT ds.session_id)    AS session_count,
+             SUM(ds.turn_count)               AS total_turns,
+             SUM(ds.total_cost)               AS total_cost
+      FROM dim_sessions ds
+      INNER JOIN dim_apps da ON da.cwd = ds.cwd
+      WHERE ds.person_id = ?
+        AND da.app_id IS NOT NULL
+      GROUP BY da.app_id, da.app_name
+      ORDER BY total_cost DESC
+    `, [personId])
+  }
+  // Range path: join fact_model_calls for accurate date-filtered cost.
   return query(`
-    SELECT da.app_id,
-           COALESCE(da.app_name, da.app_id) AS app_name,
-           COUNT(DISTINCT ds.session_id)    AS session_count,
-           SUM(ds.turn_count)               AS total_turns,
-           SUM(ds.total_cost)               AS total_cost
-    FROM dim_sessions ds
+    SELECT
+      da.app_id,
+      COALESCE(da.app_name, da.app_id)  AS app_name,
+      COUNT(DISTINCT fmc.session_id)    AS session_count,
+      SUM(ds.turn_count)                AS total_turns,
+      SUM(fmc.calculated_cost)          AS total_cost
+    FROM fact_model_calls fmc
+    JOIN dim_sessions ds ON ds.session_id = fmc.session_id
     INNER JOIN dim_apps da ON da.cwd = ds.cwd
-    WHERE ds.person_id = ?
-      AND da.app_id IS NOT NULL${sinceClause}
+    WHERE ds.person_id = '${personId}'
+      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+      AND da.app_id IS NOT NULL
     GROUP BY da.app_id, da.app_name
     ORDER BY total_cost DESC
-  `, [personId])
+  `)
 }
 
 export async function getPersonPrompts(personId: string, limit = 8, since: string | null = null) {

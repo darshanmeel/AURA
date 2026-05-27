@@ -70,23 +70,24 @@ export async function getAgentApps(name: string, since: string | null = null) {
       ORDER BY total_cost DESC
     `, [name])
   }
-  // Range path: re-aggregate from dim_sessions joined to int_app_cwd_lookup.
+  // Range path: join fact_model_calls for accurate date-filtered cost.
   return query(`
     SELECT
       al.app_id                          AS app_id,
       al.project_id                      AS project_id,
-      COUNT(DISTINCT ds.session_id)      AS session_count,
+      COUNT(DISTINCT fmc.session_id)     AS session_count,
       SUM(ds.turn_count)                 AS total_turns,
-      SUM(ds.total_cost)                 AS total_cost,
+      SUM(fmc.calculated_cost)           AS total_cost,
       SUM(ds.tools_used)                 AS total_tool_calls
-    FROM dim_sessions ds
+    FROM fact_model_calls fmc
+    JOIN dim_sessions ds ON ds.session_id = fmc.session_id
     LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
-    WHERE ds.agent = ?
-      AND ds.start_ts >= '${since}'
+    WHERE fmc.agent = '${name}'
+      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
       AND al.app_id IS NOT NULL
     GROUP BY al.app_id, al.project_id
     ORDER BY total_cost DESC
-  `, [name])
+  `)
 }
 
 export async function getAgentModels(name: string, since: string | null = null) {
@@ -117,18 +118,36 @@ export async function getAgentSessions(name: string, limit = 12, since: string |
 }
 
 export async function getAgentPeople(name: string, since: string | null = null) {
-  const sinceClause = since ? ` AND ds.start_ts >= '${since}'` : ''
+  // Fast path: lifetime mart.
+  if (!since) {
+    return query(`
+      SELECT ds.person_id, ds.person_name,
+             COUNT(DISTINCT ds.session_id)  AS session_count,
+             SUM(ds.turn_count)             AS total_turns,
+             SUM(ds.total_cost)             AS total_cost
+      FROM dim_sessions ds
+      WHERE ds.agent = ?
+        AND ds.person_id IS NOT NULL
+      GROUP BY ds.person_id, ds.person_name
+      ORDER BY total_cost DESC
+    `, [name])
+  }
+  // Range path: join fact_model_calls for accurate date-filtered cost.
   return query(`
-    SELECT ds.person_id, ds.person_name,
-           COUNT(DISTINCT ds.session_id)  AS session_count,
-           SUM(ds.turn_count)             AS total_turns,
-           SUM(ds.total_cost)             AS total_cost
-    FROM dim_sessions ds
-    WHERE ds.agent = ?
-      AND ds.person_id IS NOT NULL${sinceClause}
+    SELECT
+      ds.person_id,
+      ds.person_name,
+      COUNT(DISTINCT fmc.session_id)   AS session_count,
+      SUM(ds.turn_count)               AS total_turns,
+      SUM(fmc.calculated_cost)         AS total_cost
+    FROM fact_model_calls fmc
+    JOIN dim_sessions ds ON ds.session_id = fmc.session_id
+    WHERE fmc.agent = '${name}'
+      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+      AND ds.person_id IS NOT NULL
     GROUP BY ds.person_id, ds.person_name
     ORDER BY total_cost DESC
-  `, [name])
+  `)
 }
 
 export async function getAgentFiles(name: string, limit = 8, since: string | null = null) {

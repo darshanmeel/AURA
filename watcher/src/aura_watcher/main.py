@@ -1,10 +1,11 @@
 import json
 import os
+import shutil
 import time
 import threading
 import glob
 import subprocess
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 from aura_watcher.duckdb_writer import DuckDBWriter
 from aura_watcher.adapters.claude import ClaudeAdapter
@@ -48,8 +49,10 @@ def process_file(file_path, writer, adapter, cp_manager):
                         skill_batches.append(skills)
                 except Exception as e:
                     print(f"Error parsing skills: {e}")
+                    writer.log_error('skill_parse', file_path, e)
             except Exception as e:
                 print(f"Error parsing line in {file_path}: {e}")
+                writer.log_error('process_file', file_path, e)
 
         # ALL DuckDB writes serialize through _snapshot_lock so the snapshot
         # worker's force_checkpoint never races with concurrent inserts
@@ -66,6 +69,7 @@ def process_file(file_path, writer, adapter, cp_manager):
                 cp_manager.update_checkpoint(file_path, new_offset, last_uuid)
     except Exception as e:
         print(f"Error processing {file_path}: {e}")
+        writer.log_error('process_file', file_path, e)
 
 class JSONLHandler(FileSystemEventHandler):
     def __init__(self, writer, adapter, cp_manager):
@@ -83,9 +87,13 @@ class JSONLHandler(FileSystemEventHandler):
             # write_session_meta opens its own DuckDB connection — must
             # serialize through _snapshot_lock for the same reason
             # process_file does (parallel connect() = file handle conflict).
-            with _snapshot_lock:
-                if not dbt_running.is_set():
-                    write_session_meta(self.writer, session_id, event.src_path)
+            try:
+                with _snapshot_lock:
+                    if not dbt_running.is_set():
+                        write_session_meta(self.writer, session_id, event.src_path)
+            except Exception as e:
+                print(f"Error writing session_meta for {session_id}: {e}")
+                self.writer.log_error('session_meta', event.src_path, e)
             process_file(event.src_path, self.writer, self.adapter, self.cp_manager)
 
 dbt_running = threading.Event()
@@ -93,7 +101,7 @@ dbt_running = threading.Event()
 # to guarantee no snapshot connection is open before launching dbt.
 _snapshot_lock = threading.Lock()
 
-def snapshot_worker(src, dst, interval):
+def snapshot_worker(src, dst, interval, writer):
     print(f"Snapshot worker started: {src} -> {dst} every {interval}s")
     while True:
         try:
@@ -107,9 +115,10 @@ def snapshot_worker(src, dst, interval):
                         take_snapshot(src, dst)
         except Exception as e:
             print(f"[snapshot] Warning: {e}")
+            writer.log_error('snapshot', None, e)
         time.sleep(interval)
 
-def dbt_worker(interval_mins):
+def dbt_worker(interval_mins, writer):
     if interval_mins <= 0:
         print("DBT run worker disabled.")
         return
@@ -148,6 +157,19 @@ def dbt_worker(interval_mins):
                 if res2.stderr:
                     print(f"dbt run stderr: {res2.stderr}")
 
+                # source freshness: non-zero exit on WARN/ERROR is a signal that
+                # data is stale, not a pipeline failure — don't propagate.
+                print("Invoking dbt source freshness...")
+                res_freshness = subprocess.run(
+                    ["dbt", "source", "freshness", "--profiles-dir", ".", "--no-partial-parse"],
+                    cwd="/app/dbt",
+                    capture_output=True,
+                    text=True
+                )
+                print(f"dbt source freshness stdout: {res_freshness.stdout}")
+                if res_freshness.stderr:
+                    print(f"dbt source freshness stderr: {res_freshness.stderr}")
+
                 # Tests run separately for observability — failures logged, never
                 # block model materialization.
                 print("Invoking dbt test...")
@@ -159,8 +181,19 @@ def dbt_worker(interval_mins):
                 )
                 if res3.returncode != 0:
                     print(f"dbt test failures (non-blocking): {res3.stdout}")
+
+                # Copy dbt artifacts to /data/artifacts/ so the frontend can read them.
+                os.makedirs("/data/artifacts", exist_ok=True)
+                for artifact in ["run_results.json", "sources.json", "manifest.json"]:
+                    src_artifact = f"/app/dbt/target/{artifact}"
+                    if os.path.exists(src_artifact):
+                        try:
+                            shutil.copy2(src_artifact, f"/data/artifacts/{artifact}")
+                        except Exception as copy_exc:
+                            print(f"[dbt_worker] artifact copy failed for {artifact}: {copy_exc}")
         except Exception as e:
             print(f"Error running DBT build: {e}")
+            writer.log_error('dbt', None, e)
         finally:
             dbt_running.clear()
         time.sleep(interval_mins * 60)
@@ -180,21 +213,32 @@ def main():
     adapter = ClaudeAdapter()
     cp_manager = CheckpointManager(writer)
 
-    # Start snapshot and dbt workers BEFORE backfill — they run independently
-    # on whatever data exists. Backfill continues in background without blocking.
-    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval), daemon=True).start()
-    threading.Thread(target=dbt_worker, args=(dbt_interval,), daemon=True).start()
+    # Snapshot worker starts immediately — it never writes to the DB, only copies
+    # the file, so it's safe to run alongside the backfill.
+    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval, writer), daemon=True).start()
 
-    # Run backfill in background (does not block snapshot/dbt workers).
-    # Backfill uses _snapshot_lock to serialize with snapshot writes.
+    # dbt worker starts AFTER backfill so the initial dbt run sees complete data.
+    # Starting it before backfill causes the dbt_running flag to block process_file,
+    # silently skipping the newest files during the most critical ingestion window.
+
+    # Files are sorted newest-first so today's data ingests before historical data.
+    # The full set is always processed — backfill is all-or-nothing on the bronze
+    # layer (raw_events). dbt is independent and replayable from raw_events.
     print("Running initial backfill...")
-    files = glob.glob(os.path.join(logs_dir, "**", "*.jsonl"), recursive=True)
+    files = sorted(
+        glob.glob(os.path.join(logs_dir, "**", "*.jsonl"), recursive=True),
+        key=lambda f: os.path.getmtime(f),
+        reverse=True,  # newest first → today's data ingested before historical
+    )
     print(f"Found {len(files)} files to backfill", flush=True)
     for idx, f in enumerate(files):
         process_file(f, writer, adapter, cp_manager)
         if (idx + 1) % 50 == 0:
             print(f"Backfill progress: {idx + 1}/{len(files)} files processed", flush=True)
     print(f"Backfill complete. Processed {len(files)} files.", flush=True)
+
+    # dbt worker starts now — backfill is done, so its first run sees full data.
+    threading.Thread(target=dbt_worker, args=(dbt_interval, writer), daemon=True).start()
 
     # Backfill session_meta for any sessions not yet recorded
     from aura_watcher.session_meta import ensure_session_meta_table
@@ -210,10 +254,13 @@ def main():
                 write_session_meta(writer, session_id, f)
         except Exception as e:
             print(f"Error writing session_meta for {session_id}: {e}")
+            writer.log_error('session_meta', f, e)
 
     # Start Watchdog
     handler = JSONLHandler(writer, adapter, cp_manager)
-    observer = Observer()
+    # PollingObserver works on all platforms including Windows bind-mounts in
+    # Docker where inotify (Observer) silently drops events.
+    observer = PollingObserver(timeout=10)
     observer.schedule(handler, logs_dir, recursive=True)
     observer.start()
 

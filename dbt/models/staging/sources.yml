@@ -7,3 +7,63 @@ sources:
       - name: raw_events
       - name: raw_session_skills
       - name: session_meta
+
+  - name: aura
+    schema: main
+    description: >
+      Bronze-layer tables written directly by the Aura watcher process.
+      Used as the canonical source for dbt source freshness checks and
+      for the Observability tab (reads target/sources.json).
+    tables:
+      - name: raw_events
+        description: >
+          Every JSONL event parsed and written by the watcher.
+          One row per parsed event; ts is the event timestamp from the
+          JSONL payload (not the wall-clock ingest time).
+        loaded_at_field: ts
+        freshness:
+          warn_after: {count: 5, period: minute}
+          error_after: {count: 30, period: minute}
+        columns:
+          - name: tenant_id
+          - name: uuid
+          - name: session_id
+          - name: event_type
+          - name: ts
+          - name: file_path
+          - name: byte_offset
+          - name: payload
+
+      - name: session_meta
+        description: >
+          Written by the watcher when a new session is first observed.
+          No freshness rule — sessions only appear when a new JSONL file
+          is created, so absence of recent rows is normal.
+        columns:
+          - name: session_id
+          - name: project_path
+          - name: created_at
+
+      - name: ingest_checkpoints
+        description: >
+          Per-file read cursor maintained by the watcher.  Tracks the
+          last byte_offset successfully ingested for each JSONL file.
+          No freshness rule — updated only when a file grows.
+        columns:
+          - name: file_path
+          - name: last_offset
+
+      - name: watcher_errors
+        description: >
+          Errors surfaced by the watcher during JSONL parsing or ingest.
+          Declared as a source so dbt models and the Observability tab
+          can reference it via source().  No freshness rule is set —
+          absence of recent rows is the healthy state; alerting on
+          staleness would misfire.
+        loaded_at_field: ts
+        columns:
+          - name: ts
+          - name: source
+          - name: file_path
+          - name: error_message
+          - name: stack_trace

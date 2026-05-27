@@ -1,4 +1,5 @@
 import duckdb
+import traceback
 from contextlib import contextmanager
 
 class DuckDBWriter:
@@ -70,6 +71,14 @@ class DuckDBWriter:
                     is_initial    BOOLEAN DEFAULT FALSE,
                     PRIMARY KEY (tenant_id, session_id, skill_name)
                 );
+                CREATE TABLE IF NOT EXISTS watcher_errors (
+                    ts            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    source        VARCHAR,
+                    file_path     VARCHAR,
+                    error_message VARCHAR,
+                    stack_trace   VARCHAR
+                );
+                CREATE INDEX IF NOT EXISTS idx_watcher_errors_ts ON watcher_errors(ts);
             """)
 
     def insert_event(self, event: dict):
@@ -93,12 +102,27 @@ class DuckDBWriter:
     def insert_session_skills(self, skills: list[dict]):
         if not skills:
             return
-        
+
         cols = ", ".join(skills[0].keys())
         placeholders = ", ".join(["?"] * len(skills[0]))
-        
+
         with self.get_connection() as conn:
             conn.executemany(
                 f"INSERT INTO raw_session_skills ({cols}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
                 [list(s.values()) for s in skills]
             )
+
+    def log_error(self, source: str, file_path: str | None, error: Exception):
+        error_message = str(error)
+        stack = traceback.format_exc()
+        try:
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO watcher_errors (source, file_path, error_message, stack_trace)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    [source, file_path, error_message, stack],
+                )
+        except Exception as log_exc:
+            print(f"[duckdb_writer] log_error failed to persist: {log_exc}")

@@ -44,8 +44,8 @@ export async function getApps(since: string | null = null) {
 }
 
 export async function getAppsTotalCost(since: string | null = null) {
-  const wh = tsFilter('start_ts', since)
-  return queryOne(`SELECT SUM(total_cost) AS total_cost FROM dim_sessions ${wh}`)
+  const wh = since ? `WHERE date >= '${since}'::DATE` : ''
+  return queryOne(`SELECT COALESCE(SUM(total_cost), 0) AS total_cost FROM int_entity_spend ${wh}`)
 }
 
 export async function getProjectApps(projectId: string) {
@@ -75,24 +75,23 @@ export async function getAppAgents(appId: string, since: string | null = null) {
       ORDER BY total_cost DESC
     `, [appId])
   }
-  // Range path: dim_agents has no date grain; re-aggregate from dim_sessions
-  // (app-scoped queries are narrow enough that a full int_entity_spend scan
-  // is no cheaper than a targeted dim_sessions join filtered by app).
+  // Range path: join fact_model_calls for accurate date-filtered cost.
   return query(`
     SELECT
-      ds.agent                            AS agent,
-      COUNT(DISTINCT ds.session_id)       AS session_count,
-      SUM(ds.turn_count)                  AS total_turns,
-      SUM(ds.total_cost)                  AS total_cost,
-      SUM(ds.tools_used)                  AS total_tool_calls
-    FROM dim_sessions ds
+      fmc.agent                              AS agent,
+      COUNT(DISTINCT fmc.session_id)         AS session_count,
+      SUM(ds.turn_count)                     AS total_turns,
+      SUM(fmc.calculated_cost)               AS total_cost,
+      SUM(ds.tools_used)                     AS total_tool_calls
+    FROM fact_model_calls fmc
+    JOIN dim_sessions ds ON ds.session_id = fmc.session_id
     LEFT JOIN dim_apps da ON da.cwd = ds.cwd AND da.tenant_id = ds.tenant_id
-    WHERE da.app_id = ?
-      AND ds.start_ts >= '${since}'
-      AND ds.agent IS NOT NULL
-    GROUP BY ds.agent
+    WHERE da.app_id = '${appId}'
+      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+      AND fmc.agent IS NOT NULL
+    GROUP BY fmc.agent
     ORDER BY total_cost DESC
-  `, [appId])
+  `)
 }
 
 export async function getAppSessions(appId: string, limit = APP_SESSIONS_LIMIT, since: string | null = null) {
@@ -109,19 +108,38 @@ export async function getAppSessions(appId: string, limit = APP_SESSIONS_LIMIT, 
 }
 
 export async function getAppPeople(appId: string, since: string | null = null) {
-  const sinceClause = since ? ` AND ds.start_ts >= '${since}'` : ''
+  // Fast path: lifetime mart.
+  if (!since) {
+    return query(`
+      SELECT ds.person_id, ds.person_name,
+             COUNT(DISTINCT ds.session_id)  AS session_count,
+             SUM(ds.turn_count)             AS total_turns,
+             SUM(ds.total_cost)             AS total_cost
+      FROM dim_sessions ds
+      LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+      WHERE da.app_id = ?
+        AND ds.person_id IS NOT NULL
+      GROUP BY ds.person_id, ds.person_name
+      ORDER BY total_cost DESC
+    `, [appId])
+  }
+  // Range path: join fact_model_calls for accurate date-filtered cost.
   return query(`
-    SELECT ds.person_id, ds.person_name,
-           COUNT(DISTINCT ds.session_id)  AS session_count,
-           SUM(ds.turn_count)             AS total_turns,
-           SUM(ds.total_cost)             AS total_cost
-    FROM dim_sessions ds
-    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
-    WHERE da.app_id = ?
-      AND ds.person_id IS NOT NULL${sinceClause}
+    SELECT
+      ds.person_id,
+      ds.person_name,
+      COUNT(DISTINCT fmc.session_id)   AS session_count,
+      SUM(ds.turn_count)               AS total_turns,
+      SUM(fmc.calculated_cost)         AS total_cost
+    FROM fact_model_calls fmc
+    JOIN dim_sessions ds ON ds.session_id = fmc.session_id
+    LEFT JOIN dim_apps da ON da.cwd = ds.cwd AND da.tenant_id = ds.tenant_id
+    WHERE da.app_id = '${appId}'
+      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+      AND ds.person_id IS NOT NULL
     GROUP BY ds.person_id, ds.person_name
     ORDER BY total_cost DESC
-  `, [appId])
+  `)
 }
 
 /**
