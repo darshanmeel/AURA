@@ -5,6 +5,7 @@ import time
 import threading
 import glob
 import subprocess
+from datetime import datetime, timezone
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 from aura_watcher.duckdb_writer import DuckDBWriter
@@ -193,6 +194,26 @@ def dbt_worker(interval_mins, writer):
                             shutil.copy2(src_artifact, f"/data/artifacts/{artifact}")
                         except Exception as copy_exc:
                             print(f"[dbt_worker] artifact copy failed for {artifact}: {copy_exc}")
+
+                # Archive run_results.json keyed by invocation time so the
+                # observability page can show a recent-runs feed. We rotate to
+                # keep only the last 20 history files (avoids unbounded growth
+                # on a long-running deployment).
+                src_rr = "/app/dbt/target/run_results.json"
+                if os.path.exists(src_rr):
+                    history_dir = "/data/artifacts/history"
+                    os.makedirs(history_dir, exist_ok=True)
+                    ts_label = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    try:
+                        shutil.copy2(src_rr, f"{history_dir}/{ts_label}.json")
+                        files = sorted(f for f in os.listdir(history_dir) if f.endswith(".json"))
+                        for stale in files[:-20]:
+                            try:
+                                os.remove(f"{history_dir}/{stale}")
+                            except Exception:
+                                pass
+                    except Exception as hist_exc:
+                        print(f"[dbt_worker] history archival failed: {hist_exc}")
         except Exception as e:
             print(f"Error running DBT build: {e}")
             writer.log_error('dbt', None, e)

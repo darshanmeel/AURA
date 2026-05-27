@@ -88,9 +88,7 @@ Two truly independent stages: JSON → bronze (the watcher's job) and bronze →
 | **Sessions** (`/sessions`) | Filterable ledger of every session with title, model, turns, cost, person, agent |
 | **Session detail** (`/sessions/[id]`) | Per-turn ledger with tabs for messages, prompts, agents, errors, files, tokens, tools, git |
 | **Errors** (`/errors`) | Hard errors, warnings, tool failures across all sessions with filters by kind/tool/severity |
-| **Observability** (`/observability`) | Pipeline health at a glance: bronze freshness, last dbt run status, errors in last hour/day, and ingestion volume for 1h / 1d / 7d windows. Polls every 10 s. |
-| **Observability → Watcher** (`/observability/watcher`) | Bronze freshness card, files watched count, total bytes ingested, recent ingestion volume, full `watcher_errors` table with expandable stack traces |
-| **Observability → dbt** (`/observability/dbt`) | Last run status pill, models pass/fail counts, per-model timings and error messages (from `target/run_results.json`), source freshness results (from `target/sources.json`), and a raw-JSON dump panel for deep debugging |
+| **Observability** (`/observability`) | Single consolidated pipeline view: derived verdict block, 5-stage flow strip (Watcher → Bronze → Silver → Gold → Consumers), medallion-layer cards with per-table rows / size / age, 4-column KPI grid, 1h/1d/7d ingestion sparklines, source freshness table, dbt test grid + per-relation breakdown, last 6 dbt invocations, live watcher errors feed, expandable `run_results.json` / `sources.json`. Polls every 10 s. |
 
 ---
 

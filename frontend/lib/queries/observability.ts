@@ -1,9 +1,11 @@
 import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import { query, queryOne } from '../db'
 
 const ARTIFACTS_DIR = process.env.AURA_ARTIFACTS_DIR ?? '/data/artifacts'
 const RUN_RESULTS_PATH = `${ARTIFACTS_DIR}/run_results.json`
 const SOURCES_PATH = `${ARTIFACTS_DIR}/sources.json`
+const HISTORY_DIR = `${ARTIFACTS_DIR}/history`
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -346,6 +348,17 @@ export interface DbtSourceFreshness {
   age_seconds: number | null
 }
 
+export interface DbtTestResult {
+  // Display-friendly test identifier built from the generic name + arguments,
+  // e.g. "not_null · fact_model_calls · event_uuid".
+  name: string
+  unique_id: string
+  status: string                         // pass / fail / warn / error / skipped
+  execution_time_ms: number | null
+  kind: string                           // not_null | unique | accepted_values | range | custom
+  relation: string                       // e.g. "fact_model_calls"
+}
+
 export interface DbtHealth {
   last_run_ts: string | null
   last_run_status: 'success' | 'failure' | 'unknown'
@@ -355,6 +368,10 @@ export interface DbtHealth {
   models_fail: number
   per_model: DbtModelResult[]
   source_freshness: DbtSourceFreshness[]
+  tests_total: number
+  tests_pass: number
+  tests_fail: number
+  per_test: DbtTestResult[]
 }
 
 interface RunResultsJson {
@@ -378,12 +395,100 @@ interface SourcesJson {
   }>
 }
 
+// Known relation names. We use longest-match-wins to split a dbt test
+// unique_id correctly even when the table name itself has underscores
+// (e.g. fact_hourly_activity). Kept in sync with LAYER_TABLES below.
+const KNOWN_RELATIONS: readonly string[] = [
+  // gold
+  'fact_hourly_activity',
+  'fact_model_calls',
+  'fact_tool_executions',
+  'fact_session_files',
+  'fact_git_commands',
+  'fact_daily_spend',
+  'fact_spend_pace',
+  'fact_prompts',
+  'fact_turns',
+  'fact_errors',
+  'dim_sessions',
+  'dim_projects',
+  'dim_agents',
+  'dim_people',
+  'dim_apps',
+  // silver
+  'stg_assistant_messages',
+  'stg_session_skills',
+  'stg_thinking_blocks',
+  'stg_session_meta',
+  'stg_tool_results',
+  'stg_tool_calls',
+  'stg_events',
+  // bronze
+  'raw_events',
+]
+
+// Parses a dbt test unique_id like
+//   `test.aura.not_null_fact_model_calls_event_uuid.7c2c1ef38a`
+//   `test.aura.unique_dim_sessions_session_id.6b8e2d3105`
+//   `test.aura.accepted_values_fact_hourly_activity_day_of_week__0__1__2__3__4__5__6.b38095fa39`
+//   `test.aura.fact_prompts_cache_hit_rate_in_range.123abc`  (custom singular test)
+// into a friendly { name, kind, relation }. Generic tests follow the
+// `<kind>_<relation>_<column>` convention; values appended after the column
+// (accepted_values) are separated by `__`.
+function parseDbtTestName(uniqueId: string): { name: string; kind: string; relation: string } {
+  // Generic tests carry an 8–12 char hex hash as their final segment;
+  // singular tests don't. Strip the hash when present, then peel off the
+  // `__<args>` suffix that accepted_values / range tests add.
+  const parts = uniqueId.split('.')
+  const tail = parts[parts.length - 1] ?? ''
+  const hasHash = /^[0-9a-f]{8,12}$/i.test(tail)
+  const body = hasHash ? (parts[parts.length - 2] ?? uniqueId) : tail
+  const raw = body.split('__')[0]
+  const KNOWN_KINDS = ['not_null', 'unique', 'accepted_values', 'relationships', 'range', 'expression_is_true']
+
+  for (const k of KNOWN_KINDS) {
+    if (raw.startsWith(k + '_')) {
+      const rest = raw.slice(k.length + 1)
+      // Longest-match against the known-relation table avoids splitting
+      // multi-word tables (fact_model_calls) at the wrong underscore.
+      const relation = KNOWN_RELATIONS.find(rel => rest === rel || rest.startsWith(rel + '_'))
+      if (relation) {
+        const column = rest.length > relation.length ? rest.slice(relation.length + 1) : ''
+        return {
+          name: column ? `${k} · ${relation} · ${column}` : `${k} · ${relation}`,
+          kind: k,
+          relation,
+        }
+      }
+      // Unknown relation — fall back to first underscore.
+      const ix = rest.indexOf('_')
+      const fbRelation = ix >= 0 ? rest.slice(0, ix) : rest
+      const fbColumn = ix >= 0 ? rest.slice(ix + 1) : ''
+      return {
+        name: fbColumn ? `${k} · ${fbRelation} · ${fbColumn}` : `${k} · ${fbRelation}`,
+        kind: k,
+        relation: fbRelation,
+      }
+    }
+  }
+  // Singular / custom tests — best-effort: look for a known relation anywhere
+  // in the prefix; otherwise leave the whole thing as the relation.
+  const matched = KNOWN_RELATIONS.find(rel => raw.startsWith(rel + '_'))
+  if (matched) {
+    return { name: raw, kind: 'custom', relation: matched }
+  }
+  return { name: raw, kind: 'custom', relation: raw }
+}
+
 export async function getDbtHealth(): Promise<DbtHealth> {
   let lastRunTs: string | null = null
   let lastRunDurationS: number | null = null
   let perModel: DbtModelResult[] = []
+  let perTest: DbtTestResult[] = []
   let modelsTotal = 0
   let modelsPass = 0
+  let testsTotal = 0
+  let testsPass = 0
   let sourcesFreshness: DbtSourceFreshness[] = []
 
   // Read run_results.json
@@ -393,8 +498,11 @@ export async function getDbtHealth(): Promise<DbtHealth> {
     lastRunTs = json.metadata?.generated_at ?? null
     lastRunDurationS = json.elapsed_time ?? null
 
-    const modelResults = (json.results ?? []).filter(r => r.unique_id.startsWith('model.'))
+    const results = json.results ?? []
+    const modelResults = results.filter(r => r.unique_id.startsWith('model.'))
+    const testResults = results.filter(r => r.unique_id.startsWith('test.'))
     modelsTotal = modelResults.length
+    testsTotal = testResults.length
 
     perModel = modelResults.map(r => {
       const parts = r.unique_id.split('.')
@@ -409,14 +517,31 @@ export async function getDbtHealth(): Promise<DbtHealth> {
       }
     })
 
+    perTest = testResults.map(r => {
+      const { name, kind, relation } = parseDbtTestName(r.unique_id)
+      return {
+        name,
+        unique_id: r.unique_id,
+        status: r.status,
+        execution_time_ms: r.execution_time != null ? Math.round(r.execution_time * 1000) : null,
+        kind,
+        relation,
+      }
+    })
+
     modelsPass = perModel.filter(m => m.status === 'success').length
+    testsPass = perTest.filter(t => t.status === 'pass').length
   } catch (_e) {
     // file absent or unparseable — return defaults below
   }
 
   const modelsFail = modelsTotal - modelsPass
+  const testsFail = testsTotal - testsPass
+  // Last-run status reflects both: a failing test counts as failure too.
   const lastRunStatus: 'success' | 'failure' | 'unknown' =
-    modelsTotal === 0 ? 'unknown' : modelsFail === 0 ? 'success' : 'failure'
+    modelsTotal === 0 && testsTotal === 0 ? 'unknown'
+      : modelsFail === 0 && testsFail === 0 ? 'success'
+      : 'failure'
 
   // Read sources.json
   try {
@@ -450,6 +575,10 @@ export async function getDbtHealth(): Promise<DbtHealth> {
     models_fail: modelsFail,
     per_model: perModel,
     source_freshness: sourcesFreshness,
+    tests_total: testsTotal,
+    tests_pass: testsPass,
+    tests_fail: testsFail,
+    per_test: perTest,
   }
 }
 
@@ -488,3 +617,296 @@ export async function getDbtArtifacts(): Promise<DbtArtifacts> {
 
   return { run_results: runResults, sources, last_modified: lastModified }
 }
+
+// ---------------------------------------------------------------------------
+// Hourly ingestion buckets (sparkline data)
+// ---------------------------------------------------------------------------
+
+export interface HourlyIngestion {
+  hour: string        // ISO timestamp of the bucket (truncated to the hour)
+  rows: number
+}
+
+export async function getHourlyIngestion(hours: number = 24): Promise<HourlyIngestion[]> {
+  // We pre-build all N buckets and LEFT JOIN so quiet hours show up as zero
+  // instead of dropping out — the sparkline needs a complete time axis.
+  try {
+    return await query<HourlyIngestion>(
+      `WITH bucket_axis AS (
+         SELECT
+           date_trunc('hour', NOW()) - (INTERVAL 1 HOUR * (h.i))   AS hour
+         FROM generate_series(0, ${hours - 1}) AS h(i)
+       ),
+       counts AS (
+         SELECT
+           date_trunc('hour', ts) AS hour,
+           COUNT(*)               AS rows
+         FROM raw_events
+         WHERE ts >= NOW() - INTERVAL ${hours} HOUR
+         GROUP BY 1
+       )
+       SELECT
+         a.hour::VARCHAR  AS hour,
+         COALESCE(c.rows, 0)::BIGINT AS rows
+       FROM bucket_axis a
+       LEFT JOIN counts c USING (hour)
+       ORDER BY a.hour`
+    )
+  } catch (_e) {
+    return []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// dbt run history — reads archived run_results from {ARTIFACTS_DIR}/history/
+// ---------------------------------------------------------------------------
+
+export interface DbtHistoryEntry {
+  started_at: string           // metadata.invocation_started_at
+  generated_at: string         // metadata.generated_at
+  command: string              // e.g. "dbt test" / "dbt run"
+  outcome: 'pass' | 'fail' | 'unknown'
+  duration_ms: number
+  models_total: number
+  tests_total: number
+  invocation_id: string | null
+}
+
+interface ArchivedRunResults {
+  metadata?: {
+    generated_at?: string
+    invocation_started_at?: string
+    invocation_id?: string
+  }
+  args?: { which?: string; command?: string }
+  elapsed_time?: number
+  results?: Array<{ unique_id: string; status: string }>
+}
+
+export async function getDbtRunHistory(limit: number = 6): Promise<DbtHistoryEntry[]> {
+  let files: string[] = []
+  try {
+    files = await fs.readdir(HISTORY_DIR)
+  } catch (_e) {
+    return []
+  }
+  const jsonFiles = files.filter(f => f.endsWith('.json')).sort().reverse().slice(0, limit)
+
+  const entries: DbtHistoryEntry[] = []
+  for (const fname of jsonFiles) {
+    const fullPath = path.join(HISTORY_DIR, fname)
+    try {
+      const raw = await fs.readFile(fullPath, 'utf8')
+      const json = JSON.parse(raw) as ArchivedRunResults
+      const results = json.results ?? []
+      const models = results.filter(r => r.unique_id.startsWith('model.'))
+      const tests = results.filter(r => r.unique_id.startsWith('test.'))
+      const allOk = results.every(r => r.status === 'success' || r.status === 'pass' || r.status === 'skipped')
+      const which = json.args?.which ?? json.args?.command ?? ''
+      entries.push({
+        started_at: json.metadata?.invocation_started_at ?? json.metadata?.generated_at ?? '',
+        generated_at: json.metadata?.generated_at ?? '',
+        command: which ? `dbt ${which}` : 'dbt',
+        outcome: results.length === 0 ? 'unknown' : allOk ? 'pass' : 'fail',
+        duration_ms: Math.round((json.elapsed_time ?? 0) * 1000),
+        models_total: models.length,
+        tests_total: tests.length,
+        invocation_id: json.metadata?.invocation_id ?? null,
+      })
+    } catch (_e) {
+      // skip unparseable history files
+    }
+  }
+  return entries
+}
+
+// ---------------------------------------------------------------------------
+// Medallion layers — per-layer + per-table breakdown
+// ---------------------------------------------------------------------------
+
+export interface MedallionTable {
+  name: string
+  rows: number
+  bytes: number | null              // approximate, from duckdb_tables() (null = unknown)
+  age_seconds: number | null        // freshness signal; null for static dims
+  materialization: string           // table | view | incremental | external
+}
+
+export interface MedallionLayer {
+  layer: 'bronze' | 'silver' | 'gold'
+  role: string
+  materialization: string
+  status: HealthLevel
+  tables: MedallionTable[]
+  total_rows: number
+  total_bytes: number | null
+  age_seconds: number | null        // youngest table age (most-recent data)
+  tests_pass: number
+  tests_total: number
+}
+
+// Static layer membership — keeps the page deterministic. We don't auto-derive
+// from manifest.json because that requires another file read and the set is
+// stable.
+const LAYER_TABLES: Record<'bronze' | 'silver' | 'gold', { table: string; materialization: string; ts_column: string | null }[]> = {
+  bronze: [
+    { table: 'raw_events', materialization: 'external', ts_column: 'ts' },
+  ],
+  silver: [
+    { table: 'stg_events',              materialization: 'view', ts_column: 'ts' },
+    { table: 'stg_assistant_messages',  materialization: 'view', ts_column: 'ts' },
+    { table: 'stg_tool_calls',          materialization: 'view', ts_column: 'ts' },
+    { table: 'stg_tool_results',        materialization: 'view', ts_column: 'ts' },
+    { table: 'stg_thinking_blocks',     materialization: 'view', ts_column: 'ts' },
+    { table: 'stg_session_meta',        materialization: 'view', ts_column: null },
+    { table: 'stg_session_skills',      materialization: 'view', ts_column: null },
+  ],
+  gold: [
+    { table: 'dim_agents',           materialization: 'table',       ts_column: null },
+    { table: 'dim_apps',             materialization: 'table',       ts_column: null },
+    { table: 'dim_people',           materialization: 'table',       ts_column: null },
+    { table: 'dim_projects',         materialization: 'table',       ts_column: null },
+    { table: 'dim_sessions',         materialization: 'table',       ts_column: 'session_start' },
+    { table: 'fact_hourly_activity', materialization: 'table',       ts_column: null },
+    { table: 'fact_model_calls',     materialization: 'incremental', ts_column: 'ts' },
+    { table: 'fact_prompts',         materialization: 'incremental', ts_column: 'ts' },
+    { table: 'fact_turns',           materialization: 'incremental', ts_column: 'ts' },
+    { table: 'fact_tool_executions', materialization: 'incremental', ts_column: 'ts' },
+    { table: 'fact_spend_pace',      materialization: 'table',       ts_column: null },
+    { table: 'fact_daily_spend',     materialization: 'table',       ts_column: null },
+    { table: 'fact_errors',          materialization: 'table',       ts_column: 'ts' },
+    { table: 'fact_session_files',   materialization: 'table',       ts_column: null },
+    { table: 'fact_git_commands',    materialization: 'table',       ts_column: null },
+  ],
+}
+
+interface TableSizeRow {
+  table_name: string
+  estimated_size: number | null
+}
+
+export async function getMedallionLayers(perTestResults: DbtTestResult[] = []): Promise<MedallionLayer[]> {
+  // Per-table byte estimates from DuckDB's information schema. estimated_size
+  // is a rough total-bytes-in-storage figure; null when the catalog doesn't
+  // report it. Wrapped because duckdb_tables() may be absent in older builds.
+  let sizesByTable = new Map<string, number | null>()
+  try {
+    const rows = await query<TableSizeRow>(
+      `SELECT table_name, estimated_size
+       FROM duckdb_tables()`
+    )
+    sizesByTable = new Map(rows.map(r => [r.table_name, r.estimated_size != null ? Number(r.estimated_size) : null]))
+  } catch (_e) {
+    // catalog unavailable — leave sizes empty
+  }
+
+  // Count tests-per-relation so we can attribute pass/fail to layers (matters
+  // mostly for Gold but we compute uniformly).
+  const testsByRelation = new Map<string, { pass: number; total: number }>()
+  for (const t of perTestResults) {
+    const entry = testsByRelation.get(t.relation) ?? { pass: 0, total: 0 }
+    entry.total += 1
+    if (t.status === 'pass') entry.pass += 1
+    testsByRelation.set(t.relation, entry)
+  }
+
+  const results: MedallionLayer[] = []
+  for (const layerName of ['bronze', 'silver', 'gold'] as const) {
+    const def = LAYER_TABLES[layerName]
+    const tables: MedallionTable[] = []
+    let totalRows = 0
+    let totalBytes: number | null = 0
+    let youngestAge: number | null = null
+    let testsPass = 0
+    let testsTotal = 0
+
+    for (const t of def) {
+      let rows = 0
+      let ageSec: number | null = null
+      try {
+        const row = await queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM ${t.table}`)
+        rows = Number(row?.n ?? 0)
+      } catch (_e) {
+        // missing table — leave rows = 0
+        continue
+      }
+
+      if (t.ts_column) {
+        try {
+          const row = await queryOne<{ age: number | null }>(
+            `SELECT EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE AS age
+             FROM ${t.table}`
+          )
+          ageSec = row?.age ?? null
+        } catch (_e) {
+          // column missing — skip age
+        }
+      }
+
+      const bytes = sizesByTable.has(t.table) ? sizesByTable.get(t.table) ?? null : null
+      tables.push({
+        name: t.table,
+        rows,
+        bytes,
+        age_seconds: ageSec,
+        materialization: t.materialization,
+      })
+      totalRows += rows
+      if (bytes == null) {
+        totalBytes = null            // any null poisons the layer total
+      } else if (totalBytes != null) {
+        totalBytes += bytes
+      }
+      if (ageSec != null && (youngestAge == null || ageSec < youngestAge)) {
+        youngestAge = ageSec
+      }
+      const testEntry = testsByRelation.get(t.table)
+      if (testEntry) {
+        testsPass += testEntry.pass
+        testsTotal += testEntry.total
+      }
+    }
+
+    // Layer health: bronze tied to source freshness (handled by overall);
+    // here we just derive from age and tests.
+    let status: HealthLevel = 'green'
+    if (testsTotal > 0 && testsPass < testsTotal) status = 'red'
+    else if (youngestAge != null && youngestAge > 1800) status = 'yellow'
+    else if (youngestAge == null && layerName !== 'silver') status = 'unknown'
+
+    results.push({
+      layer: layerName,
+      role: ({ bronze: 'raw · append-only', silver: 'cleaned · conformed', gold: 'business · marts' } as const)[layerName],
+      materialization: ({ bronze: 'external table', silver: 'view', gold: 'table' } as const)[layerName],
+      status,
+      tables,
+      total_rows: totalRows,
+      total_bytes: totalBytes,
+      age_seconds: youngestAge,
+      tests_pass: testsPass,
+      tests_total: testsTotal,
+    })
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline snapshot — single composite payload the new Observability page
+// consumes. Keeping it in one endpoint avoids a fan-out of HTTP polls.
+// ---------------------------------------------------------------------------
+
+export interface PipelineSnapshot {
+  overall: OverallHealth | null
+  watcher: WatcherHealth | null
+  ingestion_1h: IngestionStats | null
+  ingestion_1d: IngestionStats | null
+  ingestion_7d: IngestionStats | null
+  hourly: HourlyIngestion[]
+  dbt: DbtHealth | null
+  dbt_history: DbtHistoryEntry[]
+  artifacts: DbtArtifacts | null
+  layers: MedallionLayer[]
+  errors: WatcherError[]
+}
+
