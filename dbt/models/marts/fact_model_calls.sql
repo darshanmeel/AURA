@@ -20,12 +20,14 @@ SELECT
     mp.cost_input_per_mtok,
     mp.cost_output_per_mtok,
     
-    -- Calculated cost in dollars using distinct token categories (no double-counting).
-    -- Categories: base_input, cache_creation, cache_read, output (mutually exclusive)
+    -- Calculated cost in dollars. Token categories are distinct (non-overlapping):
+    -- input_tokens = base input (not cached), output_tokens = base output,
+    -- cache_creation_input_tokens = tokens written to cache,
+    -- cache_read_input_tokens = tokens read from cache
     CASE
         WHEN mp.model IS NULL THEN NULL
         ELSE (
-            (COALESCE(c.input_tokens, 0) - COALESCE(c.cache_creation_input_tokens, 0) - COALESCE(c.cache_read_input_tokens, 0)) * mp.cost_input_per_mtok +
+            COALESCE(c.input_tokens, 0) * mp.cost_input_per_mtok +
             COALESCE(c.output_tokens, 0) * mp.cost_output_per_mtok +
             COALESCE(c.cache_creation_input_tokens, 0) * COALESCE(mp.cost_cache_write_1h_per_mtok, 0.0) +
             COALESCE(c.cache_read_input_tokens, 0) * COALESCE(mp.cost_cache_read_per_mtok, 0.0)
