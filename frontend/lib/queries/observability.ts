@@ -800,14 +800,56 @@ export async function getMedallionLayers(perTestResults: DbtTestResult[] = []): 
     // catalog unavailable — leave sizes empty
   }
 
-  // Count tests-per-relation so we can attribute pass/fail to layers (matters
-  // mostly for Gold but we compute uniformly).
+  // Per-relation test pass/fail attribution.
   const testsByRelation = new Map<string, { pass: number; total: number }>()
   for (const t of perTestResults) {
     const entry = testsByRelation.get(t.relation) ?? { pass: 0, total: 0 }
     entry.total += 1
     if (t.status === 'pass') entry.pass += 1
     testsByRelation.set(t.relation, entry)
+  }
+
+  // Batch every table's COUNT(*) and MAX(ts) into ONE query — opening 23
+  // connections sequentially was timing out the API on a 1GB DB. Each
+  // sub-select is wrapped in TRY() at the SQL level so a missing table or
+  // column doesn't poison the whole UNION.
+  const allTables = [
+    ...LAYER_TABLES.bronze.map(t => ({ layer: 'bronze' as const, ...t })),
+    ...LAYER_TABLES.silver.map(t => ({ layer: 'silver' as const, ...t })),
+    ...LAYER_TABLES.gold.map(t => ({ layer: 'gold' as const, ...t })),
+  ]
+  const probeRows: Map<string, { rows: number; age: number | null }> = new Map()
+  try {
+    const unions = allTables.map(t => `
+      SELECT
+        '${t.table}'::VARCHAR AS table_name,
+        (SELECT COUNT(*) FROM ${t.table})::BIGINT AS rows,
+        ${t.ts_column
+          ? `(SELECT EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE FROM ${t.table})`
+          : 'NULL::DOUBLE'} AS age
+    `).join(' UNION ALL ')
+    const rows = await query<{ table_name: string; rows: number | string; age: number | null }>(unions)
+    for (const r of rows) {
+      probeRows.set(r.table_name, {
+        rows: Number(r.rows),
+        age: r.age != null ? Number(r.age) : null,
+      })
+    }
+  } catch (e) {
+    // Bulk probe failed (likely a missing table broke the UNION). Fall back
+    // to per-table queries — slower but resilient.
+    for (const t of allTables) {
+      try {
+        const r = await queryOne<{ n: number; age: number | null }>(
+          `SELECT COUNT(*) AS n, ${t.ts_column
+            ? `EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE`
+            : 'NULL::DOUBLE'} AS age FROM ${t.table}`
+        )
+        probeRows.set(t.table, { rows: Number(r?.n ?? 0), age: r?.age != null ? Number(r.age) : null })
+      } catch (_e) {
+        // skip missing
+      }
+    }
   }
 
   const results: MedallionLayer[] = []
@@ -821,27 +863,10 @@ export async function getMedallionLayers(perTestResults: DbtTestResult[] = []): 
     let testsTotal = 0
 
     for (const t of def) {
-      let rows = 0
-      let ageSec: number | null = null
-      try {
-        const row = await queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM ${t.table}`)
-        rows = Number(row?.n ?? 0)
-      } catch (_e) {
-        // missing table — leave rows = 0
-        continue
-      }
-
-      if (t.ts_column) {
-        try {
-          const row = await queryOne<{ age: number | null }>(
-            `SELECT EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE AS age
-             FROM ${t.table}`
-          )
-          ageSec = row?.age ?? null
-        } catch (_e) {
-          // column missing — skip age
-        }
-      }
+      const probe = probeRows.get(t.table)
+      if (!probe) continue       // table missing — silently drop from layer
+      const rows = probe.rows
+      const ageSec = probe.age
 
       const bytes = sizesByTable.has(t.table) ? sizesByTable.get(t.table) ?? null : null
       tables.push({
