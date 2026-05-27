@@ -14,8 +14,10 @@ from aura_watcher.snapshot import take_snapshot
 from aura_watcher.session_meta import write_session_meta
 
 def process_file(file_path, writer, adapter, cp_manager):
-    if dbt_running.is_set():
-        return
+    # No dbt_running.is_set() short-circuit here — that silently dropped files
+    # whose entire processing happened to fall inside a dbt cycle. Instead we
+    # let _snapshot_lock serialize us with dbt: we read the file unconditionally,
+    # then BLOCK on the lock until dbt releases the DB.
     try:
         if not os.path.exists(file_path):
             return
@@ -58,9 +60,10 @@ def process_file(file_path, writer, adapter, cp_manager):
         # worker's force_checkpoint never races with concurrent inserts
         # (DuckDB rejects parallel `duckdb.connect()` from different threads
         # against the same file: "Unique file handle conflict").
+        # _snapshot_lock blocks while dbt or snapshot holds it. After acquiring,
+        # we have exclusive write access. dbt_worker holds this lock while it
+        # runs subprocess.run(['dbt', ...]) so our writes happen between dbt cycles.
         with _snapshot_lock:
-            if dbt_running.is_set():
-                return
             for sk in skill_batches:
                 writer.insert_session_skills(sk)
             if events:
@@ -213,13 +216,15 @@ def main():
     adapter = ClaudeAdapter()
     cp_manager = CheckpointManager(writer)
 
-    # Snapshot worker starts immediately — it never writes to the DB, only copies
-    # the file, so it's safe to run alongside the backfill.
+    # Snapshot + dbt workers BOTH start immediately, independent of backfill.
+    # The pipeline is two truly-independent stages:
+    #   - JSON → raw_events  (watcher, ongoing; backfill is just the catch-up phase)
+    #   - raw_events → marts (dbt, every N minutes on whatever exists in raw_events)
+    # process_file no longer short-circuits on dbt_running — it blocks on
+    # _snapshot_lock instead, so concurrent backfill + dbt cycles serialize
+    # correctly without dropping data.
     threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval, writer), daemon=True).start()
-
-    # dbt worker starts AFTER backfill so the initial dbt run sees complete data.
-    # Starting it before backfill causes the dbt_running flag to block process_file,
-    # silently skipping the newest files during the most critical ingestion window.
+    threading.Thread(target=dbt_worker, args=(dbt_interval, writer), daemon=True).start()
 
     # Files are sorted newest-first so today's data ingests before historical data.
     # The full set is always processed — backfill is all-or-nothing on the bronze
@@ -236,9 +241,6 @@ def main():
         if (idx + 1) % 50 == 0:
             print(f"Backfill progress: {idx + 1}/{len(files)} files processed", flush=True)
     print(f"Backfill complete. Processed {len(files)} files.", flush=True)
-
-    # dbt worker starts now — backfill is done, so its first run sees full data.
-    threading.Thread(target=dbt_worker, args=(dbt_interval, writer), daemon=True).start()
 
     # Backfill session_meta for any sessions not yet recorded
     from aura_watcher.session_meta import ensure_session_meta_table

@@ -1,14 +1,33 @@
 import { DuckDBInstance, DuckDBValue } from '@duckdb/node-api'
+import { statSync } from 'node:fs'
 
 const DB_PATH = process.env.AURA_READ_DB_PATH ?? '/data/aura_read.duckdb'
 const QUERY_TIMEOUT_MS = Number(process.env.AURA_QUERY_TIMEOUT_MS ?? 15000)
 
+// The watcher's snapshot worker rewrites the read DB via os.replace, which
+// gives the file a new inode. A cached DuckDBInstance pins the OLD inode and
+// silently serves stale data forever. We track the inode and recreate when
+// it changes.
 let instance: DuckDBInstance | null = null
+let cachedIno: number | bigint | null = null
 
 async function getInstance(): Promise<DuckDBInstance> {
-  if (!instance) {
-    instance = await DuckDBInstance.create(DB_PATH, { access_mode: 'READ_ONLY' })
+  let currentIno: number | bigint | null = null
+  try {
+    currentIno = statSync(DB_PATH).ino
+  } catch {
+    currentIno = null
   }
+  if (instance && cachedIno !== null && currentIno === cachedIno) {
+    return instance
+  }
+  // File was replaced (or first call). Drop the old instance and reopen.
+  if (instance) {
+    try { instance.closeSync?.() } catch {}
+    instance = null
+  }
+  instance = await DuckDBInstance.create(DB_PATH, { access_mode: 'READ_ONLY' })
+  cachedIno = currentIno
   return instance
 }
 
