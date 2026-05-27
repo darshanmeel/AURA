@@ -1,7 +1,7 @@
 import { DuckDBInstance, DuckDBValue } from '@duckdb/node-api'
 import { statSync } from 'node:fs'
 
-const DB_PATH = process.env.AURA_READ_DB_PATH ?? '/data/aura_read.duckdb'
+const DB_PATH = process.env.AURA_READ_DB_PATH ?? '/data/read/aura.duckdb'
 const QUERY_TIMEOUT_MS = Number(process.env.AURA_QUERY_TIMEOUT_MS ?? 15000)
 
 // The watcher's snapshot worker rewrites the read DB via os.replace, which

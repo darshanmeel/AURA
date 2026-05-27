@@ -1,11 +1,7 @@
 import { query, queryOne } from '../db'
+import { tsFilter } from './_helpers'
 
 const APP_SESSIONS_LIMIT = 12
-
-function tsFilter(col: string, since: string | null): string {
-  if (!since) return ''
-  return `WHERE ${col} >= '${since}'`
-}
 
 export async function getApps(since: string | null = null) {
   // No range filter: lifetime mart is the right answer (fast path).
@@ -86,12 +82,12 @@ export async function getAppAgents(appId: string, since: string | null = null) {
     FROM fact_model_calls fmc
     JOIN dim_sessions ds ON ds.session_id = fmc.session_id
     LEFT JOIN dim_apps da ON da.cwd = ds.cwd AND da.tenant_id = ds.tenant_id
-    WHERE da.app_id = '${appId}'
-      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+    WHERE da.app_id = ?
+      AND CAST(fmc.ts AS DATE) >= ?::DATE
       AND fmc.agent IS NOT NULL
     GROUP BY fmc.agent
     ORDER BY total_cost DESC
-  `)
+  `, [appId, since])
 }
 
 export async function getAppSessions(appId: string, limit = APP_SESSIONS_LIMIT, since: string | null = null) {
@@ -134,12 +130,12 @@ export async function getAppPeople(appId: string, since: string | null = null) {
     FROM fact_model_calls fmc
     JOIN dim_sessions ds ON ds.session_id = fmc.session_id
     LEFT JOIN dim_apps da ON da.cwd = ds.cwd AND da.tenant_id = ds.tenant_id
-    WHERE da.app_id = '${appId}'
-      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+    WHERE da.app_id = ?
+      AND CAST(fmc.ts AS DATE) >= ?::DATE
       AND ds.person_id IS NOT NULL
     GROUP BY ds.person_id, ds.person_name
     ORDER BY total_cost DESC
-  `)
+  `, [appId, since])
 }
 
 /**
@@ -162,6 +158,6 @@ export async function getAppRangeAggregates(appId: string, since: string | null)
     FROM int_entity_spend es
     WHERE es.entity_type = 'app'
       AND es.entity_id = ?
-      AND es.date >= '${since}'::DATE
-  `, [appId])
+      AND es.date >= ?::DATE
+  `, [appId, since])
 }

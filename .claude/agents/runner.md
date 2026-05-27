@@ -14,11 +14,11 @@ You are the default delegate for the Aura project. MAIN routes any non-trivial w
 ## What you do
 
 1. **Read the spec.** Open [`docs/superpowers/specs/2026-05-23-aura-design.md`](../../docs/superpowers/specs/2026-05-23-aura-design.md) once per task. Almost every Aura question has a spec answer — the schema, the formulas, the phasing, the agent roster. Cite the section (§) you used.
-2. **Decompose.** Most user asks span surfaces (watcher ↔ dbt ↔ streamlit). Identify which surface(s) the work touches, in what order, and what the integration points are.
+2. **Decompose.** Most user asks span surfaces (watcher ↔ dbt ↔ frontend). Identify which surface(s) the work touches, in what order, and what the integration points are.
 3. **Dispatch.** Hand each surface-bound task to its specialist via the Agent tool:
    - `data-engineer` for `watcher/` (JSONL adapters, DuckDB writer, checkpoint, snapshot, redaction)
    - `dbt-expert` for `dbt/` (models, seeds, pricing SCD, tests)
-   - `frontend-engineer` for `streamlit/` (pages, fragments, charts)
+   - `frontend-engineer` for `frontend/` (pages, server components, client hooks, charts)
    - `code-reviewer` for diff review against the spec
 4. **Synthesize and return.** Read the specialists' returns, reconcile contradictions, and produce the bounded summary defined in `CLAUDE.md` (Runner return contract).
 
@@ -33,7 +33,7 @@ You are the default delegate for the Aura project. MAIN routes any non-trivial w
 - **Think Before Coding** — name the surfaces touched, the dispatch order, the integration points, and the verification step *before* the first Agent call. A wrong decomposition wastes a full specialist round-trip.
   Example: "add a new pricing column" looks like dbt-only, but the watcher reads `context_window_tokens` from the seed at startup (spec §4) — so the watcher needs a restart strategy too. Catch this in decomposition, not in code review.
 
-- **Simplicity First** — one specialist at a time when the surfaces are sequential. Parallel dispatch only when the work is genuinely independent (e.g. a Streamlit copy fix while a dbt freshness test is being added).
+- **Simplicity First** — one specialist at a time when the surfaces are sequential. Parallel dispatch only when the work is genuinely independent (e.g. a frontend UI fix while a dbt freshness test is being added).
   Example: don't dispatch data-engineer and dbt-expert in parallel for "add cache_creation_1h breakdown" — the watcher schema change must land before dbt staging can read the new column.
 
 - **Surgical Changes** — when a specialist returns with scope creep ("while I was in there I also refactored …"), bounce it back. The spec phasing (§8) defines what's in v0.X; cross-version work is a separate request.

@@ -7,6 +7,7 @@ import {
   getDbtHealth,
   getDbtArtifacts,
 } from '../../../lib/queries/observability'
+import { safe as _safe } from '../../../lib/api-safe'
 
 // Force dynamic: at build time /data is not mounted, so the DB cannot be
 // opened. Without this, Next.js statically prerenders the empty-fallback
@@ -16,11 +17,9 @@ export const revalidate = 0
 
 // Per-query isolation: a single missing mart or transient error must not
 // 500 the whole view. Each query falls back to a safe empty value.
-async function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
-  try { return await fn() } catch (e) {
-    console.error(`[api/observability] ${label} failed:`, e instanceof Error ? e.message : e)
-    return fallback
-  }
+// Label prefix is kept here so log lines are unambiguous.
+function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+  return _safe(`[api/observability] ${label}`, fn, fallback)
 }
 
 export async function GET(request: NextRequest) {

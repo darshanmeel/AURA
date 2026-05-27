@@ -1,9 +1,5 @@
 import { query, queryOne } from '../db'
-
-function tsFilter(col: string, since: string | null): string {
-  if (!since) return ''
-  return `WHERE ${col} >= '${since}'`
-}
+import { tsFilter } from './_helpers'
 
 export async function getAllAgents(since: string | null = null) {
   // No range filter: lifetime mart is correct (fast path).
@@ -82,12 +78,12 @@ export async function getAgentApps(name: string, since: string | null = null) {
     FROM fact_model_calls fmc
     JOIN dim_sessions ds ON ds.session_id = fmc.session_id
     LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
-    WHERE fmc.agent = '${name}'
-      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+    WHERE fmc.agent = ?
+      AND CAST(fmc.ts AS DATE) >= ?::DATE
       AND al.app_id IS NOT NULL
     GROUP BY al.app_id, al.project_id
     ORDER BY total_cost DESC
-  `)
+  `, [name, since])
 }
 
 export async function getAgentModels(name: string, since: string | null = null) {
@@ -142,12 +138,12 @@ export async function getAgentPeople(name: string, since: string | null = null) 
       SUM(fmc.calculated_cost)         AS total_cost
     FROM fact_model_calls fmc
     JOIN dim_sessions ds ON ds.session_id = fmc.session_id
-    WHERE fmc.agent = '${name}'
-      AND CAST(fmc.ts AS DATE) >= '${since}'::DATE
+    WHERE fmc.agent = ?
+      AND CAST(fmc.ts AS DATE) >= ?::DATE
       AND ds.person_id IS NOT NULL
     GROUP BY ds.person_id, ds.person_name
     ORDER BY total_cost DESC
-  `)
+  `, [name, since])
 }
 
 export async function getAgentFiles(name: string, limit = 8, since: string | null = null) {
@@ -187,6 +183,6 @@ export async function getAgentRangeAggregates(name: string, since: string | null
     FROM int_entity_spend es
     WHERE es.entity_type = 'agent'
       AND es.entity_id = ?
-      AND es.date >= '${since}'::DATE
-  `, [name])
+      AND es.date >= ?::DATE
+  `, [name, since])
 }

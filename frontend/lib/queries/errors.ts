@@ -1,14 +1,5 @@
 import { query, queryOne } from '../db'
-
-function tsFilter(col: string, since: string | null): string {
-  if (!since) return ''
-  return `WHERE ${col} >= '${since}'`
-}
-
-function andTsFilter(col: string, since: string | null): string {
-  if (!since) return ''
-  return `AND ${col} >= '${since}'`
-}
+import { tsFilter, andTsFilter } from './_helpers'
 
 export async function getErrors(since: string | null = null) {
   const wh = tsFilter('e.ts', since)

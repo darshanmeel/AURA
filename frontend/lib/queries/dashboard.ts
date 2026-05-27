@@ -1,17 +1,8 @@
 import { query, queryOne } from '../db'
+import { tsFilter, andTsFilter } from './_helpers'
 
 const TOP_N = 10
 const DAILY_SPEND_DAYS = 14
-
-function tsFilter(col: string, since: string | null): string {
-  if (!since) return ''
-  return `WHERE ${col} >= '${since}'`
-}
-
-function andTsFilter(col: string, since: string | null): string {
-  if (!since) return ''
-  return `AND ${col} >= '${since}'`
-}
 
 export async function getDashboardKPIs(since: string | null = null) {
   const wh = tsFilter('start_ts', since)

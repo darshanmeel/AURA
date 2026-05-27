@@ -94,6 +94,21 @@ Two truly independent stages: JSON → bronze (the watcher's job) and bronze →
 
 ---
 
+## Project layout
+
+```
+AURA/
+├── watcher/        Python package — JSONL adapter, DuckDB writer, snapshot + dbt workers
+├── dbt/            dbt project — staging → intermediate → marts, model_pricing seed
+├── frontend/       Next.js 14 app — dashboard, per-entity pages, Observability tab
+├── docs/           Architecture notes, screenshots, code-review audit
+└── .claude/        Agent definitions (runner, data-engineer, dbt-expert, frontend-engineer)
+```
+
+`watcher/`, `dbt/`, and `frontend/` are the three independent surfaces. Changes to one rarely need to touch the others — see the surface map in [CLAUDE.md](CLAUDE.md) for routing guidance.
+
+---
+
 ## Tech stack
 
 - **Ingestion:** Python 3.11, `watchdog.PollingObserver` (works on Windows / Docker bind-mounts where inotify silently drops events), `duckdb` Python client
@@ -221,7 +236,7 @@ Hard errors, warnings, and tool failures, filterable by kind and tool.
 - **Agents are tracked per app**, not just by name. `runner` in your Aura project and `runner` in another project show up as separate rows.
 - **Overkill detection.** `fact_prompts` scores each external prompt on a complexity tier (S/M/L/XL by char count, tool calls, files edited) and compares it to the model tier (Haiku/Sonnet/Pro/Opus). If you used Opus to fix a typo, the prompt gets flagged.
 - **Sidechain agent attribution.** When the main agent dispatches to a subagent via the `Task` tool, every event between dispatch and result is attributed to that subagent in `int_event_agent` and inherits into `dim_agents` / `fact_prompts`.
-- **Backfill is all-or-nothing on the bronze layer.** `process_file` blocks on the snapshot lock if a dbt cycle is in flight, then writes the file's new bytes once the lock releases. Earlier versions short-circuited on a `dbt_running` flag, which silently dropped files whose entire processing happened to fall inside a dbt cycle — that bug is gone.
+- **Backfill is all-or-nothing on the bronze layer.** Both `process_file` (backfill / polling path) and `on_created` (new-file event path) block on `_snapshot_lock` if a dbt cycle is in flight, then write once the lock releases. Earlier versions short-circuited on a `dbt_running` flag in both handlers, which silently dropped any file whose entire processing happened to fall inside a dbt cycle — that bug is gone from both paths.
 - **The frontend never serves stale data after a snapshot.** The watcher's snapshot uses `os.replace()` (atomic rename, new inode). The frontend's `lib/db.ts` checks the file's inode on every `getInstance()` call and reopens the DuckDB connection if it has changed.
 - **Watcher failures are persisted.** Every `except` block in `main.py` calls `writer.log_error(source, file_path, exception)`, which writes a row to the `watcher_errors` table with full traceback. The Observability → Watcher page renders the most recent failures with expandable stack traces.
 

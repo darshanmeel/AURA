@@ -5,6 +5,7 @@ import {
   getRecentErrors, getTopFiles, getTopPeople,
   getSpendPace, getHourlyActivity
 } from '../../../lib/queries/dashboard'
+import { safe as _safe } from '../../../lib/api-safe'
 
 // Force dynamic: at build time /data is not mounted, so the DB cannot be
 // opened. Without this, Next.js statically prerenders the empty-fallback
@@ -13,11 +14,9 @@ export const dynamic = 'force-dynamic'
 
 // Per-query isolation: a single missing mart (e.g. before first successful dbt run)
 // must not 500 the whole endpoint. Each query falls back to a safe empty value.
-async function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
-  try { return await fn() } catch (e) {
-    console.error(`[api/dashboard] ${label} failed:`, e instanceof Error ? e.message : e)
-    return fallback
-  }
+// Label prefix is kept here so log lines are unambiguous.
+function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+  return _safe(`[api/dashboard] ${label}`, fn, fallback)
 }
 
 export async function GET() {

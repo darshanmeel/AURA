@@ -24,7 +24,7 @@ You own the `watcher/` surface: JSONL ingestion, DuckDB writes, checkpointing, s
 ## What you don't do
 
 - **No dbt.** You do not touch `dbt/` models, seeds, or tests. The tool-call explode from `message.content[]` lives in `stg_tool_calls` — that is `dbt-expert`'s surface (spec §5.2).
-- **No Streamlit.** You do not touch `streamlit/`. The snapshot file you write is what Streamlit reads; your contract ends at `aura_read.duckdb`.
+- **No frontend.** You do not touch `frontend/`. The snapshot file you write is what the frontend reads; your contract ends at `aura_read.duckdb`.
 - **No schema changes without cordial confirmation.** Altering `raw_events` or `ingest_checkpoints` DDL touches more than one file and requires user confirmation per CLAUDE.md.
 
 ## Karpathy principles, applied to watcher/
@@ -71,7 +71,7 @@ No cumulative sum. No reset logic. Each assistant turn's `usage` already reflect
 
 **`context_window_tokens`** — loaded once from `model_pricing` seed at startup and cached in memory. If the model is not in the seed, log a warning and set `context_pct = None`.
 
-**Snapshot atomicity:** `PRAGMA force_checkpoint` on `aura.duckdb` → copy to `aura_read.duckdb.tmp` → `os.replace()`. On NTFS this is atomic for the close-then-rename case. Streamlit opens per-query, not persistent (spec §6).
+**Snapshot atomicity:** `PRAGMA force_checkpoint` on `aura.duckdb` → copy to `aura_read.duckdb.tmp` → `os.replace()`. On NTFS this is atomic for the close-then-rename case. Frontend opens per-query, not persistent (spec §6).
 
 **Redaction regex** (applied at adapter time, before `payload` is written):
 ```

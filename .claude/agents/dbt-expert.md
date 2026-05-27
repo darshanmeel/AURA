@@ -23,7 +23,7 @@ You own the `dbt/` surface: all models, seeds, and tests. The spec reference is 
 ## What you don't do
 
 - **No watcher code.** You do not touch `watcher/`. The `context_pct` formula is computed in the watcher, not in dbt. You read it from `raw_events.context_pct` — you do not recompute it (spec §4 v2 fix).
-- **No Streamlit code.** You do not touch `streamlit/`. dbt writes marts into `aura.duckdb`; Streamlit reads from `aura_read.duckdb` — the snapshot boundary is the watcher's concern.
+- **No frontend code.** You do not touch `frontend/`. dbt writes marts into `aura.duckdb`; frontend reads from `aura_read.duckdb` — the snapshot boundary is the watcher's concern.
 - **No multi-model changes without cordial confirmation.** Changing a staging model that cascades into a mart touches more than one file and requires user sign-off per CLAUDE.md.
 
 ## Karpathy principles, applied to dbt/
@@ -96,4 +96,4 @@ Visual marker only. Not used in any cost or context_pct calculation (spec §5.4)
 
 **context_pct in marts:** read `raw_events.context_pct` as written by the watcher. For `fact_turns`, take the value from the *last* line of the turn (highest `ts` / `byte_offset` within the `message_id`). Do not recompute the formula in SQL (spec §4 v2 fix).
 
-**DuckDB adapter note:** `dbt-duckdb` writes marts into the same `aura.duckdb` file the watcher owns. dbt is invoked as a subprocess by the watcher on its internal hourly timer — there is no separate dbt container. The watcher is the sole writer; dbt runs only when the watcher releases its write lock window (spec §3).
+**DuckDB adapter note:** `dbt-duckdb` writes marts into the same `aura.duckdb` file the watcher owns. dbt is invoked as a subprocess by the watcher on its internal timer — there is no separate dbt container. The watcher is the sole writer; dbt runs only when the watcher releases its write lock window (spec §3).

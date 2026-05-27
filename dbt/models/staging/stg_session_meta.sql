@@ -8,4 +8,4 @@ SELECT
     commits,
     session_title,
     ingested_at
-FROM {{ source('raw', 'session_meta') }}
+FROM {{ source('aura', 'session_meta') }}

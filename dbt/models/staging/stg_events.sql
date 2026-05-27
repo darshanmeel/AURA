@@ -28,4 +28,4 @@ SELECT
     cache_read_input_tokens,
     context_pct,
     payload
-FROM {{ source('raw', 'raw_events') }}
+FROM {{ source('aura', 'raw_events') }}

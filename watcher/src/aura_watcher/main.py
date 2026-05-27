@@ -92,8 +92,7 @@ class JSONLHandler(FileSystemEventHandler):
             # process_file does (parallel connect() = file handle conflict).
             try:
                 with _snapshot_lock:
-                    if not dbt_running.is_set():
-                        write_session_meta(self.writer, session_id, event.src_path)
+                    write_session_meta(self.writer, session_id, event.src_path)
             except Exception as e:
                 print(f"Error writing session_meta for {session_id}: {e}")
                 self.writer.log_error('session_meta', event.src_path, e)
@@ -204,7 +203,7 @@ def dbt_worker(interval_mins, writer):
 def main():
     logs_dir = os.getenv("AURA_LOGS_DIR", "/logs/claude")
     db_path = os.getenv("AURA_DB_PATH", "/data/aura.duckdb")
-    read_db_path = os.getenv("AURA_READ_DB_PATH", "/data/aura_read.duckdb")
+    read_db_path = os.getenv("AURA_READ_DB_PATH", "/data/read/aura.duckdb")
     snapshot_interval = int(os.getenv("AURA_SNAPSHOT_INTERVAL", "2"))
     dbt_interval = int(os.getenv("AURA_DBT_RUN_INTERVAL_MINUTES", "5"))
 
