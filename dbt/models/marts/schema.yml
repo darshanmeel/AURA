@@ -1,0 +1,114 @@
+version: 2
+
+models:
+  - name: fact_model_calls
+    columns:
+      - name: event_uuid
+        tests:
+          - not_null
+          - unique
+      - name: calculated_cost
+        tests:
+          - not_null
+      - name: model
+        tests:
+          - not_null
+
+  - name: fact_turns
+    columns:
+      - name: turn_id
+        tests:
+          - not_null
+
+  - name: dim_sessions
+    columns:
+      - name: session_id
+        tests:
+          - not_null
+          - unique
+      - name: tenant_id
+        tests:
+          - not_null
+
+  - name: dim_apps
+    columns:
+      - name: app_id
+        tests:
+          - not_null
+      - name: project_id
+        tests:
+          - not_null
+
+  - name: dim_agents
+    columns:
+      - name: agent
+        tests:
+          - not_null
+
+  - name: fact_prompts
+    columns:
+      - name: prompt_id
+        tests:
+          - not_null
+          - unique
+      - name: cache_hit_rate
+        tests:
+          - not_null
+
+  - name: fact_spend_pace
+    description: >
+      One row per tenant. Current-day burn rate and 30-day rolling averages
+      for the dashboard "burn rate" widget. Refreshed on every dbt run.
+    columns:
+      - name: tenant_id
+        tests:
+          - not_null
+          - unique
+      - name: today_cost
+        tests:
+          - not_null
+      - name: today_pace_hourly
+        tests:
+          - not_null
+      - name: avg_30d_cost
+        tests:
+          - not_null
+      - name: avg_30d_turns
+        tests:
+          - not_null
+      - name: avg_30d_tools
+        tests:
+          - not_null
+      - name: hours_elapsed_today
+        tests:
+          - not_null
+
+  - name: fact_hourly_activity
+    description: >
+      Time-of-day activity heatmap over the last 7 complete UTC days.
+      Grain: (day_of_week, hour_of_day). Always 168 rows (7 × 24 grid,
+      zero-filled). day_of_week: 0=Monday … 6=Sunday
+      (DuckDB dayofweek remapped via (dow+6)%7).
+    columns:
+      - name: day_of_week
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3, 4, 5, 6]
+      - name: hour_of_day
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+                         12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+      - name: turn_count
+        tests:
+          - not_null
+      - name: total_cost
+        tests:
+          - not_null
+      - name: session_starts
+        tests:
+          - not_null

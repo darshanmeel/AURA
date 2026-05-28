@@ -1,0 +1,305 @@
+import json
+import os
+import shutil
+import time
+import threading
+import glob
+import subprocess
+from datetime import datetime, timezone
+from watchdog.observers.polling import PollingObserver
+from watchdog.events import FileSystemEventHandler
+from aura_watcher.duckdb_writer import DuckDBWriter
+from aura_watcher.adapters.claude import ClaudeAdapter
+from aura_watcher.checkpoint import CheckpointManager
+from aura_watcher.snapshot import take_snapshot
+from aura_watcher.session_meta import write_session_meta, backfill_session_meta
+
+def process_file(file_path, writer, adapter, cp_manager):
+    # No dbt_running.is_set() short-circuit here — that silently dropped files
+    # whose entire processing happened to fall inside a dbt cycle. Instead we
+    # let _snapshot_lock serialize us with dbt: we read the file unconditionally,
+    # then BLOCK on the lock until dbt releases the DB.
+    try:
+        if not os.path.exists(file_path):
+            return
+
+        # Read & parse outside the DB lock (no I/O contention there).
+        checkpoint = cp_manager.get_checkpoint(file_path)
+        offset = checkpoint["last_offset"]
+
+        with open(file_path, 'rb') as f:
+            f.seek(offset)
+            lines = f.readlines()
+            new_offset = f.tell()
+
+        if new_offset <= offset:
+            return  # No new bytes
+
+        last_uuid = checkpoint["last_line_uuid"]
+        events = []
+        skill_batches: list[list[dict]] = []
+        mcp_batches: list[list[dict]] = []
+        for line in lines:
+            try:
+                if not line.strip(): continue
+                raw = json.loads(line.decode('utf-8'))
+                event = adapter.parse_line(raw, file_path, offset)
+                if event:
+                    events.append(event)
+                    last_uuid = event["uuid"]
+                try:
+                    skills = adapter.parse_skills(raw, file_path)
+                    if skills:
+                        skill_batches.append(skills)
+                except Exception as e:
+                    print(f"Error parsing skills: {e}")
+                    writer.log_error('skill_parse', file_path, e)
+                try:
+                    mcps = adapter.parse_mcp_servers(raw, file_path)
+                    if mcps:
+                        mcp_batches.append(mcps)
+                except Exception as e:
+                    print(f"Error parsing mcp servers: {e}")
+                    writer.log_error('mcp_parse', file_path, e)
+            except Exception as e:
+                print(f"Error parsing line in {file_path}: {e}")
+                writer.log_error('process_file', file_path, e)
+
+        # ALL DuckDB writes serialize through _snapshot_lock so the snapshot
+        # worker's force_checkpoint never races with concurrent inserts
+        # (DuckDB rejects parallel `duckdb.connect()` from different threads
+        # against the same file: "Unique file handle conflict").
+        # _snapshot_lock blocks while dbt or snapshot holds it. After acquiring,
+        # we have exclusive write access. dbt_worker holds this lock while it
+        # runs subprocess.run(['dbt', ...]) so our writes happen between dbt cycles.
+        with _snapshot_lock:
+            for sk in skill_batches:
+                writer.insert_session_skills(sk)
+            for mc in mcp_batches:
+                writer.insert_session_mcps(mc)
+            if events:
+                writer.insert_events(events)
+            if new_offset > offset:
+                cp_manager.update_checkpoint(file_path, new_offset, last_uuid)
+    except Exception as e:
+        print(f"Error processing {file_path}: {e}")
+        writer.log_error('process_file', file_path, e)
+
+class JSONLHandler(FileSystemEventHandler):
+    def __init__(self, writer, adapter, cp_manager):
+        self.writer = writer
+        self.adapter = adapter
+        self.cp_manager = cp_manager
+
+    def on_modified(self, event):
+        if not event.is_directory and event.src_path.endswith('.jsonl'):
+            process_file(event.src_path, self.writer, self.adapter, self.cp_manager)
+
+    def on_created(self, event):
+        if not event.is_directory and event.src_path.endswith('.jsonl'):
+            # JSONL layout: <project_dir>/<session_id>.jsonl — session_id is
+            # the filename without extension, not the parent directory.
+            session_id = os.path.splitext(os.path.basename(event.src_path))[0]
+            # write_session_meta opens its own DuckDB connection — must
+            # serialize through _snapshot_lock for the same reason
+            # process_file does (parallel connect() = file handle conflict).
+            try:
+                with _snapshot_lock:
+                    write_session_meta(self.writer, session_id, event.src_path)
+            except Exception as e:
+                print(f"Error writing session_meta for {session_id}: {e}")
+                self.writer.log_error('session_meta', event.src_path, e)
+            process_file(event.src_path, self.writer, self.adapter, self.cp_manager)
+
+dbt_running = threading.Event()
+# Held by snapshot_worker while take_snapshot is running; dbt_worker acquires it
+# to guarantee no snapshot connection is open before launching dbt.
+_snapshot_lock = threading.Lock()
+
+def snapshot_worker(src, dst, interval, writer):
+    print(f"Snapshot worker started: {src} -> {dst} every {interval}s")
+    while True:
+        try:
+            if dbt_running.is_set():
+                time.sleep(1)
+                continue
+
+            if os.path.exists(src):
+                with _snapshot_lock:
+                    if not dbt_running.is_set():
+                        take_snapshot(src, dst)
+        except Exception as e:
+            print(f"[snapshot] Warning: {e}")
+            writer.log_error('snapshot', None, e)
+        time.sleep(interval)
+
+def dbt_worker(interval_mins, writer):
+    if interval_mins <= 0:
+        print("DBT run worker disabled.")
+        return
+    print(f"DBT run worker started (every {interval_mins} mins).")
+    while True:
+        try:
+            dbt_running.set()
+            # Block until any in-flight snapshot releases its DuckDB connection,
+            # then hold the lock for the full dbt run so no new snapshot starts.
+            with _snapshot_lock:
+                time.sleep(1)  # Allow any in-flight process_file writes to drain
+
+                print("Invoking dbt seed...")
+                res = subprocess.run(
+                    ["dbt", "seed", "--profiles-dir", ".", "--no-partial-parse"],
+                    cwd="/app/dbt",
+                    capture_output=True,
+                    text=True
+                )
+                print(f"dbt seed stdout: {res.stdout}")
+                if res.stderr:
+                    print(f"dbt seed stderr: {res.stderr}")
+
+                # `dbt run` (not `dbt build`) — we want models to refresh even when
+                # data-quality tests fail. dbt build skips downstream models on test
+                # failure, which leaves the dashboard stale on a single bad row.
+                # Tests still run, just decoupled (see below).
+                print("Invoking dbt run...")
+                res2 = subprocess.run(
+                    ["dbt", "run", "--profiles-dir", ".", "--no-partial-parse"],
+                    cwd="/app/dbt",
+                    capture_output=True,
+                    text=True
+                )
+                print(f"dbt run stdout: {res2.stdout}")
+                if res2.stderr:
+                    print(f"dbt run stderr: {res2.stderr}")
+
+                # source freshness: non-zero exit on WARN/ERROR is a signal that
+                # data is stale, not a pipeline failure — don't propagate.
+                print("Invoking dbt source freshness...")
+                res_freshness = subprocess.run(
+                    ["dbt", "source", "freshness", "--profiles-dir", ".", "--no-partial-parse"],
+                    cwd="/app/dbt",
+                    capture_output=True,
+                    text=True
+                )
+                print(f"dbt source freshness stdout: {res_freshness.stdout}")
+                if res_freshness.stderr:
+                    print(f"dbt source freshness stderr: {res_freshness.stderr}")
+
+                # Tests run separately for observability — failures logged, never
+                # block model materialization.
+                print("Invoking dbt test...")
+                res3 = subprocess.run(
+                    ["dbt", "test", "--profiles-dir", ".", "--no-partial-parse"],
+                    cwd="/app/dbt",
+                    capture_output=True,
+                    text=True
+                )
+                if res3.returncode != 0:
+                    print(f"dbt test failures (non-blocking): {res3.stdout}")
+
+                # Copy dbt artifacts to /data/artifacts/ so the frontend can read them.
+                os.makedirs("/data/artifacts", exist_ok=True)
+                for artifact in ["run_results.json", "sources.json", "manifest.json"]:
+                    src_artifact = f"/app/dbt/target/{artifact}"
+                    if os.path.exists(src_artifact):
+                        try:
+                            shutil.copy2(src_artifact, f"/data/artifacts/{artifact}")
+                        except Exception as copy_exc:
+                            print(f"[dbt_worker] artifact copy failed for {artifact}: {copy_exc}")
+
+                # Archive run_results.json keyed by invocation time so the
+                # observability page can show a recent-runs feed. We rotate to
+                # keep only the last 20 history files (avoids unbounded growth
+                # on a long-running deployment).
+                src_rr = "/app/dbt/target/run_results.json"
+                if os.path.exists(src_rr):
+                    history_dir = "/data/artifacts/history"
+                    os.makedirs(history_dir, exist_ok=True)
+                    ts_label = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    try:
+                        shutil.copy2(src_rr, f"{history_dir}/{ts_label}.json")
+                        files = sorted(f for f in os.listdir(history_dir) if f.endswith(".json"))
+                        for stale in files[:-20]:
+                            try:
+                                os.remove(f"{history_dir}/{stale}")
+                            except Exception:
+                                pass
+                    except Exception as hist_exc:
+                        print(f"[dbt_worker] history archival failed: {hist_exc}")
+        except Exception as e:
+            print(f"Error running DBT build: {e}")
+            writer.log_error('dbt', None, e)
+        finally:
+            dbt_running.clear()
+        time.sleep(interval_mins * 60)
+
+def main():
+    logs_dir = os.getenv("AURA_LOGS_DIR", "/logs/claude")
+    db_path = os.getenv("AURA_DB_PATH", "/data/aura.duckdb")
+    read_db_path = os.getenv("AURA_READ_DB_PATH", "/data/read/aura.duckdb")
+    snapshot_interval = int(os.getenv("AURA_SNAPSHOT_INTERVAL", "2"))
+    dbt_interval = int(os.getenv("AURA_DBT_RUN_INTERVAL_MINUTES", "5"))
+
+    print(f"Starting Aura Watcher...")
+    print(f"Logs: {logs_dir}")
+    print(f"Write DB: {db_path}")
+
+    writer = DuckDBWriter(db_path)
+    adapter = ClaudeAdapter()
+    cp_manager = CheckpointManager(writer)
+
+    # Snapshot + dbt workers BOTH start immediately, independent of backfill.
+    # The pipeline is two truly-independent stages:
+    #   - JSON → raw_events  (watcher, ongoing; backfill is just the catch-up phase)
+    #   - raw_events → marts (dbt, every N minutes on whatever exists in raw_events)
+    # process_file no longer short-circuits on dbt_running — it blocks on
+    # _snapshot_lock instead, so concurrent backfill + dbt cycles serialize
+    # correctly without dropping data.
+    threading.Thread(target=snapshot_worker, args=(db_path, read_db_path, snapshot_interval, writer), daemon=True).start()
+    threading.Thread(target=dbt_worker, args=(dbt_interval, writer), daemon=True).start()
+
+    # Files are sorted newest-first so today's data ingests before historical data.
+    # The full set is always processed — backfill is all-or-nothing on the bronze
+    # layer (raw_events). dbt is independent and replayable from raw_events.
+    print("Running initial backfill...")
+    files = sorted(
+        glob.glob(os.path.join(logs_dir, "**", "*.jsonl"), recursive=True),
+        key=lambda f: os.path.getmtime(f),
+        reverse=True,  # newest first → today's data ingested before historical
+    )
+    print(f"Found {len(files)} files to backfill", flush=True)
+    for idx, f in enumerate(files):
+        process_file(f, writer, adapter, cp_manager)
+        if (idx + 1) % 50 == 0:
+            print(f"Backfill progress: {idx + 1}/{len(files)} files processed", flush=True)
+    print(f"Backfill complete. Processed {len(files)} files.", flush=True)
+
+    # Backfill session_meta for every session not yet recorded. Uses a single
+    # connection held inside _snapshot_lock so we don't race with the dbt /
+    # snapshot workers — the previous per-file connection loop lost ~95% of
+    # sessions to "Conflicting lock" errors during the dbt window.
+    try:
+        written, skipped = backfill_session_meta(writer, files, _snapshot_lock)
+        print(f"session_meta backfill: wrote={written} skipped_existing={skipped}", flush=True)
+    except Exception as e:
+        print(f"Error during session_meta backfill: {e}", flush=True)
+        writer.log_error('session_meta', None, e)
+
+    # Start Watchdog
+    handler = JSONLHandler(writer, adapter, cp_manager)
+    # PollingObserver works on all platforms including Windows bind-mounts in
+    # Docker where inotify (Observer) silently drops events.
+    observer = PollingObserver(timeout=10)
+    observer.schedule(handler, logs_dir, recursive=True)
+    observer.start()
+
+    print(f"Watching for changes...")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
+if __name__ == "__main__":
+    main()

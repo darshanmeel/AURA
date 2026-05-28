@@ -1,0 +1,6 @@
+dbt/target/
+dbt/logs/
+**/__pycache__/
+**/*.pyc
+frontend/.next/
+frontend/node_modules/

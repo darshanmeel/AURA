@@ -1,0 +1,77 @@
+version: 2
+
+# aura_semantic.yml — extended descriptions for marts that are not already
+# covered by schema.yml, plus key intermediate models.
+# schema.yml owns the test assertions; this file owns the human-readable docs.
+# dbt merges both files — models listed here must NOT also appear in schema.yml.
+
+models:
+
+  # ── Intermediates (documented here; no tests needed) ──────────────────────
+
+  - name: int_entity_spend
+    description: >
+      Daily-grain spend roll-up keyed to fact_model_calls.ts (event timestamp),
+      so all date-range cost aggregations reconcile with fact_daily_spend.
+      Grain: (tenant_id, entity_type, entity_id, date).
+
+      entity_type values: 'app' | 'agent' | 'person'.
+      entity_id:
+        'app'    → dim_apps.app_id  (via int_app_cwd_lookup)
+        'agent'  → fact_model_calls.agent
+        'person' → dim_sessions.person_id
+
+      Purpose: range-filtered API queries (e.g. ?range=7d) read from this
+      model instead of re-scanning fact_model_calls directly, eliminating
+      repeated inline re-aggregations across apps.ts, agents.ts, people.ts,
+      and dashboard.ts. project_id is populated only for entity_type='app'.
+    columns:
+      - name: entity_type
+        description: "'app', 'agent', or 'person'."
+      - name: entity_id
+        description: app_id, agent name, or person_id depending on entity_type.
+      - name: date
+        description: >
+          UTC calendar date derived from fact_model_calls.ts (event timestamp),
+          not dim_sessions.start_ts. This ensures cost aggregations for a given
+          date range reconcile exactly with fact_daily_spend.
+      - name: project_id
+        description: Parent project scope; populated for entity_type='app' only.
+      - name: session_count
+        description: Distinct sessions active on this date for the entity.
+      - name: total_turns
+        description: Sum of turn_count for sessions starting on this date.
+      - name: total_cost
+        description: Sum of total_cost for sessions starting on this date (USD).
+      - name: total_tool_calls
+        description: Sum of tools_used for sessions starting on this date.
+      - name: commits
+        description: Sum of commits for sessions starting on this date.
+
+  # ── Additional mart descriptions (supplement schema.yml tests) ────────────
+
+  - name: fact_git_commands
+    description: >
+      One row per git Bash tool call whose command starts with 'git '.
+      Grain: (tenant_id, tool_use_id).
+    columns:
+      - name: git_verb
+        description: First git sub-command (e.g. commit, push, status, diff).
+
+  - name: fact_session_files
+    description: >
+      One row per (session_id, file_path). Aggregated file edit/write/read
+      counts and attributed token weight per session.
+      Grain: (session_id, file_path).
+    columns:
+      - name: file_path
+        description: Absolute path of the file as it appears in tool calls.
+      - name: edit_count
+        description: Number of Edit tool calls referencing this file.
+      - name: write_count
+        description: Number of Write tool calls referencing this file.
+
+  - name: dim_projects
+    description: >
+      One row per (tenant_id, project_id). Derived from dim_apps.
+      Grain: (tenant_id, project_id).

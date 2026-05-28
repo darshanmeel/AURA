@@ -1,0 +1,11 @@
+aura:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: /data/aura.duckdb
+      # This is the WRITE database where watcher ingests raw events.
+      # After dbt transforms, snapshot worker syncs to /data/read/aura.duckdb for frontend.
+      settings:
+        threads: 1
+        preserve_insertion_order: false

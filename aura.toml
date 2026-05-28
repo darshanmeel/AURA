@@ -1,0 +1,21 @@
+[aura]
+name = "AURA"
+version = "0.2.0"
+description = "Local analytics for AI coding agent transcripts"
+
+[database]
+path = "/data/aura.duckdb"
+read_path = "/data/aura_read.duckdb"
+snapshot_interval_secs = 30
+
+[watcher]
+logs_dir = "~/.claude/projects"
+dbt_run_interval_minutes = 60
+
+[frontend]
+port = 3000
+framework = "nextjs"
+revalidate_seconds = 30
+
+[people]
+config_path = "~/.aura/people.json"

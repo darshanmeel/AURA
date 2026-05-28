@@ -1,0 +1,9 @@
+tenant_id,model,provider,cost_input_per_mtok,cost_output_per_mtok,cost_cache_write_5m_per_mtok,cost_cache_write_1h_per_mtok,cost_cache_read_per_mtok,cost_batch_input_per_mtok,cost_batch_output_per_mtok,context_window_tokens,context_window_beta_flag,tokenizer,valid_from,valid_to
+,claude-opus-4-7,anthropic,5.0,25.0,6.25,10.0,0.5,2.5,12.5,200000,,anthropic,2025-01-01,
+,claude-opus-4-6,anthropic,5.0,25.0,6.25,10.0,0.5,2.5,12.5,200000,,anthropic,2025-01-01,
+,claude-sonnet-4-6,anthropic,3.0,15.0,3.75,6.0,0.3,1.5,7.5,200000,,anthropic,2025-01-01,
+,claude-haiku-4-5-20251001,anthropic,1.0,5.0,1.25,2.0,0.1,0.5,2.5,200000,,anthropic,2025-01-01,
+,claude-haiku-4-5,anthropic,1.0,5.0,1.25,2.0,0.1,0.5,2.5,200000,,anthropic,2025-01-01,
+,gemini-2.5-pro,google,1.25,10.0,1.5,1.5,0.3,,,2000000,,gemini,2025-01-01,
+,gemini-2.5-flash,google,0.3,2.5,0.4,0.4,0.08,,,1000000,,gemini,2025-01-01,
+,<synthetic>,anthropic,0.0,0.0,0.0,0.0,0.0,,,200000,,anthropic,2025-01-01,

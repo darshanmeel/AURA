@@ -1,0 +1,62 @@
+
+services:
+  watcher:
+    build:
+      context: .
+      dockerfile: watcher/Dockerfile
+    volumes:
+      - ./data:/data
+      - ${CLAUDE_LOGS_DIR:-~/.claude/projects}:/logs/claude:ro
+    environment:
+      - AURA_DB_PATH=/data/aura.duckdb
+      # NOTE: the snapshot writes a file whose BASENAME matches the source
+      # (`aura.duckdb`) so DuckDB views compiled with `aura.main.x` refs
+      # still resolve. The read DB therefore lives in a sibling directory.
+      - AURA_READ_DB_PATH=/data/read/aura.duckdb
+      - AURA_LOGS_DIR=/logs/claude
+      # 30s matches frontend revalidate_seconds. The previous 2s interval
+      # rewrote the read DB so frequently it invalidated the frontend's
+      # connection-cache inode tracker mid-request, making warm hits as slow
+      # as cold ones (observability /api hit was 30s+ even after dbt finished).
+      - AURA_SNAPSHOT_INTERVAL=30
+      - AURA_DBT_RUN_INTERVAL_MINUTES=5
+      # Set to false to disable secret/base64 redaction (raw JSONL passes through unchanged).
+      # WARNING: disabling means any API keys or tokens in payloads are stored verbatim.
+      - AURA_REDACT_PAYLOAD=true
+      # Optional JSON object to override model context window sizes without rebuilding.
+      # Example: AURA_MODEL_WINDOWS_JSON={"claude-opus-5-20260601":1000000}
+      - AURA_MODEL_WINDOWS_JSON=
+      # Person identity override. Inside this container getpass.getuser() returns
+      # 'root', which masks who actually ran the Claude Code session on the host.
+      # Set these to the developer using the laptop so dim_people / session_meta
+      # show the human, not the container's root user.
+      - AURA_DEFAULT_PERSON_ID=darshan
+      - AURA_DEFAULT_PERSON_NAME=Darshan Singh
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; p='/data/read/aura.duckdb'; exit(0 if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < 300 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
+    mem_limit: 2g
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data:ro
+    environment:
+      - AURA_READ_DB_PATH=/data/read/aura.duckdb
+      - NODE_ENV=production
+    depends_on:
+      - watcher
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://$(hostname):3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 512m
+    restart: unless-stopped
