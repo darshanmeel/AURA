@@ -262,7 +262,7 @@ export default async function AppProfilePage({
               <Rule />
               <div className="section-head" style={{ marginTop: 28 }}>
                 <h2 className="h-section">Project — {app.project_name ?? app.project_id}</h2>
-                <span className="section-meta">{siblingApps.length + 1} app{siblingApps.length + 1 !== 1 ? 's' : ''} in this project</span>
+                <span className="section-meta">{siblingApps.length + 1} app{siblingApps.length + 1 !== 1 ? 's' : ''} in this project · lifetime figures</span>
               </div>
               <table className="ledger">
                 <thead>

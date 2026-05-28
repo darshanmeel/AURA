@@ -144,20 +144,28 @@ export async function getAppPeople(appId: string, since: string | null = null) {
  */
 export async function getAppRangeAggregates(appId: string, since: string | null) {
   if (!since) return null
-  // Range path: int_entity_spend gives session_count, turns, cost, commits.
-  // total_output_tokens and agent_count are not in int_entity_spend; return NULL.
-  // The app header KPI grid only renders columns that are non-null.
-  return queryOne(`
-    SELECT
-      SUM(es.session_count)            AS session_count,
-      SUM(es.total_turns)              AS total_turns,
-      SUM(es.total_cost)               AS total_cost,
-      NULL::BIGINT                     AS total_output_tokens,
-      SUM(es.commits)                  AS commits,
-      NULL::BIGINT                     AS agent_count
-    FROM int_entity_spend es
-    WHERE es.entity_type = 'app'
-      AND es.entity_id = ?
-      AND es.date >= ?::DATE
-  `, [appId, since])
+  const [agg, commitRow] = await Promise.all([
+    queryOne(`
+      SELECT
+        SUM(es.session_count)  AS session_count,
+        SUM(es.total_turns)    AS total_turns,
+        SUM(es.total_cost)     AS total_cost,
+        NULL::BIGINT           AS total_output_tokens,
+        NULL::BIGINT           AS agent_count
+      FROM int_entity_spend es
+      WHERE es.entity_type = 'app'
+        AND es.entity_id = ?
+        AND es.date >= ?::DATE
+    `, [appId, since]),
+    queryOne(`
+      SELECT COALESCE(SUM(ds.commits), 0) AS commits
+      FROM dim_sessions ds
+      LEFT JOIN int_app_cwd_lookup al
+        ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
+      WHERE al.app_id = ?
+        AND CAST(ds.start_ts AS DATE) >= ?::DATE
+    `, [appId, since]),
+  ])
+  if (!agg) return null
+  return { ...agg, commits: commitRow?.commits ?? 0 }
 }

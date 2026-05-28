@@ -134,19 +134,25 @@ export async function getPersonPrompts(personId: string, limit = 8, since: strin
  */
 export async function getPersonRangeAggregates(personId: string, since: string | null) {
   if (!since) return null
-  // Range path: int_entity_spend gives session_count, turns, cost, commits.
-  // total_output_tokens is not in int_entity_spend; return NULL — the person
-  // header does not currently display that column in the range-filtered view.
-  return queryOne(`
-    SELECT
-      SUM(es.session_count)            AS session_count,
-      SUM(es.total_turns)              AS total_turns,
-      SUM(es.total_cost)               AS total_cost,
-      NULL::BIGINT                     AS total_output_tokens,
-      SUM(es.commits)                  AS total_commits
-    FROM int_entity_spend es
-    WHERE es.entity_type = 'person'
-      AND es.entity_id = ?
-      AND es.date >= ?::DATE
-  `, [personId, since])
+  const [agg, commitRow] = await Promise.all([
+    queryOne(`
+      SELECT
+        SUM(es.session_count)  AS session_count,
+        SUM(es.total_turns)    AS total_turns,
+        SUM(es.total_cost)     AS total_cost,
+        NULL::BIGINT           AS total_output_tokens
+      FROM int_entity_spend es
+      WHERE es.entity_type = 'person'
+        AND es.entity_id = ?
+        AND es.date >= ?::DATE
+    `, [personId, since]),
+    queryOne(`
+      SELECT COALESCE(SUM(commits), 0) AS total_commits
+      FROM dim_sessions
+      WHERE person_id = ?
+        AND CAST(start_ts AS DATE) >= ?::DATE
+    `, [personId, since]),
+  ])
+  if (!agg) return null
+  return { ...agg, total_commits: commitRow?.total_commits ?? 0 }
 }

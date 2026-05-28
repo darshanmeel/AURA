@@ -125,8 +125,9 @@ export default async function SessionDetailPage({
             <div className="hero-stat-value">{fmt.usd(s.total_cost)}</div>
             <div className="hero-stat-foot">
               <em>across</em>{' '}
-              {fmt.k((s.total_input_tokens ?? 0) + (s.total_output_tokens ?? 0))} tokens ·{' '}
+              {fmt.n(prompts.length)} prompt{prompts.length !== 1 ? 's' : ''} ·{' '}
               {fmt.n(s.turn_count)} turns ·{' '}
+              {fmt.k((s.total_input_tokens ?? 0) + (s.total_output_tokens ?? 0))} tokens ·{' '}
               {fmt.n(s.files_touched ?? 0)} files
             </div>
           </div>

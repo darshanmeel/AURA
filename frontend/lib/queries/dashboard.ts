@@ -14,7 +14,10 @@ export async function getDashboardKPIs(since: string | null = null) {
       SUM(turn_count)                                                       AS total_turns,
       SUM(tools_used)                                                       AS total_tool_calls,
       SUM(commits)                                                          AS total_commits,
-      COUNT(DISTINCT cwd)                                                   AS total_apps,
+      (SELECT COUNT(DISTINCT al.app_id)
+       FROM dim_sessions ds2
+       LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds2.cwd AND al.tenant_id = ds2.tenant_id
+       ${since ? `WHERE ds2.start_ts >= '${since}'` : ''})       AS total_apps,
       COUNT(DISTINCT person_id)                                             AS total_people,
       COUNT(DISTINCT CASE WHEN status = 'active' THEN session_id END)      AS active_sessions,
       SUM(cache_read_total)::DOUBLE /

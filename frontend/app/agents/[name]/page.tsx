@@ -133,7 +133,10 @@ export default async function AgentProfilePage({
               <span className="meta-dot">·</span>
               <span><b>{fmt.n(totalTools)}</b> tool calls</span>
               <span className="meta-dot">·</span>
-              <span><b>{agent.commits != null ? fmt.n(agent.commits) : '—'}</b> commits</span>
+              <span>
+                <b>{agent.commits != null ? fmt.n(agent.commits) : '—'}</b>{' '}
+                commits{since ? ' (lifetime)' : ''}
+              </span>
             </div>
           </div>
         </div>

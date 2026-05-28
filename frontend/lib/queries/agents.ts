@@ -168,21 +168,29 @@ export async function getAgentFiles(name: string, limit = 8, since: string | nul
  */
 export async function getAgentRangeAggregates(name: string, since: string | null) {
   if (!since) return null
-  // Range path: int_entity_spend gives session_count, turns, cost, tool_calls, commits.
-  // total_output_tokens and app_count are not in int_entity_spend; return NULL for them
-  // so the UI falls back gracefully (these columns are not used in the agent header KPIs).
-  return queryOne(`
-    SELECT
-      SUM(es.session_count)            AS session_count,
-      SUM(es.total_turns)              AS total_turns,
-      SUM(es.total_tool_calls)         AS total_tool_calls,
-      SUM(es.total_cost)               AS total_cost,
-      NULL::BIGINT                     AS total_output_tokens,
-      SUM(es.commits)                  AS commits,
-      NULL::BIGINT                     AS app_count
-    FROM int_entity_spend es
-    WHERE es.entity_type = 'agent'
-      AND es.entity_id = ?
-      AND es.date >= ?::DATE
-  `, [name, since])
+  // int_entity_spend.total_tool_calls is hardcoded to 0 in the dbt model.
+  // Fetch real tool_call count from dim_sessions in a parallel query.
+  // total_output_tokens IS in int_entity_spend for agent grain — use it directly.
+  const [agg, toolRow] = await Promise.all([
+    queryOne(`
+      SELECT
+        SUM(es.session_count)            AS session_count,
+        SUM(es.total_turns)              AS total_turns,
+        SUM(es.total_cost)               AS total_cost,
+        SUM(es.total_output_tokens)      AS total_output_tokens,
+        NULL::BIGINT                     AS app_count
+      FROM int_entity_spend es
+      WHERE es.entity_type = 'agent'
+        AND es.entity_id = ?
+        AND es.date >= ?::DATE
+    `, [name, since]),
+    queryOne(`
+      SELECT COALESCE(SUM(tools_used), 0) AS total_tool_calls
+      FROM dim_sessions
+      WHERE agent = ?
+        AND CAST(start_ts AS DATE) >= ?::DATE
+    `, [name, since]),
+  ])
+  if (!agg) return null
+  return { ...agg, total_tool_calls: toolRow?.total_tool_calls ?? 0 }
 }

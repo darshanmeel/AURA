@@ -67,10 +67,9 @@ export async function getSessionsStats(filters: SessionFilters = {}, since: stri
   return queryOne(`
     SELECT
       COUNT(*) as total_count,
-      (SELECT COALESCE(SUM(daily_cost), 0) FROM fact_daily_spend
-       WHERE ${since ? `date >= '${since}'::DATE` : '1=1'})  AS total_cost,
-      SUM(turn_count) as total_turns,
-      SUM(commits) as total_commits
+      COALESCE(SUM(ds.total_cost), 0) AS total_cost,
+      SUM(ds.turn_count) as total_turns,
+      SUM(ds.commits) as total_commits
     FROM dim_sessions ds
     ${where}
   `, params)
