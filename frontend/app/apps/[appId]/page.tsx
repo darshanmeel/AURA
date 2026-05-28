@@ -9,7 +9,7 @@ import { fmt } from '../../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
 import {
   getApp, getAppSessions, getProjectApps, getAppPeople,
-  getAppRangeAggregates,
+  getAppRangeAggregates, getAppSkills, getAppMcps,
 } from '../../../lib/queries/apps'
 import { getAppPrompts, getAppAllPrompts } from '../../../lib/queries/prompts'
 import { query } from '../../../lib/db'
@@ -67,9 +67,11 @@ export default async function AppProfilePage({
   let allPrompts: any[] = []
   let siblingApps: any[] = []
   let rangeAgg: any = null
+  let skills: any[] = []
+  let mcps: any[] = []
 
   try {
-    const [a, s, ag, pe, pr, allPr, ra] = await Promise.all([
+    const [a, s, ag, pe, pr, allPr, ra, sk, mc] = await Promise.all([
       getApp(appId),
       getAppSessions(appId, undefined, since),
       getAppAgents(appId, since),
@@ -77,6 +79,8 @@ export default async function AppProfilePage({
       getAppPrompts(appId, 6, since),
       getAppAllPrompts(appId, 200, since),
       getAppRangeAggregates(appId, since),
+      getAppSkills(appId, since).catch(() => []),
+      getAppMcps(appId, since).catch(() => []),
     ])
     app = a
     sessions = s as any[]
@@ -85,6 +89,8 @@ export default async function AppProfilePage({
     prompts = pr as any[]
     allPrompts = allPr as any[]
     rangeAgg = ra
+    skills = sk as any[]
+    mcps   = mc as any[]
     if (app?.project_id) {
       siblingApps = (await getProjectApps(app.project_id) as any[]).filter(x => x.app_id !== appId)
     }
@@ -374,6 +380,69 @@ export default async function AppProfilePage({
             )}
           </div>
         </aside>
+      </section>
+
+      {/* Skills & MCPs — what this app's sessions actually load */}
+      <Rule weight="thick" />
+      <section style={{ marginTop: 32, marginBottom: 32 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <h2 className="h-section">Skills &amp; MCPs in this app</h2>
+          <span className="section-meta">top 10 each by session count</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+          <div>
+            <div className="section-head" style={{ marginBottom: 4 }}>
+              <h3 className="h-section" style={{ fontSize: 13 }}>🧩 Skills</h3>
+              <span className="section-meta">{skills.length}</span>
+            </div>
+            {skills.length === 0 ? (
+              <div className="empty-block">No skills loaded in this range.</div>
+            ) : (
+              <table className="ledger" style={{ tableLayout: 'fixed', width: '100%' }}>
+                <thead><tr>
+                  <th>Skill</th>
+                  <th className="num" style={{ width: 90 }}>Sessions</th>
+                  <th style={{ width: 120 }}>Last used</th>
+                </tr></thead>
+                <tbody>
+                  {skills.map((r: any) => (
+                    <tr key={r.skill}>
+                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.skill}</td>
+                      <td className="num mono">{fmt.n(r.session_count)}</td>
+                      <td className="mono muted">{r.last_used ? fmt.date(r.last_used) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <div>
+            <div className="section-head" style={{ marginBottom: 4 }}>
+              <h3 className="h-section" style={{ fontSize: 13 }}>⚡ MCP servers</h3>
+              <span className="section-meta">{mcps.length}</span>
+            </div>
+            {mcps.length === 0 ? (
+              <div className="empty-block">No MCP servers loaded in this range.</div>
+            ) : (
+              <table className="ledger" style={{ tableLayout: 'fixed', width: '100%' }}>
+                <thead><tr>
+                  <th>MCP server</th>
+                  <th className="num" style={{ width: 90 }}>Sessions</th>
+                  <th style={{ width: 120 }}>Last used</th>
+                </tr></thead>
+                <tbody>
+                  {mcps.map((r: any) => (
+                    <tr key={r.mcp_server}>
+                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.mcp_server}</td>
+                      <td className="num mono">{fmt.n(r.session_count)}</td>
+                      <td className="mono muted">{r.last_used ? fmt.date(r.last_used) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       </section>
 
       {/* All prompts — full chronological feed for this app */}

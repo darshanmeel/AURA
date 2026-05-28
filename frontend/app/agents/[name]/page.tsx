@@ -10,7 +10,7 @@ import { fmt } from '../../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
 import {
   getAgent, getAgentApps, getAgentModels, getAgentSessions, getAgentFiles, getAgentPeople,
-  getAgentRangeAggregates,
+  getAgentRangeAggregates, getAgentSkills, getAgentMcps,
 } from '../../../lib/queries/agents'
 import { getAgentPrompts } from '../../../lib/queries/prompts'
 import { PromptText } from '../../../components/PromptText'
@@ -44,9 +44,11 @@ export default async function AgentProfilePage({
   let prompts: any[] = []
   let peopleList: any[] = []
   let rangeAgg: any = null
+  let skills: any[] = []
+  let mcps: any[] = []
 
   try {
-    const [ag, ap, mo, se, fi, pr, pe, ra] = await Promise.all([
+    const [ag, ap, mo, se, fi, pr, pe, ra, sk, mc] = await Promise.all([
       getAgent(name),
       getAgentApps(name, since),
       getAgentModels(name, since),
@@ -55,6 +57,8 @@ export default async function AgentProfilePage({
       getAgentPrompts(name, 6, since),
       getAgentPeople(name, since),
       getAgentRangeAggregates(name, since),
+      getAgentSkills(name, since).catch(() => []),
+      getAgentMcps(name, since).catch(() => []),
     ])
     agent = ag
     apps = ap as any[]
@@ -64,6 +68,8 @@ export default async function AgentProfilePage({
     prompts = pr as any[]
     peopleList = pe as any[]
     rangeAgg = ra
+    skills = sk as any[]
+    mcps   = mc as any[]
   } catch {}
 
   // Show empty state rather than hard 404 when no data yet
@@ -440,6 +446,69 @@ export default async function AgentProfilePage({
             )}
           </div>
         </aside>
+      </section>
+
+      {/* Skills & MCPs this agent loads — sessions tagged to this agent */}
+      <Rule weight="thick" />
+      <section style={{ marginTop: 32, marginBottom: 32 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <h2 className="h-section">Skills &amp; MCPs this agent loads</h2>
+          <span className="section-meta">top 10 each by session count</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+          <div>
+            <div className="section-head" style={{ marginBottom: 4 }}>
+              <h3 className="h-section" style={{ fontSize: 13 }}>🧩 Skills</h3>
+              <span className="section-meta">{skills.length}</span>
+            </div>
+            {skills.length === 0 ? (
+              <div className="empty-block">No skills loaded in this range.</div>
+            ) : (
+              <table className="ledger" style={{ tableLayout: 'fixed', width: '100%' }}>
+                <thead><tr>
+                  <th>Skill</th>
+                  <th className="num" style={{ width: 90 }}>Sessions</th>
+                  <th style={{ width: 120 }}>Last used</th>
+                </tr></thead>
+                <tbody>
+                  {skills.map((r: any) => (
+                    <tr key={r.skill}>
+                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.skill}</td>
+                      <td className="num mono">{fmt.n(r.session_count)}</td>
+                      <td className="mono muted">{r.last_used ? fmt.date(r.last_used) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <div>
+            <div className="section-head" style={{ marginBottom: 4 }}>
+              <h3 className="h-section" style={{ fontSize: 13 }}>⚡ MCP servers</h3>
+              <span className="section-meta">{mcps.length}</span>
+            </div>
+            {mcps.length === 0 ? (
+              <div className="empty-block">No MCP servers loaded in this range.</div>
+            ) : (
+              <table className="ledger" style={{ tableLayout: 'fixed', width: '100%' }}>
+                <thead><tr>
+                  <th>MCP server</th>
+                  <th className="num" style={{ width: 90 }}>Sessions</th>
+                  <th style={{ width: 120 }}>Last used</th>
+                </tr></thead>
+                <tbody>
+                  {mcps.map((r: any) => (
+                    <tr key={r.mcp_server}>
+                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.mcp_server}</td>
+                      <td className="num mono">{fmt.n(r.session_count)}</td>
+                      <td className="mono muted">{r.last_used ? fmt.date(r.last_used) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       </section>
     </div>
   )

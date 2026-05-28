@@ -103,6 +103,42 @@ export async function getAppSessions(appId: string, limit = APP_SESSIONS_LIMIT, 
   `, [appId, limit])
 }
 
+// Top skills loaded across sessions for one app. session_count = distinct sessions
+// in this app that loaded the skill. last_used pulls the most-recent session end.
+export async function getAppSkills(appId: string, since: string | null = null, limit = 10) {
+  const sinceClause = since ? ` AND ds.end_ts >= '${since}'::TIMESTAMP` : ''
+  return query(`
+    SELECT
+      rs.skill_name                 AS skill,
+      COUNT(DISTINCT rs.session_id) AS session_count,
+      MAX(ds.end_ts)                AS last_used
+    FROM raw_session_skills rs
+    JOIN dim_sessions ds ON ds.session_id = rs.session_id
+    JOIN dim_apps da   ON da.cwd = ds.cwd AND da.tenant_id = ds.tenant_id
+    WHERE da.app_id = ?${sinceClause}
+    GROUP BY rs.skill_name
+    ORDER BY session_count DESC, last_used DESC
+    LIMIT ${limit}
+  `, [appId])
+}
+
+export async function getAppMcps(appId: string, since: string | null = null, limit = 10) {
+  const sinceClause = since ? ` AND ds.end_ts >= '${since}'::TIMESTAMP` : ''
+  return query(`
+    SELECT
+      rm.mcp_server                 AS mcp_server,
+      COUNT(DISTINCT rm.session_id) AS session_count,
+      MAX(ds.end_ts)                AS last_used
+    FROM raw_session_mcps rm
+    JOIN dim_sessions ds ON ds.session_id = rm.session_id
+    JOIN dim_apps da   ON da.cwd = ds.cwd AND da.tenant_id = ds.tenant_id
+    WHERE da.app_id = ?${sinceClause}
+    GROUP BY rm.mcp_server
+    ORDER BY session_count DESC, last_used DESC
+    LIMIT ${limit}
+  `, [appId])
+}
+
 export async function getAppPeople(appId: string, since: string | null = null) {
   // Fast path: lifetime mart.
   if (!since) {

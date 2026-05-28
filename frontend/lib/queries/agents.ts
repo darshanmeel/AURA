@@ -172,6 +172,39 @@ export async function getAgentFiles(name: string, limit = 8, since: string | nul
   `, [name, limit])
 }
 
+// Top skills loaded across sessions where this agent was the resolved agent.
+export async function getAgentSkills(name: string, since: string | null = null, limit = 10) {
+  const sinceClause = since ? ` AND ds.end_ts >= '${since}'::TIMESTAMP` : ''
+  return query(`
+    SELECT
+      rs.skill_name                 AS skill,
+      COUNT(DISTINCT rs.session_id) AS session_count,
+      MAX(ds.end_ts)                AS last_used
+    FROM raw_session_skills rs
+    JOIN dim_sessions ds ON ds.session_id = rs.session_id
+    WHERE ds.agent = ?${sinceClause}
+    GROUP BY rs.skill_name
+    ORDER BY session_count DESC, last_used DESC
+    LIMIT ${limit}
+  `, [name])
+}
+
+export async function getAgentMcps(name: string, since: string | null = null, limit = 10) {
+  const sinceClause = since ? ` AND ds.end_ts >= '${since}'::TIMESTAMP` : ''
+  return query(`
+    SELECT
+      rm.mcp_server                 AS mcp_server,
+      COUNT(DISTINCT rm.session_id) AS session_count,
+      MAX(ds.end_ts)                AS last_used
+    FROM raw_session_mcps rm
+    JOIN dim_sessions ds ON ds.session_id = rm.session_id
+    WHERE ds.agent = ?${sinceClause}
+    GROUP BY rm.mcp_server
+    ORDER BY session_count DESC, last_used DESC
+    LIMIT ${limit}
+  `, [name])
+}
+
 /**
  * Range-aware header rollup for the agent profile. Returns null when
  * `since` is null so the page falls back to the lifetime `dim_agents` mart.

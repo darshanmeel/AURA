@@ -163,6 +163,8 @@ function SessionsPageInner() {
                 <th>Model</th>
                 <th className="num">Turns</th>
                 <th className="num">Commits</th>
+                <th className="num" title="Skills loaded in this session">🧩</th>
+                <th className="num" title="MCP servers loaded">⚡</th>
                 <th className="num">Cost</th>
                 <th></th>
               </tr>
@@ -213,6 +215,20 @@ function SessionsPageInner() {
                     <td>{s.model ? <ModelPill model={s.model} /> : '—'}</td>
                     <td className="num">{fmt.n(s.turn_count)}</td>
                     <td className="num">{fmt.n(s.commits ?? 0)}</td>
+                    <td
+                      className="num mono"
+                      title={Array.isArray(s.skills_loaded) ? s.skills_loaded.join(', ') : ''}
+                      style={{ color: Number(s.skill_count ?? 0) > 0 ? 'var(--accent)' : 'var(--muted)' }}
+                    >
+                      {fmt.n(s.skill_count ?? 0)}
+                    </td>
+                    <td
+                      className="num mono"
+                      title={Array.isArray(s.mcp_servers) ? s.mcp_servers.join(', ') : ''}
+                      style={{ color: Number(s.mcp_count ?? 0) > 0 ? 'var(--accent-2, #efe6d6)' : 'var(--muted)' }}
+                    >
+                      {fmt.n(s.mcp_count ?? 0)}
+                    </td>
                     <td className="num strong">{fmt.usd(s.total_cost)}</td>
                     <td className="row-arr">→</td>
                   </tr>
@@ -220,7 +236,7 @@ function SessionsPageInner() {
               })}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="empty">
+                  <td colSpan={12} className="empty">
                     No sessions match these filters.
                   </td>
                 </tr>

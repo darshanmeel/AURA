@@ -40,6 +40,8 @@ export async function getSessions(filters: SessionFilters = {}, since: string | 
            ds.status, ds.provider,
            ds.turn_count, ds.total_cost, ds.total_input_tokens, ds.total_output_tokens,
            ds.commits, ds.tools_used, ds.files_touched,
+           ds.skill_count, ds.skills_loaded,
+           ds.mcp_count,   ds.mcp_servers,
            da.app_id,
            ds.session_title AS prompt_preview
     FROM dim_sessions ds
