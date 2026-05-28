@@ -385,6 +385,43 @@ export async function getSpendPace() {
   `)
 }
 
+// Top skills loaded across sessions in the range. Counts distinct sessions per
+// skill and surfaces the most recent session end as "last used". raw_session_skills
+// has no per-row timestamp, so we anchor recency to dim_sessions.end_ts via the
+// session join. Returns at most 10 rows for the dashboard mini-table.
+export async function getTopSkills(since: string | null = null, limit = 10) {
+  const wh = since ? `WHERE s.end_ts >= '${since}'::TIMESTAMP` : ''
+  return query(`
+    SELECT
+      rs.skill_name                   AS skill,
+      COUNT(DISTINCT rs.session_id)   AS session_count,
+      MAX(s.end_ts)                   AS last_used
+    FROM raw_session_skills rs
+    JOIN dim_sessions s ON s.session_id = rs.session_id
+    ${wh}
+    GROUP BY rs.skill_name
+    ORDER BY session_count DESC, last_used DESC
+    LIMIT ${limit}
+  `)
+}
+
+// Top MCP servers loaded across sessions in the range. Same shape as getTopSkills.
+export async function getTopMcps(since: string | null = null, limit = 10) {
+  const wh = since ? `WHERE s.end_ts >= '${since}'::TIMESTAMP` : ''
+  return query(`
+    SELECT
+      rm.mcp_server                   AS mcp_server,
+      COUNT(DISTINCT rm.session_id)   AS session_count,
+      MAX(s.end_ts)                   AS last_used
+    FROM raw_session_mcps rm
+    JOIN dim_sessions s ON s.session_id = rm.session_id
+    ${wh}
+    GROUP BY rm.mcp_server
+    ORDER BY session_count DESC, last_used DESC
+    LIMIT ${limit}
+  `)
+}
+
 export async function getHourlyActivity() {
   return query(`
     SELECT

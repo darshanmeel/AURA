@@ -1,5 +1,3 @@
-'use client'
-
 import React from 'react'
 import { fmt } from '../lib/fmt'
 
@@ -53,8 +51,13 @@ export function TokenSeriesChart({
   }
 
   return (
-    <div className="chart-wrap">
-      <svg viewBox={`0 0 ${w} ${height}`} className="chart" preserveAspectRatio="none">
+    <div className="chart-wrap" style={{ width: '100%' }}>
+      <svg
+        viewBox={`0 0 ${w} ${height}`}
+        className="chart"
+        preserveAspectRatio="xMidYMid meet"
+        style={{ width: '100%', height, display: 'block' }}
+      >
         {/* Y-axis grid + labels */}
         {[0.25, 0.5, 0.75, 1].map(g => (
           <line key={g}
@@ -128,13 +131,15 @@ export function TokenSeriesChart({
   )
 }
 
-// Convenience preset for the dashboard's main 5-type chart.
+// Token-type palette. Chosen for contrast against the cream paper background
+// and to encode cost: orange = priciest writes (1h, 5m), gold = output, teal =
+// fresh input, slate = cache reads (cheap, usually the largest volume).
 export const TOKEN_TYPE_SEGMENTS: StackSegment[] = [
-  { key: 'cache_read',   label: 'Cache read',  color: 'var(--muted-bar, #6b6b6b)' },
-  { key: 'cache_5m',     label: 'Cache 5m',    color: 'var(--ink-2, #d0c8b8)' },
-  { key: 'cache_1h',     label: 'Cache 1h',    color: 'var(--accent, #ef8232)' },
-  { key: 'output_tokens',label: 'Output',      color: 'var(--ink, #faf4e7)' },
-  { key: 'input_tokens', label: 'Input',       color: 'var(--accent-2, #efe6d6)' },
+  { key: 'cache_read',   label: 'Cache read',  color: '#6b8aa8' },
+  { key: 'cache_5m',     label: 'Cache 5m',    color: '#c46acc' },
+  { key: 'cache_1h',     label: 'Cache 1h',    color: '#ef8232' },
+  { key: 'output_tokens',label: 'Output',      color: '#e8c547' },
+  { key: 'input_tokens', label: 'Input',       color: '#4caf82' },
 ]
 
 // Pivot a long-form list of (bucket_ts, dim, value) rows into wide rows
