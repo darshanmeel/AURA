@@ -86,7 +86,12 @@ turn_stats AS (
         ON ft.session_id = sl.session_id AND ft.tenant_id = sl.tenant_id
     GROUP BY sl.tenant_id, sl.app_id, sl.project_id
 ),
--- Commits per app (from stg_session_meta — keyed by session_id).
+-- Commits per app, derived from fact_git_commands (successful `git commit`
+-- Bash invocations per session, summed over the app's sessions). We pull from
+-- fact_git_commands rather than stg_session_meta because the watcher never
+-- populates session_meta.commits — the column defaults to 0 forever. Sourcing
+-- from fact_git_commands keeps every page (dashboard, /apps, /agents, /people,
+-- session detail) reconciled to the same definition of "commit".
 -- We deliberately avoid ref('dim_sessions') here: int_app_cwd_lookup unnests
 -- dim_apps.all_cwds, and dim_sessions joins through int_app_cwd_lookup, so
 -- pulling dim_sessions into dim_apps creates a circular DAG.
@@ -95,10 +100,13 @@ commit_stats AS (
         sl.tenant_id,
         sl.app_id,
         sl.project_id,
-        COALESCE(SUM(sm.commits), 0)               AS commits
+        COUNT(*)                                   AS commits
     FROM session_list sl
-    LEFT JOIN {{ ref('stg_session_meta') }} sm
-        ON sm.session_id = sl.session_id
+    JOIN {{ ref('fact_git_commands') }} gc
+        ON gc.session_id = sl.session_id
+    WHERE gc.git_op = 'commit'
+      AND NOT gc.is_error
+      AND gc.raw_command NOT LIKE '%--help%'
     GROUP BY sl.tenant_id, sl.app_id, sl.project_id
 ),
 -- Distinct agents per app, sourced from int_event_agent (resolved agent per

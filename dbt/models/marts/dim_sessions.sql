@@ -143,10 +143,24 @@ skills_per_session AS (
     FROM {{ ref('stg_session_skills') }}
     GROUP BY session_id
 ),
--- Staged session_meta (person, commits, title).
+-- Staged session_meta (person, title). The `commits` column on session_meta
+-- exists with DEFAULT 0 but the watcher never updates it; commits are derived
+-- below from fact_git_commands instead, which already parses every `git commit`
+-- Bash invocation out of fact_tool_executions.
 session_meta_lookup AS (
-    SELECT session_id, person_id, person_name, commits
+    SELECT session_id, person_id, person_name
     FROM {{ ref('stg_session_meta') }}
+),
+-- Real commit counts: successful `git commit` invocations per session, derived
+-- from the agent's own Bash tool calls. Excludes failed commits (is_error) and
+-- `git commit --help` which would otherwise match the prefix.
+session_commits AS (
+    SELECT session_id, COUNT(*) AS commits
+    FROM {{ ref('fact_git_commands') }}
+    WHERE git_op = 'commit'
+      AND NOT is_error
+      AND raw_command NOT LIKE '%--help%'
+    GROUP BY session_id
 )
 SELECT
     s.tenant_id,
@@ -180,7 +194,7 @@ SELECT
     -- session_meta has not been written (older sessions before backfill).
     COALESCE(sm.person_id,   'unknown')             AS person_id,
     COALESCE(sm.person_name, 'Unknown')             AS person_name,
-    COALESCE(sm.commits, 0)                         AS commits,
+    COALESCE(sc.commits, 0)                         AS commits,
     CASE WHEN s.end_ts IS NULL THEN 'active' ELSE 'completed' END AS status,
     CASE
         WHEN s.model LIKE 'claude%'  THEN 'Anthropic'
@@ -197,4 +211,5 @@ LEFT JOIN agent_per_session ag  ON s.session_id = ag.session_id AND s.tenant_id 
 LEFT JOIN first_prompt fp       ON s.session_id = fp.session_id AND s.tenant_id = fp.tenant_id
 LEFT JOIN app_lookup al         ON al.cwd = s.cwd AND al.tenant_id = s.tenant_id
 LEFT JOIN session_meta_lookup sm ON sm.session_id = s.session_id
+LEFT JOIN session_commits sc    ON sc.session_id = s.session_id
 LEFT JOIN skills_per_session sk ON s.session_id = sk.session_id
