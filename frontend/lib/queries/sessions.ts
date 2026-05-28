@@ -134,7 +134,8 @@ export async function getSessionTurns(id: string, opts: { all?: boolean; limit?:
     SELECT turn_number, user_ts, assistant_ts, assistant_event_uuid, model,
            input_tokens, output_tokens, calculated_cost,
            cache_read_input_tokens, ephemeral_5m_input_tokens, ephemeral_1h_input_tokens,
-           context_pct, user_prompt, assistant_response
+           context_pct, user_prompt, assistant_response,
+           is_sidechain
     FROM fact_turns
     WHERE session_id = ?
     ORDER BY turn_number
