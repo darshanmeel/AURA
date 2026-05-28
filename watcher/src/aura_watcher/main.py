@@ -97,7 +97,9 @@ class JSONLHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('.jsonl'):
-            session_id = os.path.basename(os.path.dirname(event.src_path))
+            # JSONL layout: <project_dir>/<session_id>.jsonl — session_id is
+            # the filename without extension, not the parent directory.
+            session_id = os.path.splitext(os.path.basename(event.src_path))[0]
             # write_session_meta opens its own DuckDB connection — must
             # serialize through _snapshot_lock for the same reason
             # process_file does (parallel connect() = file handle conflict).

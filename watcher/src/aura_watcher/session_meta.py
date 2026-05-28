@@ -112,7 +112,12 @@ def backfill_session_meta(writer, files: list[str], snapshot_lock, tenant_id: st
                 ).fetchall()
             }
             for f in files:
-                session_id = os.path.basename(os.path.dirname(f))
+                # JSONL layout: /logs/claude/<project_dir>/<session_id>.jsonl
+                # The session_id IS the filename (sans .jsonl). The old code
+                # used basename(dirname(...)) which returned the project dir
+                # — that's why session_meta only ever got 18 rows (= distinct
+                # project dirs) and dim_sessions LEFT JOIN found nothing.
+                session_id = os.path.splitext(os.path.basename(f))[0]
                 if session_id in seen:
                     continue
                 seen.add(session_id)
