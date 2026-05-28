@@ -36,7 +36,7 @@ Two truly independent stages: JSON → bronze (the watcher's job) and bronze →
                                      │ dbt subprocess               │
                                      │ (seed → run → source         │ snapshot_worker
                                      │  freshness → test,           │ (atomic os.replace
-                                     │  every 5 min)                │  every 2 s)
+                                     │  every 5 min)                │  every 30 s)
                                      ▼                              ▼
               ┌───────────────────────────┐         ┌──────────────────────────┐
               │  dbt models (in place)    │         │  /data/read/aura.duckdb  │
@@ -136,7 +136,7 @@ On first boot the `watcher` container:
 2. Backfills every existing `.jsonl` file under `AURA_LOGS_DIR`, **newest first**, so today's data shows up on the dashboard before the historical catch-up completes. Backfill is idempotent: byte offsets are tracked in `ingest_checkpoints`, so re-runs never double-write.
 3. Hands off to the `PollingObserver`, which scans the logs directory every 10 s and processes any new bytes appended to JSONL files. Polling (not inotify) is used so the watcher works on Windows / Docker bind-mounts where filesystem events are unreliable.
 
-While backfill is running, the `dbt_worker` fires its first cycle in parallel — it transforms whatever already exists in `raw_events` rather than waiting. Subsequent cycles run every `AURA_DBT_RUN_INTERVAL_MINUTES` minutes. The frontend reads from a snapshot of the DuckDB file (refreshed every 2 seconds when no dbt cycle is in flight) and the connection layer transparently reopens whenever the underlying file is replaced.
+While backfill is running, the `dbt_worker` fires its first cycle in parallel — it transforms whatever already exists in `raw_events` rather than waiting. Subsequent cycles run every `AURA_DBT_RUN_INTERVAL_MINUTES` minutes. The frontend reads from a snapshot of the DuckDB file (refreshed every 30 seconds when no dbt cycle is in flight, matched to `frontend.revalidate_seconds`) and the connection layer transparently reopens whenever the underlying file is replaced.
 
 Environment variables (all have sensible defaults):
 
@@ -145,7 +145,7 @@ Environment variables (all have sensible defaults):
 | `AURA_LOGS_DIR` | `/logs/claude` | Where to look for `.jsonl` files inside the watcher container |
 | `AURA_DB_PATH` | `/data/aura.duckdb` | Write-side DuckDB file |
 | `AURA_READ_DB_PATH` | `/data/read/aura.duckdb` | Read-side snapshot (consumed by frontend). The basename must match `AURA_DB_PATH` so dbt-compiled views resolve against the same catalog name |
-| `AURA_SNAPSHOT_INTERVAL` | `2` | Seconds between snapshot refreshes (snapshot worker waits while a dbt cycle holds the DB) |
+| `AURA_SNAPSHOT_INTERVAL` | `30` | Seconds between snapshot refreshes (snapshot worker waits while a dbt cycle holds the DB). Matches `frontend.revalidate_seconds`; lower values cause the frontend's inode-keyed DuckDB connection cache to invalidate mid-request and make warm hits as slow as cold ones. |
 | `AURA_DBT_RUN_INTERVAL_MINUTES` | `5` | How often the dbt cycle (`seed` → `run` → `source freshness` → `test`) runs |
 | `CLAUDE_LOGS_DIR` | `~/.claude/projects` | Host-side path to mount into the watcher |
 | `AURA_QUERY_TIMEOUT_MS` | `15000` | Maximum milliseconds a single DuckDB query may run before being aborted (frontend) |
@@ -244,6 +244,46 @@ Pipeline health at a glance — bronze freshness, last dbt run status, recent wa
 
 ---
 
+## Performance & materialization strategy
+
+Every dbt model in this repo is currently `table` (full rebuild on each cycle) or `view`. **No model is `incremental`.** At the data scale this tool was designed for — one developer's transcripts, on the order of 100k–500k events in `raw_events` — a full rebuild every 5 minutes takes ~30–60 s and is well inside the dbt cycle budget. Switching to incremental at this scale would add complexity (lookback windows for late-arriving JSONL bytes, `merge` strategies for dimensions that aggregate facts) without measurable wall-clock benefit.
+
+**When to add incremental models.** Revisit this once `raw_events` crosses roughly **1M rows** or a full `dbt build` cycle starts pushing past 2–3 minutes. The natural candidates, in order:
+
+1. `fact_model_calls` — append-only on `event_ts`, easy `unique_key=event_uuid`, `incremental_strategy='delete+insert'` over a lookback window.
+2. `fact_tool_executions` and `fact_turns` — same shape, both join through `fact_model_calls`.
+3. `fact_prompts` — append-only per `prompt_uuid`, but the complexity-tier computation reads its own history; a 2 h lookback window is enough.
+4. `int_entity_spend` — incremental on `(date, app_id/agent/person_id)` grain, but only after the upstream facts are incremental too.
+
+**How you'd do it in production.** The pattern (illustrative, not yet in the repo) is the standard dbt-incremental shape:
+
+```sql
+-- dbt/models/marts/fact_model_calls.sql (hypothetical production form)
+{{ config(
+    materialized='incremental',
+    unique_key='event_uuid',
+    incremental_strategy='delete+insert',
+    on_schema_change='append_new_columns'
+) }}
+
+SELECT ...
+FROM {{ ref('stg_events') }}
+WHERE event_type = 'assistant'
+
+{% if is_incremental() %}
+  -- 2 h lookback: covers any late-arriving bytes the watcher backfills after
+  -- a JSONL was force-flushed (Claude Code can rewrite the tail when a session
+  -- is resumed). Anything older than 2 h is considered settled.
+  AND event_ts > (SELECT MAX(event_ts) - INTERVAL '2 hours' FROM {{ this }})
+{% endif %}
+```
+
+Dimensions that derive from facts (`dim_sessions`, `dim_apps`, `dim_agents`, `dim_people`) stay `table` even after the facts go incremental — they're cheap to fully rebuild from the now-incremental fact tables, and incremental dimensions are a known source of drift bugs (a session whose cost changed after the fact gets stale dimension rows). Keep the line: facts are append-only and can be incremental; dimensions roll up the current state of facts and should rebuild.
+
+Beyond the dbt layer, the `raw_events` bronze table is already append-only at ingest time (the watcher tracks byte offsets in `ingest_checkpoints` and never re-reads settled prefix bytes), so the bronze stage is effectively incremental without dbt being involved. The bottleneck at scale will be the silver/gold dbt rebuilds, which is what the above plan targets.
+
+---
+
 ## How to Productionize for Multiple Users
 
 To move Aura from a local single-user tool to a multi-user production environment:
@@ -284,8 +324,8 @@ The following columns contain sensitive content and will be masked or hashed pri
 - [ ] dbt schema tests (`not_null`, `unique`, `relationships`) for primary keys on every mart
 - [ ] Multi-tenant auth — `tenant_id` is plumbed through the schema but always `'local'` today
 - [ ] Anomaly detection: prompts that spike in cost, agents that suddenly start erroring out
-- [ ] `aura.toml` config wiring (the file is defined but currently ignored; environment variables override everything)
-- [ ] MetricFlow / dbt Semantic Layer adoption (semantic models for `model_calls` and `sessions` are sketched in `dbt/models/marts/aura_semantic.yml`; the frontend still queries SQL directly)
+- [ ] MetricFlow / dbt Semantic Layer adoption — wire the existing `dbt/models/marts/aura_semantic.yml` semantic models through to the frontend so KPIs are defined once and reconciled by the layer instead of by hand-written SQL in `frontend/lib/queries/*`
+- [ ] Convert append-only facts to `incremental` once `raw_events` crosses ~1M rows (see *Performance & materialization strategy* above)
 - [ ] Surface dbt source-freshness severity directly on the main Observability card (currently shown only on the dbt sub-page)
 
 ---
