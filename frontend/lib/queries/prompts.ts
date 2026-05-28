@@ -6,7 +6,8 @@ export async function getSessionPrompts(sessionId: string) {
            prompt_text_200, summary_200,
            agent, model_primary, turn_count, tool_call_count,
            files_edited, output_tokens_total, cost_total, errors_caught,
-           is_overkill, overkill_reason, complexity_tier
+           is_overkill, overkill_reason, complexity_tier,
+           prompt_origin
     FROM fact_prompts
     WHERE session_id = ?
     ORDER BY prompt_ts

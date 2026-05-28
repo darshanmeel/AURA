@@ -177,16 +177,21 @@ span_file_agg AS (
     GROUP BY w.prompt_id
 ),
 -- Count errors in each span.
+-- Predicate moved out of the LEFT JOIN's ON clause into a COUNT(*) FILTER:
+-- with is_error=TRUE in the JOIN, prompts with zero errors still produced
+-- one null-padded row and COUNT(*) counted it as 1, so every prompt was
+-- mis-classified as having ≥1 error. FILTER correctly skips null-padded
+-- rows (is_error IS NULL on no-match), and keeping the LEFT JOIN ensures
+-- every prompt still gets a 0 row instead of vanishing.
 span_error_agg AS (
     SELECT
         w.prompt_id,
-        COUNT(*) AS errors_caught
+        COUNT(*) FILTER (WHERE fte.is_error = TRUE) AS errors_caught
     FROM windowed w
     LEFT JOIN {{ ref('fact_tool_executions') }} fte
         ON  fte.session_id    = w.session_id
         AND fte.tool_call_ts >= w.prompt_ts
         AND (w.next_prompt_ts IS NULL OR fte.tool_call_ts < w.next_prompt_ts)
-        AND fte.is_error = TRUE
     GROUP BY w.prompt_id
 ),
 -- Resolved agent: first agent_resolved in span, ordered by assistant_ts.

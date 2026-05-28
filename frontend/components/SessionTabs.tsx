@@ -739,13 +739,24 @@ export function SessionTabs({
     return m
   }, [thinkingBlocks])
 
-  // Prompt filter counts (computed once per prompts data)
+  // Same classifier the row chip uses — when fact_prompts.prompt_origin is
+  // missing (older queries didn't SELECT it) or set to 'human' but the text
+  // is clearly a dispatch, the text-prefix takes precedence so counts and
+  // filters agree with the per-row chips.
+  function classifyPrompt(p: any): 'human' | 'agent' {
+    if (p.prompt_origin === 'agent') return 'agent'
+    const txt = (p.prompt_text_full ?? p.prompt_text_200 ?? '').trimStart()
+    if (DISPATCH_PREFIX.test(txt)) return 'agent'
+    return p.prompt_origin === 'human' ? 'human' : 'human'
+  }
+
   const filterCounts = React.useMemo<Record<PromptFilter, number>>(() => {
     const c: Record<PromptFilter, number> = { all: 0, human: 0, agent: 0, errored: 0, overkill: 0 }
     for (const p of promptsToRender) {
       c.all += 1
-      if (p.prompt_origin === 'human') c.human += 1
-      if (p.prompt_origin === 'agent') c.agent += 1
+      const kind = classifyPrompt(p)
+      if (kind === 'human') c.human += 1
+      else                  c.agent += 1
       if ((p.errors_caught ?? 0) > 0) c.errored += 1
       if (p.is_overkill) c.overkill += 1
     }
@@ -756,8 +767,8 @@ export function SessionTabs({
     if (promptFilter === 'all') return promptsToRender
     return promptsToRender.filter((p: any) => {
       switch (promptFilter) {
-        case 'human':    return p.prompt_origin === 'human'
-        case 'agent':    return p.prompt_origin === 'agent'
+        case 'human':    return classifyPrompt(p) === 'human'
+        case 'agent':    return classifyPrompt(p) === 'agent'
         case 'errored':  return (p.errors_caught ?? 0) > 0
         case 'overkill': return !!p.is_overkill
       }
