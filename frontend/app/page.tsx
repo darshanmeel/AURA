@@ -97,7 +97,7 @@ export default async function DashboardPage({
         <div className="strap-right">
           <RangeFilter current={range} />
           <span className="strap-pill"><StatusDot status={kpis.last_session ? 'active' : 'completed'} label={<>pipeline live · <ClientTime ts={kpis.last_session} /></>} /></span>
-          <span className="strap-pill is-muted">{fmt.n(kpis.total_sessions)} sessions · {topAgents.length} agents</span>
+          <span className="strap-pill is-muted">{fmt.n(kpis.total_sessions)} sessions · {fmt.n(kpis.total_agents ?? topAgents.length)} agents</span>
         </div>
       </section>
 

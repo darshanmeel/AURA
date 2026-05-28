@@ -147,11 +147,11 @@ export async function getAppRangeAggregates(appId: string, since: string | null)
   const [agg, commitRow] = await Promise.all([
     queryOne(`
       SELECT
-        SUM(es.session_count)  AS session_count,
-        SUM(es.total_turns)    AS total_turns,
-        SUM(es.total_cost)     AS total_cost,
-        NULL::BIGINT           AS total_output_tokens,
-        NULL::BIGINT           AS agent_count
+        SUM(es.session_count)        AS session_count,
+        SUM(es.total_turns)          AS total_turns,
+        SUM(es.total_cost)           AS total_cost,
+        SUM(es.total_output_tokens)  AS total_output_tokens,
+        NULL::BIGINT                 AS agent_count
       FROM int_entity_spend es
       WHERE es.entity_type = 'app'
         AND es.entity_id = ?

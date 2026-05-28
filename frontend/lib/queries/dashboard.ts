@@ -12,6 +12,8 @@ export async function getDashboardKPIs(since: string | null = null) {
       COUNT(DISTINCT session_id)                                            AS total_sessions,
       (SELECT SUM(daily_cost) FROM fact_daily_spend ${spendWh})            AS total_cost,
       SUM(turn_count)                                                       AS total_turns,
+      SUM(total_input_tokens)                                               AS total_input_tokens,
+      SUM(total_output_tokens)                                              AS total_output_tokens,
       SUM(tools_used)                                                       AS total_tool_calls,
       SUM(commits)                                                          AS total_commits,
       (SELECT COUNT(DISTINCT al.app_id)
@@ -19,9 +21,11 @@ export async function getDashboardKPIs(since: string | null = null) {
        LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds2.cwd AND al.tenant_id = ds2.tenant_id
        ${since ? `WHERE ds2.start_ts >= '${since}'` : ''})       AS total_apps,
       COUNT(DISTINCT person_id)                                             AS total_people,
+      COUNT(DISTINCT agent)                                                 AS total_agents,
       COUNT(DISTINCT CASE WHEN status = 'active' THEN session_id END)      AS active_sessions,
       SUM(cache_read_total)::DOUBLE /
           NULLIF(SUM(cache_read_total + ephemeral_5m_total + ephemeral_1h_total), 0) AS cache_hit_rate,
+      SUM(cache_read_total)                                                 AS cache_read_total,
       SUM(ephemeral_5m_total)                                               AS cache_5m_total,
       SUM(ephemeral_1h_total)                                               AS cache_1h_total,
       MIN(start_ts)                                                         AS first_session,

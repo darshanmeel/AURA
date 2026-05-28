@@ -77,7 +77,7 @@ All metrics in one `SELECT FROM dim_sessions WHERE start_ts >= since`, except co
 | `X people` | `dim_sessions` | `COUNT(DISTINCT person_id) WHERE start_ts >= since` |
 | `X apps` | `dim_sessions` + `int_app_cwd_lookup` | scalar subquery: `COUNT(DISTINCT app_id) WHERE start_ts >= since` |
 | `X sessions` | `dim_sessions` | `COUNT(DISTINCT session_id) WHERE start_ts >= since` |
-| `X agents` | `dim_agents` / `int_entity_spend` | `COUNT(rows)` from `getTopAgents` result |
+| `X agents` | `dim_sessions` | `COUNT(DISTINCT agent) WHERE start_ts >= since` (was previously capped at top-20 list length) |
 
 ### Hero stat
 
@@ -244,7 +244,7 @@ When no filter: falls back to `dim_apps` lifetime mart.
 | SPEND | `dim_apps.total_cost` | `SUM(int_entity_spend.total_cost) WHERE entity_type='app' AND date >= since` |
 | Sessions | `dim_apps.session_count` | `SUM(int_entity_spend.session_count)` |
 | Turns | `dim_apps.total_turns` | `SUM(int_entity_spend.total_turns)` |
-| Tokens | `dim_apps.total_output_tokens` | `NULL` → falls back to `dim_apps.total_output_tokens` (lifetime) |
+| Tokens | `dim_apps.total_output_tokens` | `SUM(int_entity_spend.total_output_tokens)` — now range-accurate |
 | Commits | `dim_apps.commits` | `SUM(dim_sessions.commits) WHERE app_id=? AND CAST(start_ts AS DATE) >= since` |
 | Agents count | `dim_apps.agent_count` | `NULL` → falls back to `dim_apps.agent_count` (lifetime) |
 | Errors | `dim_apps.errors` | `NULL` → falls back to `dim_apps.errors` (lifetime) |
@@ -368,12 +368,15 @@ From `dim_sessions WHERE person_id=? AND start_ts >= since ORDER BY start_ts DES
 
 ---
 
-## Remaining known issue
+## Remaining known issues (require dbt mart changes)
+
+These cannot be fixed in the frontend — the underlying dbt models don't expose the column.
 
 | Screen | Number | Issue |
 |--------|--------|-------|
-| People list (`/people`) in range view | Commits | `getPeople()` reads `int_entity_spend.commits` = `0::BIGINT` (hardcoded in dbt). Fix requires either patching `int_entity_spend` in dbt or adding a range-aware commits query to the list endpoint. Detail page is correct; list page is not. |
-| App / Person / Agent profile in range view | Tokens | App and Person profile: tokens fall back to lifetime (`dim_apps`/`dim_people`) because `int_entity_spend.total_output_tokens` is returned as `NULL` from range aggregates. Agent profile tokens are range-accurate (fixed). |
+| App profile (lifetime view) | Commits / Agents / Errors | `dim_apps` has no `commits`, `agent_count`, or `errors` columns. Lifetime view shows `—` for all three. Fix in `dim_apps.sql`: join `stg_session_meta` for commits, agents from `dim_sessions`, errors from `fact_errors`. |
+| Person profile (lifetime view) | Tokens | `dim_people` has no `total_output_tokens` column. Lifetime view shows "0 tokens". Fix in `dim_people.sql`: `SUM(ds.total_output_tokens) AS total_output_tokens` from `dim_sessions`. |
+| People list (`/people`) in range view | Commits | `getPeople()` reads `int_entity_spend.commits` = `0::BIGINT` (hardcoded). Fix in `int_entity_spend.sql`: join `stg_session_meta` to sum real commits at the person grain. |
 
 ---
 
