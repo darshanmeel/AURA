@@ -196,36 +196,61 @@ Keys are OS usernames; values flow into `session_meta` at ingestion time.
 
 ## Screenshots
 
+Captured against the live local stack with 13 Haiku Playwright agents.
+For per-screen documentation see [docs/screens/](docs/screens/) — start
+with [OVERVIEW.md](docs/screens/OVERVIEW.md) for navigation and
+[HOW-IT-WORKS.md](docs/screens/HOW-IT-WORKS.md) for architecture.
+
 ### Dashboard
-High-level cost, KPIs, providers, models, errors — everything at a glance.
-![Dashboard Overview](docs/screenshots/01-dashboard.png)
+Single summary screen — cost, token volume, ledgers for apps/projects/agents,
+heatmap, side panels, and Skills & MCPs at the bottom.
+![Dashboard](docs/screens/dashboard.png)
 
-### Apps & App profile
-Card grid of every app, then a per-app rollup with agents, people, sibling apps, and a full prompt feed.
-![Apps](docs/screenshots/02-apps.png)
-![App Profile](docs/screenshots/03-app-profile.png)
+### Tokens drill-down
+Token spend broken down by type, provider, model, and agent. Hourly
+buckets on `range=today`, daily otherwise. Distinct colour palette per
+token type (teal/gold/orange/violet/slate).
+![Tokens](docs/screens/tokens-page.png)
 
-### People & Person profile
-Rich operator cards on the list; a two-column profile with agents delegated to, apps worked in, and the operator's actual prompt log on the right.
-![People](docs/screenshots/04-people.png)
-![Person Profile](docs/screenshots/05-person-profile.png)
+### Sessions list & Session detail
+Filterable ledger of every session with new 🧩 (skills) + ⚡ (MCPs) count
+columns and multi-agent rendering; then a per-session deep-dive across
+9 tabs.
+![Sessions](docs/screens/sessions-list.png)
+![Session Detail](docs/screens/session-detail.png)
 
-### Agent profile
-Who delegates to this agent, which apps it serves, which models it gets routed to, and the prompts directed at it.
-![Agent Profile](docs/screenshots/06-agent-profile.png)
+### Apps & App detail
+Card grid by cost; per-app rollup with sessions, agents, people, sibling
+apps, prompt feed, and a "Skills & MCPs in this app" panel.
+![Apps](docs/screens/apps-list.png)
+![App Detail](docs/screens/app-detail.png)
 
-### Sessions & Session detail
-Filterable ledger of every session, then a per-turn breakdown of one session with tabs for messages, prompts, tools, files, errors, and git activity.
-![Sessions](docs/screenshots/07-sessions.png)
-![Session Detail](docs/screenshots/08-session-detail.png)
+### Agents & Agent detail
+Subagent roster with **real attribution** (technical-writer, frontend-engineer,
+code-reviewer, …) — `fact_model_calls.agent` now joins
+`int_event_agent.agent_resolved` so spend no longer lumps under one
+`claude` row. Footnote on the list explains the `main` bucket.
+![Agents](docs/screens/agents-list.png)
+![Agent Detail](docs/screens/agent-detail.png)
+
+### People & Person detail
+Operator roster with real names (311 / 349 sessions resolve to the
+configured `AURA_DEFAULT_PERSON_*`); per-person profile with agents
+delegated to, apps worked in, and the operator's prompt log.
+![People](docs/screens/people-list.png)
+![Person Detail](docs/screens/person-detail.png)
 
 ### Errors
-Hard errors, warnings, and tool failures, filterable by kind and tool.
-![Errors](docs/screenshots/09-errors.png)
+Hard errors, warnings, and tool failures from `fact_errors`, filterable
+by kind and tool. Timestamps now carry date + time (e.g. `May 28 ·
+09:57:26`).
+![Errors](docs/screens/errors-list.png)
 
 ### Observability
-Pipeline health at a glance — bronze freshness, last dbt run status, recent watcher errors, and ingestion volume for 1h / 1d / 7d windows. Polls every 10 s. Drill-down sub-pages for Watcher and dbt expose `watcher_errors` rows and per-model run results.
-![Observability](docs/screenshots/10-observability.png)
+Pipeline health at a glance — verdict, flow strip, medallion layer ages,
+KPI grid, ingestion volume, source freshness, dbt tests, recent watcher
+errors. Polls every 10 s via `/api/observability`.
+![Observability](docs/screens/observability.png)
 
 ---
 

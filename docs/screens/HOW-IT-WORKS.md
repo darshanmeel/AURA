@@ -12,6 +12,11 @@ directory.
 
 ## 0 — The grand strategy
 
+![Dashboard at 7d](./dashboard.png)
+
+The single summary screen above is the *output* of the entire pipeline.
+Everything in this document describes how that page gets populated.
+
 **Local-first, batch-shaped, single-process per surface.** Everything runs in
 Docker on the developer's machine. No managed cloud, no Kafka, no separate
 orchestrator. Three things keep it sane at this scale:
@@ -73,6 +78,11 @@ The lock makes the three writers mutually exclusive against the same
 DuckDB file. dbt holds it while it runs (~30–60 s); process_file pauses
 during those windows but never drops events because `process_file` reads
 the JSONL outside the lock and only acquires it for the INSERT.
+
+The state of these workers is visible live on the Observability page —
+verdict, medallion freshness, dbt run history, watcher errors:
+
+![Observability — pipeline live](./observability.png)
 
 ### Initial backfill
 
@@ -246,7 +256,19 @@ This catches **delegated** subagents (Task tool invocation). It does
 because the agent identity in that case lives only in the system prompt
 loaded from `~/.claude/agents/learn-runner.md` — it isn't a structured
 JSONL field. Those sessions roll up under `main`. The /agents page has a
-footnote saying so.
+footnote saying so:
+
+![Agents list — with real subagents + main footnote](./agents-list.png)
+
+Drilling into one subagent gives full session counts + skills/MCPs it
+loaded (via the `int_event_agent` CTE described below):
+
+![Agent detail — technical-writer with skills + MCPs](./agent-detail.png)
+
+The Tokens drill-down also pivots `fact_model_calls.agent` after the
+override, so the by-agent table actually breaks out real subagent share:
+
+![Tokens — by agent](./tokens-page.png)
 
 ---
 
@@ -276,6 +298,15 @@ For app/agent surface, ad-hoc queries (`getAppSkills`, `getAgentSkills`,
   — NOT `dim_sessions.agent = ?` because that's the mode, which is `'main'`
   for 87% of sessions and would miss almost every real subagent.
 
+The session detail page renders these as a chip list above the tabs
+(visible names, not just hover):
+
+![Session detail — Skills & MCPs loaded section + multi-agent strip](./session-detail.png)
+
+The app detail page has the same panel scoped to one app's sessions:
+
+![App detail — Skills & MCPs in this app](./app-detail.png)
+
 ---
 
 ## 7 — How the People surface actually populates
@@ -304,6 +335,13 @@ Fixes shipped in `session_meta.py`:
 After running once: 978 session_meta rows on disk, 311 / 349 dim_sessions
 resolve to "Darshan Singh", 38 remain "Unknown" (orphan sessions whose
 JSONL is no longer in `~/.claude/projects/`).
+
+![People list — populated after the fix](./people-list.png)
+
+The sessions list also exposes the resolved person, plus the new 🧩 /
+⚡ count columns and multi-agent display per row:
+
+![Sessions list — with skills/MCPs columns and real person names](./sessions-list.png)
 
 ---
 
