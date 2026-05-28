@@ -8,6 +8,7 @@ const NAV_LINKS = [
   { href: '/agents', label: 'Agents' },
   { href: '/people', label: 'People' },
   { href: '/sessions', label: 'Sessions' },
+  { href: '/tokens', label: 'Tokens' },
   { href: '/errors', label: 'Errors' },
   { href: '/observability', label: 'Observability' },
 ]
@@ -21,7 +22,9 @@ export default function NavLinks() {
         const isActive =
           href === '/observability'
             ? pathname.startsWith('/observability')
-            : pathname === href
+            : href === '/tokens'
+              ? pathname.startsWith('/tokens')
+              : pathname === href
         return (
           <a
             key={href}

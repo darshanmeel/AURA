@@ -13,8 +13,9 @@ import {
   getDashboardKPIs, getDailySpend, getTopApps, getTopProjects, getTopAgents,
   getToolMix, getProviderSplit, getModelBreakdown,
   getRecentErrors, getTopFiles, getTopPeople,
-  getSpendPace, getHourlyActivity
+  getSpendPace, getHourlyActivity, getTokenSeries
 } from '../lib/queries/dashboard'
+import { TokenSeriesChart, TOKEN_TYPE_SEGMENTS } from '../components/TokenSeriesChart'
 import { getLoudestPromptOfDay } from '../lib/queries/prompts'
 import { BurnRate } from '../components/BurnRate'
 import { ActivityHeatmap } from '../components/ActivityHeatmap'
@@ -41,7 +42,10 @@ export default async function DashboardPage({
     }
   }
 
-  const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp, sp, ha] = await Promise.all([
+  // Hourly bucket only when looking at today; everything else bucket by day.
+  const hourly = range === 'today'
+
+  const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp, sp, ha, ts] = await Promise.all([
     safe('kpis',            () => getDashboardKPIs(since),  null),
     safe('dailySpend',      () => getDailySpend(since),     [] as any[]),
     safe('topApps',         () => getTopApps(since),        [] as any[]),
@@ -56,6 +60,7 @@ export default async function DashboardPage({
     safe('loudestPrompt',   () => getLoudestPromptOfDay(),  null),
     safe('spendPace',       () => getSpendPace(),           null),
     safe('hourlyActivity',  () => getHourlyActivity(),      [] as any[]),
+    safe('tokenSeries',     () => getTokenSeries(since, hourly), [] as any[]),
   ])
   kpis = kpisArr ?? {}
   dailySpend = ds as any[]; topApps = ta as any[]; topProjects = tproj as any[]; topAgents = tag as any[]
@@ -64,6 +69,7 @@ export default async function DashboardPage({
   loudestPrompt = lp as any
   spendPace = sp as any
   hourlyActivity = ha as any[]
+  const tokenSeries = (ts as any[]) ?? []
 
   const totalDays = dailySpend.length
   const maxCost = Math.max(...topApps.map((a: any) => a.total_cost ?? 0), 0.001)
@@ -144,6 +150,20 @@ export default async function DashboardPage({
         <StatBlock label="Commits" value={fmt.n(kpis.total_commits ?? 0)} footnote={`across ${fmt.n(kpis.total_apps)} apps`} />
         <StatBlock label="Errors" value={fmt.n(recentErrors.length)} footnote="recorded recently" accent />
         <StatBlock label="Projected · 30d" value={`$${proj30.toFixed(0)}`} footnote={`@$${dailyAvg.toFixed(2)} / day`} />
+      </section>
+
+      <Rule weight="thick" />
+
+      {/* Token volume over time — stacked by token type. Hourly for 'today',
+          daily for longer ranges. Drill-down lives at /tokens. */}
+      <section style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <h2 className="h-section">Tokens over {hourly ? 'today (hourly)' : `${rangeLabel(range)} (daily)`}</h2>
+          <span className="section-meta">
+            stacked by type · <a href={`/tokens?range=${range}`} style={{ color: 'var(--accent)' }}>full breakdown →</a>
+          </span>
+        </div>
+        <TokenSeriesChart rows={tokenSeries} segments={TOKEN_TYPE_SEGMENTS} hourly={hourly} />
       </section>
 
       <Rule weight="thick" />

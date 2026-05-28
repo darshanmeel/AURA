@@ -50,6 +50,101 @@ export async function getDailySpend(since: string | null = null) {
   `)
 }
 
+// Token volume bucketed over time. Hour-grain for 'today' (24 buckets);
+// day-grain otherwise. Returns one row per bucket with 5 token-type columns
+// already split out so the chart can stack them without further math.
+//
+// All buckets are derived from fact_model_calls.ts so the same time anchor
+// that drives cost (fact_daily_spend ← fact_model_calls) drives token
+// volume too — no day-vs-session-start drift.
+export async function getTokenSeries(since: string | null, hourly: boolean) {
+  const bucket = hourly ? "date_trunc('hour', ts)" : "date_trunc('day', ts)"
+  const wh = since ? `WHERE ts >= TIMESTAMP '${since.replace('T', ' ').replace('Z','')}'` : ''
+  return query(`
+    SELECT
+      ${bucket}::TIMESTAMP                            AS bucket_ts,
+      COALESCE(SUM(input_tokens), 0)                  AS input_tokens,
+      COALESCE(SUM(output_tokens), 0)                 AS output_tokens,
+      COALESCE(SUM(ephemeral_5m_input_tokens), 0)     AS cache_5m,
+      COALESCE(SUM(ephemeral_1h_input_tokens), 0)     AS cache_1h,
+      COALESCE(SUM(cache_read_input_tokens), 0)       AS cache_read
+    FROM fact_model_calls
+    ${wh}
+    GROUP BY 1
+    ORDER BY 1
+  `)
+}
+
+// Token volume per (bucket, model). Long form — chart code pivots.
+export async function getTokenSeriesByModel(since: string | null, hourly: boolean) {
+  const bucket = hourly ? "date_trunc('hour', ts)" : "date_trunc('day', ts)"
+  const wh = since ? `WHERE ts >= TIMESTAMP '${since.replace('T', ' ').replace('Z','')}'` : ''
+  return query(`
+    SELECT
+      ${bucket}::TIMESTAMP                                                   AS bucket_ts,
+      model,
+      COALESCE(SUM(input_tokens + output_tokens
+                 + ephemeral_5m_input_tokens
+                 + ephemeral_1h_input_tokens
+                 + cache_read_input_tokens), 0)                              AS total_tokens
+    FROM fact_model_calls
+    ${wh}
+    GROUP BY 1, 2
+    ORDER BY 1
+  `)
+}
+
+// Token volume per (bucket, provider). 2–3 providers is small enough to chart.
+export async function getTokenSeriesByProvider(since: string | null, hourly: boolean) {
+  const bucket = hourly ? "date_trunc('hour', ts)" : "date_trunc('day', ts)"
+  const wh = since ? `WHERE ts >= TIMESTAMP '${since.replace('T', ' ').replace('Z','')}'` : ''
+  return query(`
+    SELECT
+      ${bucket}::TIMESTAMP                                                   AS bucket_ts,
+      CASE
+        WHEN model LIKE 'claude%'  THEN 'Anthropic'
+        WHEN model LIKE 'gemini%'  THEN 'Google'
+        ELSE 'Other'
+      END                                                                    AS provider,
+      COALESCE(SUM(input_tokens + output_tokens
+                 + ephemeral_5m_input_tokens
+                 + ephemeral_1h_input_tokens
+                 + cache_read_input_tokens), 0)                              AS total_tokens
+    FROM fact_model_calls
+    ${wh}
+    GROUP BY 1, 2
+    ORDER BY 1
+  `)
+}
+
+// Token volume rolled up per agent (no time dimension — too many series for a
+// chart). Table-shape, sorted by total descending, top N. Resolved agent
+// comes from int_event_agent via fact_model_calls; missing → 'main'.
+export async function getTokenByAgent(since: string | null, limit = 20) {
+  const wh = since ? `WHERE fmc.ts >= TIMESTAMP '${since.replace('T', ' ').replace('Z','')}'` : ''
+  return query(`
+    SELECT
+      COALESCE(ea.agent_resolved, 'main')                                    AS agent,
+      COALESCE(SUM(fmc.input_tokens), 0)                                     AS input_tokens,
+      COALESCE(SUM(fmc.output_tokens), 0)                                    AS output_tokens,
+      COALESCE(SUM(fmc.ephemeral_5m_input_tokens + fmc.ephemeral_1h_input_tokens), 0) AS cache_write,
+      COALESCE(SUM(fmc.cache_read_input_tokens), 0)                          AS cache_read,
+      COALESCE(SUM(fmc.input_tokens + fmc.output_tokens
+                 + fmc.ephemeral_5m_input_tokens
+                 + fmc.ephemeral_1h_input_tokens
+                 + fmc.cache_read_input_tokens), 0)                          AS total_tokens,
+      COALESCE(SUM(fmc.calculated_cost), 0)                                  AS cost
+    FROM fact_model_calls fmc
+    LEFT JOIN int_event_agent ea
+      ON ea.event_uuid = fmc.event_uuid
+     AND ea.tenant_id  = fmc.tenant_id
+    ${wh}
+    GROUP BY 1
+    ORDER BY total_tokens DESC
+    LIMIT ${limit}
+  `)
+}
+
 export async function getTopApps(since: string | null = null) {
   // Fast path: lifetime mart (no date filter).
   if (!since) {
