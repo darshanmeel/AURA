@@ -7,6 +7,9 @@ they meaningfully differ.
 
 Captured on 2026-05-28 against the live local stack (watcher + dbt + frontend).
 
+**Start here:** [OVERVIEW.md](./OVERVIEW.md) — operator's guide that
+synthesises every screen below into a single navigation + lineage map.
+
 ## Index
 
 | Screen | URL | Doc | Variants |
