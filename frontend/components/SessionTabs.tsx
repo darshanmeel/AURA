@@ -463,16 +463,29 @@ const PREVIEW_LEN = 280
 // Message-direction classifier.
 //
 // `is_sidechain` alone is not enough — it catches inline Task-tool dispatches
-// inside an interactive session, but misses orchestrator-launched runs (the
-// whole session is itself a subagent doing work, started by `claude-code
-// --prompt …` from an outer orchestrator). Those show is_sidechain=false but
-// the user_prompt is clearly a dispatch payload ("You are agent X…",
-// "You are dispatched as…", "You are an expert …").
+// inside an interactive session, but misses (a) orchestrator-launched runs
+// where the whole session is itself a subagent doing work (started by
+// `claude-code --prompt …` from an outer orchestrator) and (b) explicit
+// agent-to-agent messaging tools like `SendMessage to: <id>`.
 //
-// Heuristic: a user_prompt matching `^You are (agent|dispatched|an?\s|the\s)`
-// is a dispatch system-prompt, not something a real human typed. Combined
-// with is_sidechain we cover both cases.
-const DISPATCH_PREFIX = /^You are (agent\b|dispatched\b|an?\s|the\s|a\s)/i
+// Patterns: any of these as the first non-whitespace content marks the
+// prompt as a dispatch system-prompt rather than a real human turn.
+// Lines are ordered by specificity (most explicit first).
+const DISPATCH_PATTERNS: RegExp[] = [
+  /^SendMessage\s+to\s*[:=]/i,                         // explicit MCP/agent message
+  /^(SCOPE|TASK|DISPATCH|BRIEF|ROLE|MISSION|OBJECTIVE|MANDATE)\s+(EXPANSION|UPDATE|HANDOFF|REVISION)\b/i,
+  /^(DISPATCH|TASK|BRIEF|ROLE|MISSION|OBJECTIVE|MANDATE)\s*[:—-]/i, // "TASK: …" / "BRIEF — …"
+  /^You\s+(are|will|have\s+been|should|must|need\s+to)\b/i,         // "You are …", "You will …"
+  /^Your\s+(task|role|job|mission|brief|objective|goal)\b/i,        // "Your task is …"
+  /^Act(ing)?\s+as\b/i,                                             // "Act as a senior engineer"
+]
+function isDispatchText(s: string): boolean {
+  const head = (s ?? '').trimStart()
+  if (!head) return false
+  return DISPATCH_PATTERNS.some(re => re.test(head))
+}
+// Back-compat name used elsewhere in this file (Prompts tab classifier).
+const DISPATCH_PREFIX = { test: isDispatchText } as { test: (s: string) => boolean }
 
 type Direction = {
   kind: 'human' | 'agent'
@@ -487,7 +500,7 @@ type Direction = {
 }
 
 function classifyDirection(userText: string, isSidechain: boolean): Direction {
-  const isDispatch = isSidechain || DISPATCH_PREFIX.test((userText ?? '').trimStart())
+  const isDispatch = isSidechain || isDispatchText(userText)
   if (isDispatch) {
     return {
       kind: 'agent',
