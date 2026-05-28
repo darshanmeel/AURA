@@ -196,7 +196,28 @@ function SessionsPageInner() {
                         : <span className="muted">—</span>
                       }
                     </td>
-                    <td>{s.agent ? <AgentLink name={s.agent} /> : '—'}</td>
+                    <td title={Array.isArray(s.agents) ? s.agents.join(', ') : ''}>
+                      {(() => {
+                        const list: string[] = Array.isArray(s.agents) && s.agents.length
+                          ? Array.from(new Set(s.agents.filter(Boolean)))
+                          : (s.agent ? [s.agent] : [])
+                        if (list.length === 0) return '—'
+                        // Prefer real subagents over 'main' in the visible slot.
+                        const sorted = [...list].sort((a, b) =>
+                          (a === 'main' ? 1 : 0) - (b === 'main' ? 1 : 0)
+                        )
+                        const head = sorted.slice(0, 2)
+                        const rest = sorted.length - head.length
+                        return (
+                          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                            {head.map(a => <AgentLink key={a} name={a} />)}
+                            {rest > 0 && (
+                              <span className="mono muted" style={{ fontSize: 11 }}>+{rest}</span>
+                            )}
+                          </span>
+                        )
+                      })()}
+                    </td>
                     <td style={{ maxWidth: 340 }}>
                       <div className="sess-title">
                         <a

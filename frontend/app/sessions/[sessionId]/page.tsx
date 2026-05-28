@@ -80,7 +80,29 @@ export default async function SessionDetailPage({
             <ProviderTag provider={s.provider} />
             {s.person_name && <span className="muted">{s.person_name}</span>}
             {s.cwd && <span className="mono muted">{s.cwd?.split(/[/\\]/).pop()}</span>}
-            {s.agent && <AgentLink name={s.agent} />}
+            {(() => {
+              const list: string[] = Array.isArray(s.agents) && s.agents.length
+                ? Array.from(new Set(s.agents.filter(Boolean)))
+                : (s.agent ? [s.agent] : [])
+              if (list.length === 0) return null
+              // Real subagents first, 'main' last (it's the orchestrator default).
+              const sorted = [...list].sort((a, b) =>
+                (a === 'main' ? 1 : 0) - (b === 'main' ? 1 : 0)
+              )
+              return (
+                <span
+                  title={list.join(', ')}
+                  style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}
+                >
+                  {sorted.map(a => <AgentLink key={a} name={a} />)}
+                  {list.length > 1 && (
+                    <span className="mono muted" style={{ fontSize: 11 }}>
+                      ({list.length} agents)
+                    </span>
+                  )}
+                </span>
+              )
+            })()}
             {s.git_branch && <span className="mono muted">{s.git_branch}</span>}
             {Number(s.skill_count ?? 0) > 0 && (
               <span
