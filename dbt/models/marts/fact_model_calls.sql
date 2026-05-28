@@ -4,7 +4,14 @@ SELECT
     c.tenant_id,
     c.uuid as event_uuid,
     c.session_id,
-    c.agent,
+    -- The watcher hardcodes raw_events.agent='claude' for every event (it was
+    -- originally meant as a provider/platform tag). The real subagent is
+    -- resolved in int_event_agent.agent_resolved (text-prefix classifier +
+    -- is_sidechain heuristics). Use that here so downstream rollups
+    -- (int_entity_spend, /agents, /tokens by agent) see the actual subagent
+    -- name (technical-writer, frontend-engineer, code-reviewer, …) instead
+    -- of every row collapsing into a single 'claude' bucket.
+    COALESCE(ea.agent_resolved, 'main') AS agent,
     c.message_id as model_call_id,
     c.ts,
     c.model,
@@ -34,6 +41,9 @@ SELECT
         ) / 1000000.0
     END AS calculated_cost
 FROM {{ ref('stg_assistant_messages') }} c
+LEFT JOIN {{ ref('int_event_agent') }} ea
+    ON ea.tenant_id = c.tenant_id
+   AND ea.event_uuid = c.uuid
 LEFT JOIN (
     -- Rank pricing rows so tenant-specific rows (tenant_id IS NOT NULL) beat
     -- global rows (tenant_id IS NULL) when both cover the same (model, period).
