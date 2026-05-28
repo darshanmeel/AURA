@@ -12,7 +12,7 @@ from aura_watcher.duckdb_writer import DuckDBWriter
 from aura_watcher.adapters.claude import ClaudeAdapter
 from aura_watcher.checkpoint import CheckpointManager
 from aura_watcher.snapshot import take_snapshot
-from aura_watcher.session_meta import write_session_meta
+from aura_watcher.session_meta import write_session_meta, backfill_session_meta
 
 def process_file(file_path, writer, adapter, cp_manager):
     # No dbt_running.is_set() short-circuit here — that silently dropped files
@@ -272,21 +272,16 @@ def main():
             print(f"Backfill progress: {idx + 1}/{len(files)} files processed", flush=True)
     print(f"Backfill complete. Processed {len(files)} files.", flush=True)
 
-    # Backfill session_meta for any sessions not yet recorded
-    from aura_watcher.session_meta import ensure_session_meta_table
-    for f in files:
-        session_id = os.path.basename(os.path.dirname(f))
-        try:
-            with writer.get_connection() as conn:
-                ensure_session_meta_table(conn)
-                row = conn.execute(
-                    "SELECT 1 FROM session_meta WHERE session_id = ?", [session_id]
-                ).fetchone()
-            if row is None:
-                write_session_meta(writer, session_id, f)
-        except Exception as e:
-            print(f"Error writing session_meta for {session_id}: {e}")
-            writer.log_error('session_meta', f, e)
+    # Backfill session_meta for every session not yet recorded. Uses a single
+    # connection held inside _snapshot_lock so we don't race with the dbt /
+    # snapshot workers — the previous per-file connection loop lost ~95% of
+    # sessions to "Conflicting lock" errors during the dbt window.
+    try:
+        written, skipped = backfill_session_meta(writer, files, _snapshot_lock)
+        print(f"session_meta backfill: wrote={written} skipped_existing={skipped}", flush=True)
+    except Exception as e:
+        print(f"Error during session_meta backfill: {e}", flush=True)
+        writer.log_error('session_meta', None, e)
 
     # Start Watchdog
     handler = JSONLHandler(writer, adapter, cp_manager)

@@ -26,6 +26,12 @@ services:
       # Optional JSON object to override model context window sizes without rebuilding.
       # Example: AURA_MODEL_WINDOWS_JSON={"claude-opus-5-20260601":1000000}
       - AURA_MODEL_WINDOWS_JSON=
+      # Person identity override. Inside this container getpass.getuser() returns
+      # 'root', which masks who actually ran the Claude Code session on the host.
+      # Set these to the developer using the laptop so dim_people / session_meta
+      # show the human, not the container's root user.
+      - AURA_DEFAULT_PERSON_ID=darshan
+      - AURA_DEFAULT_PERSON_NAME=Darshan Singh
     healthcheck:
       test: ["CMD", "python", "-c", "import os, time; p='/data/read/aura.duckdb'; exit(0 if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < 300 else 1)"]
       interval: 30s
