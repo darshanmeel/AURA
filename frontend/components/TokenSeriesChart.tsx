@@ -156,12 +156,15 @@ export function pivotByDim(
     }
   }
   // Rank dims by total (so the legend reads dominant → trace).
+  // Array.from() — tsconfig target doesn't allow `for…of` on Set / Map.values()
+  // iterators directly (would need --downlevelIteration or target >= es2015).
+  const dimList = Array.from(dims)
   const totals = new Map<string, number>()
-  for (const d of dims) totals.set(d, 0)
-  for (const r of buckets.values()) {
-    for (const d of dims) totals.set(d, (totals.get(d) ?? 0) + Number(r[d] ?? 0))
-  }
-  const sortedDims = Array.from(dims).sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0))
+  dimList.forEach(d => totals.set(d, 0))
+  Array.from(buckets.values()).forEach(r => {
+    dimList.forEach(d => totals.set(d, (totals.get(d) ?? 0) + Number(r[d] ?? 0)))
+  })
+  const sortedDims = dimList.sort((a, b) => (totals.get(b) ?? 0) - (totals.get(a) ?? 0))
 
   // Stable-ish palette for up to 10 series.
   const PALETTE = [

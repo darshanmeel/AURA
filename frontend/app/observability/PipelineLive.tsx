@@ -992,7 +992,11 @@ function ErrorsFeed({ errors }: { errors: WatcherError[] }) {
       {errors.slice(0, 20).map((e, i) => {
         const level: 'error' | 'warn' = e.source === 'dbt' ? 'warn' : 'error'
         const ts = new Date(e.ts)
-        const time = ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+        // Date + time so cross-day errors don't look like they happened
+        // "today" — same shape as fmtRelative() above (used for dbt runs).
+        const datePart = ts.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        const timePart = ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+        const time = `${datePart} · ${timePart}`
         return (
           <div key={i} className={`obs-err obs-err--${level}`}>
             <span className="obs-err-time" suppressHydrationWarning>{time}</span>
