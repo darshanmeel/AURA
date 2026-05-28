@@ -85,6 +85,57 @@ turn_stats AS (
     JOIN {{ ref('fact_turns') }} ft
         ON ft.session_id = sl.session_id AND ft.tenant_id = sl.tenant_id
     GROUP BY sl.tenant_id, sl.app_id, sl.project_id
+),
+-- Commits per app (from stg_session_meta — keyed by session_id).
+-- We deliberately avoid ref('dim_sessions') here: int_app_cwd_lookup unnests
+-- dim_apps.all_cwds, and dim_sessions joins through int_app_cwd_lookup, so
+-- pulling dim_sessions into dim_apps creates a circular DAG.
+commit_stats AS (
+    SELECT
+        sl.tenant_id,
+        sl.app_id,
+        sl.project_id,
+        COALESCE(SUM(sm.commits), 0)               AS commits
+    FROM session_list sl
+    LEFT JOIN {{ ref('stg_session_meta') }} sm
+        ON sm.session_id = sl.session_id
+    GROUP BY sl.tenant_id, sl.app_id, sl.project_id
+),
+-- Distinct agents per app, sourced from int_event_agent (resolved agent per
+-- assistant event). One row per (session, agent) in agents_per_session;
+-- COUNT DISTINCT collapses to per-(app, project).
+session_agents AS (
+    SELECT DISTINCT
+        e.tenant_id,
+        e.session_id,
+        COALESCE(ea.agent_resolved, 'main')        AS agent
+    FROM {{ ref('stg_events') }} e
+    LEFT JOIN {{ ref('int_event_agent') }} ea
+        ON ea.tenant_id = e.tenant_id AND ea.event_uuid = e.uuid
+    WHERE e.event_type = 'assistant'
+),
+agent_stats AS (
+    SELECT
+        sl.tenant_id,
+        sl.app_id,
+        sl.project_id,
+        COUNT(DISTINCT sa.agent)                   AS agent_count
+    FROM session_list sl
+    LEFT JOIN session_agents sa
+        ON sa.tenant_id = sl.tenant_id AND sa.session_id = sl.session_id
+    GROUP BY sl.tenant_id, sl.app_id, sl.project_id
+),
+-- Errors per app — count rows in fact_errors that belong to sessions in this app.
+error_stats AS (
+    SELECT
+        sl.tenant_id,
+        sl.app_id,
+        sl.project_id,
+        COUNT(fe.session_id)                       AS errors
+    FROM session_list sl
+    LEFT JOIN {{ ref('fact_errors') }} fe
+        ON fe.session_id = sl.session_id
+    GROUP BY sl.tenant_id, sl.app_id, sl.project_id
 )
 SELECT
     ac.tenant_id,
@@ -97,7 +148,13 @@ SELECT
     COALESCE(ts.total_turns,    0)         AS total_turns,
     COALESCE(ts.total_cost,     0)         AS total_cost,
     COALESCE(ts.total_output_tokens, 0)    AS total_output_tokens,
+    COALESCE(cs.commits,        0)         AS commits,
+    COALESCE(ags.agent_count,   0)         AS agent_count,
+    COALESCE(es.errors,         0)         AS errors,
     ts.first_seen,
     ts.last_seen
 FROM app_cwd ac
-LEFT JOIN turn_stats ts USING (tenant_id, app_id, project_id)
+LEFT JOIN turn_stats   ts  USING (tenant_id, app_id, project_id)
+LEFT JOIN commit_stats cs  USING (tenant_id, app_id, project_id)
+LEFT JOIN agent_stats  ags USING (tenant_id, app_id, project_id)
+LEFT JOIN error_stats  es  USING (tenant_id, app_id, project_id)

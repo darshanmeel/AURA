@@ -368,15 +368,24 @@ From `dim_sessions WHERE person_id=? AND start_ts >= since ORDER BY start_ts DES
 
 ---
 
-## Remaining known issues (require dbt mart changes)
+## dbt mart changes (2026-05-28)
 
-These cannot be fixed in the frontend — the underlying dbt models don't expose the column.
+All previously-known gaps fixed in this round:
 
-| Screen | Number | Issue |
-|--------|--------|-------|
-| App profile (lifetime view) | Commits / Agents / Errors | `dim_apps` has no `commits`, `agent_count`, or `errors` columns. Lifetime view shows `—` for all three. Fix in `dim_apps.sql`: join `stg_session_meta` for commits, agents from `dim_sessions`, errors from `fact_errors`. |
-| Person profile (lifetime view) | Tokens | `dim_people` has no `total_output_tokens` column. Lifetime view shows "0 tokens". Fix in `dim_people.sql`: `SUM(ds.total_output_tokens) AS total_output_tokens` from `dim_sessions`. |
-| People list (`/people`) in range view | Commits | `getPeople()` reads `int_entity_spend.commits` = `0::BIGINT` (hardcoded). Fix in `int_entity_spend.sql`: join `stg_session_meta` to sum real commits at the person grain. |
+| Change | Where | What |
+|--------|-------|------|
+| `dim_apps.commits` | added | `SUM(stg_session_meta.commits)` per app. Lifetime view no longer shows `—`. |
+| `dim_apps.agent_count` | added | `COUNT(DISTINCT agent_resolved)` per app via `int_event_agent` join. |
+| `dim_apps.errors` | added | `COUNT(*)` from `fact_errors` joined on session. |
+| `dim_people.total_input_tokens` | added | `SUM(total_input_tokens)` from `dim_sessions`. |
+| `dim_people.total_output_tokens` | added | `SUM(total_output_tokens)` from `dim_sessions`. Lifetime view tokens no longer 0. |
+| `int_entity_spend.commits` | fixed | Was `0::BIGINT` for all grains; now computed from `dim_sessions.commits` attributed to `CAST(start_ts AS DATE)`, aggregated to each entity × date. |
+| `int_entity_spend.total_tool_calls` | fixed | Was `0::BIGINT`; now `COUNT(*)` from `fact_tool_executions` attributed to `CAST(tool_call_ts AS DATE)`, aggregated to each entity × date. |
+| `int_entity_spend.total_turns` | fixed (latent bug) | Was `SUM(turns_by_date.turn_count)` after LEFT JOIN to per-event `fmc_base` — silently multiplied turn count by per-(session, date) turn count. Now `COUNT(*)` on `fmc_base` directly (which is already per-turn). |
+
+**Important design pattern in `int_entity_spend`:** all per-entity-date metrics are computed in **separate aggregation CTEs per grain** (`{grain}_spend`, `{grain}_tools`, `{grain}_commits`) and then LEFT JOIN'd at the (entity, date) level. The previous structure (LEFT JOIN session-keyed helper into per-event base, then aggregate) silently multiplied joined values. The new structure guarantees each metric is summed exactly once per entity × date.
+
+**Frontend redundancy:** The frontend's parallel commit queries in `getAppRangeAggregates`, `getPersonRangeAggregates`, and `getAgentRangeAggregates` are now redundant (the dbt mart provides correct values) but still correct. Left in place for safety; can be cleaned up in a future round.
 
 ---
 
