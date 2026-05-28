@@ -492,43 +492,18 @@ export async function getSessionPromptHeroes(id: string): Promise<{
  * thinking blocks at all — this query returns [] and the UI hides the
  * disclosure gracefully. Light up when the data starts flowing.
  */
-export async function getSessionThinkingBlocks(id: string): Promise<Array<{
+export async function getSessionThinkingBlocks(_id: string): Promise<Array<{
   assistant_event_uuid: string
   thinking_text: string
 }>> {
-  try {
-    const rows = await query(`
-      WITH cand AS (
-        SELECT uuid AS assistant_event_uuid, payload
-        FROM raw_events
-        WHERE session_id = ?
-          AND event_type = 'assistant'
-          AND payload ILIKE '%"type":"thinking"%'
-      ),
-      blocks AS (
-        SELECT assistant_event_uuid,
-               json_extract(CAST(payload AS JSON), '$.message.content') AS content
-        FROM cand
-      )
-      SELECT
-        assistant_event_uuid,
-        STRING_AGG(
-          json_extract_string(b.value, '$.thinking'),
-          E'\n\n---\n\n'
-        ) AS thinking_text
-      FROM blocks,
-           LATERAL (
-             SELECT UNNEST(CAST(content AS JSON[])) AS value
-           ) b
-      WHERE json_extract_string(b.value, '$.type') = 'thinking'
-        AND json_extract_string(b.value, '$.thinking') IS NOT NULL
-      GROUP BY assistant_event_uuid
-    `, [id])
-    return rows as any
-  } catch (e) {
-    console.error('[sessions] getSessionThinkingBlocks failed:', e instanceof Error ? e.message : e)
-    return []
-  }
+  // Short-circuit: ingested JSONL transcripts do not currently carry
+  // type='thinking' content blocks (verified 2026-05-25). The previous
+  // implementation did `ILIKE '%"type":"thinking"%'` on the raw_events.payload
+  // VARCHAR column — a leading-wildcard full-payload scan that cost 500ms–2s
+  // per session detail page load while always returning [].
+  // Re-enable when thinking blocks start appearing in raw_events. The
+  // implementation is preserved in git history (before this commit).
+  return []
 }
 
 /**

@@ -122,6 +122,7 @@ export async function getTopProjects(since: string | null = null) {
       ${wh}
       GROUP BY 1, 2, al.project_id
       ORDER BY total_cost DESC NULLS LAST
+      LIMIT 50
     `)
   ])
 

@@ -9,7 +9,6 @@ import {
   getSession, getSessionTurns, getSessionErrors,
   getSessionFiles, getSessionToolMix, getSessionGitCommands,
   getSessionToolExecutions,
-  getSessionPrompts as getSessionPromptsWithTools,
   getSessionPromptHeroes,
   getSessionThinkingBlocks,
   getSessionErrorResolutions,
@@ -23,19 +22,23 @@ export default async function SessionDetailPage({
 }: { params: { sessionId: string }; searchParams?: { turns?: string } }) {
   const id = params.sessionId
   const allTurns = searchParams?.turns === 'all'
-  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = [], toolExecutions: any[] = [], prompts: any[] = [], filesWithAttribution: any[] = [], promptsWithTools: any[] = []
+  let s: any = null, turns: any[] = [], errors: any[] = [], files: any[] = [], toolMix: any[] = [], gitCommands: any[] = [], toolExecutions: any[] = [], prompts: any[] = [], filesWithAttribution: any[] = []
   let heroes: any = { most_expensive: null, longest: null, most_errored: null }
   let thinkingBlocks: any[] = []
   let errorResolutions: any[] = []
+  // promptsWithTools (heavy multi-CTE join) is fetched lazily by SessionTabs
+  // when the user opens the Prompts tab — see /api/sessions/[id]/prompts-enriched.
+  // Eagerly loading it added 10–30s to first-paint on long sessions because
+  // the inequality-join window walked fact_tool_executions × fact_turns per prompt.
+  const promptsWithTools: any[] = []
   try {
-    const [sess, t, e, f, tm, gc, te, pr, fa, pwt, hp, tb, er] = await Promise.all([
+    const [sess, t, e, f, tm, gc, te, pr, fa, hp, tb, er] = await Promise.all([
       getSession(id),
       getSessionTurns(id, { all: allTurns }),
       getSessionErrors(id),
       getSessionFiles(id), getSessionToolMix(id), getSessionGitCommands(id),
       getSessionToolExecutions(id), getSessionPrompts(id),
       getSessionFilesWithAttribution(id),
-      getSessionPromptsWithTools(id),
       getSessionPromptHeroes(id),
       getSessionThinkingBlocks(id),
       getSessionErrorResolutions(id),
@@ -43,7 +46,7 @@ export default async function SessionDetailPage({
     s = sess; turns = t as any[]; errors = e as any[]
     files = f as any[]; toolMix = tm as any[]; gitCommands = gc as any[]
     toolExecutions = te as any[]; prompts = pr as any[]
-    filesWithAttribution = fa as any[]; promptsWithTools = pwt as any[]
+    filesWithAttribution = fa as any[]
     heroes = hp ?? heroes
     thinkingBlocks = tb as any[]
     errorResolutions = er as any[]

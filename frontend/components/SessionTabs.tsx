@@ -625,10 +625,31 @@ export function SessionTabs({
   errorResolutions = [],
   allTurns = false,
 }: SessionTabsProps) {
-  // Prefer the enriched prompts (with tool_calls + prompt_origin); fall back to
-  // the simpler prompts list if the enriched query failed.
-  const promptsToRender: any[] = promptsWithTools.length > 0 ? promptsWithTools : prompts
   const [activeTab, setActiveTab] = useState<'details' | 'prompts' | 'agents' | 'errors' | 'files' | 'tokens' | 'tools' | 'git' | 'messages'>('details')
+
+  // Lazy-fetch enriched prompts (the heavy multi-CTE query) when the user
+  // opens the Prompts tab. The eager light `prompts` array is shown while
+  // we load, so the tab is never empty. If the parent component already
+  // provided `promptsWithTools` (back-compat), use it directly.
+  const [enrichedPrompts, setEnrichedPrompts] = useState<any[]>(promptsWithTools)
+  const [enrichedLoading, setEnrichedLoading] = useState(false)
+  const [enrichedFetched, setEnrichedFetched] = useState(promptsWithTools.length > 0)
+
+  React.useEffect(() => {
+    if (activeTab !== 'prompts' || enrichedFetched || enrichedLoading) return
+    let cancelled = false
+    setEnrichedLoading(true)
+    fetch(`/api/sessions/${encodeURIComponent(s.session_id)}/prompts-enriched`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : { prompts: [] })
+      .then(d => { if (!cancelled) { setEnrichedPrompts(d.prompts ?? []); setEnrichedFetched(true) } })
+      .catch(() => { if (!cancelled) setEnrichedFetched(true) })
+      .finally(() => { if (!cancelled) setEnrichedLoading(false) })
+    return () => { cancelled = true }
+  }, [activeTab, enrichedFetched, enrichedLoading, s.session_id])
+
+  // Prefer the enriched prompts (with tool_calls + prompt_origin); fall back to
+  // the simpler prompts list while the enriched fetch is pending or empty.
+  const promptsToRender: any[] = enrichedPrompts.length > 0 ? enrichedPrompts : prompts
   const [promptFilter, setPromptFilter] = useState<PromptFilter>('all')
 
   const maxToolCalls = Math.max(...(toolMix ?? []).map((t: any) => t.calls ?? 0), 1)
@@ -859,6 +880,7 @@ export function SessionTabs({
               <Eyebrow>Prompts · in their voice</Eyebrow>
               <span className="muted" style={{ fontSize: 12 }}>
                 {promptsToRender.length} prompt{promptsToRender.length !== 1 ? 's' : ''} · what was asked, what happened
+                {enrichedLoading && ' · loading enriched data…'}
               </span>
             </div>
 

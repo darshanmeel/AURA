@@ -152,6 +152,56 @@ function windowClause(window: '1h' | '1d' | '7d'): string {
   }
 }
 
+// Single-query variant: fetch 1h, 1d, 7d in one raw_events scan + one
+// ingest_checkpoints query. Replaces 3 separate getIngestionStats() calls
+// (each of which scanned raw_events independently). Used by the API route's
+// composite handler. Falls back to per-window calls only on error.
+export async function getIngestionStatsAll(): Promise<{
+  s1h: IngestionStats
+  s1d: IngestionStats
+  s7d: IngestionStats
+}> {
+  let c1h = 0, s1h = 0, c1d = 0, s1d = 0, c7d = 0, s7d = 0
+  let filesSeen = 0
+
+  try {
+    const row = await queryOne<{
+      c1h: number; s1h: number
+      c1d: number; s1d: number
+      c7d: number; s7d: number
+    }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 HOUR)                  AS c1h,
+         COUNT(DISTINCT session_id) FILTER (WHERE ts >= NOW() - INTERVAL 1 HOUR) AS s1h,
+         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 DAY)                   AS c1d,
+         COUNT(DISTINCT session_id) FILTER (WHERE ts >= NOW() - INTERVAL 1 DAY)  AS s1d,
+         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 7 DAYS)                  AS c7d,
+         COUNT(DISTINCT session_id) FILTER (WHERE ts >= NOW() - INTERVAL 7 DAYS) AS s7d
+       FROM raw_events`
+    )
+    c1h = Number(row?.c1h ?? 0); s1h = Number(row?.s1h ?? 0)
+    c1d = Number(row?.c1d ?? 0); s1d = Number(row?.s1d ?? 0)
+    c7d = Number(row?.c7d ?? 0); s7d = Number(row?.s7d ?? 0)
+  } catch (_e) {
+    // raw_events absent — all zeros
+  }
+
+  try {
+    const row = await queryOne<{ files_seen: number }>(
+      `SELECT COUNT(*) AS files_seen FROM ingest_checkpoints`
+    )
+    filesSeen = Number(row?.files_seen ?? 0)
+  } catch (_e) {
+    // ingest_checkpoints absent
+  }
+
+  return {
+    s1h: { window: '1h', rows_ingested: c1h, sessions_ingested: s1h, files_seen: filesSeen },
+    s1d: { window: '1d', rows_ingested: c1d, sessions_ingested: s1d, files_seen: filesSeen },
+    s7d: { window: '7d', rows_ingested: c7d, sessions_ingested: s7d, files_seen: filesSeen },
+  }
+}
+
 export async function getIngestionStats(window: '1h' | '1d' | '7d'): Promise<IngestionStats> {
   const wc = windowClause(window)
 
@@ -208,24 +258,12 @@ export interface WatcherHealth {
 }
 
 export async function getWatcherHealth(): Promise<WatcherHealth> {
-  // Bronze freshness
-  let bronzeLatestEvent: string | null = null
-  let bronzeAgeSeconds: number | null = null
-
-  try {
-    const row = await queryOne<{ latest_ts: string | null; age_seconds: number | null }>(
-      `SELECT
-         MAX(ts)::VARCHAR                                       AS latest_ts,
-         EXTRACT(EPOCH FROM (NOW() - MAX(ts)))::DOUBLE         AS age_seconds
-       FROM raw_events`
-    )
-    if (row?.latest_ts) {
-      bronzeLatestEvent = row.latest_ts
-      bronzeAgeSeconds = row.age_seconds ?? null
-    }
-  } catch (_e) {
-    // raw_events absent
-  }
+  // NOTE: bronze freshness fields (bronze_latest_event, bronze_age_seconds,
+  // bronze_status) are intentionally returned as null/'unknown' here — the
+  // API route merges them in from getOverallHealth's result so the same
+  // MAX(ts) scan over raw_events doesn't run twice per poll.
+  const bronzeLatestEvent: string | null = null
+  const bronzeAgeSeconds: number | null = null
 
   // Checkpoint stats
   let filesTotal = 0
@@ -933,5 +971,57 @@ export interface PipelineSnapshot {
   artifacts: DbtArtifacts | null
   layers: MedallionLayer[]
   errors: WatcherError[]
+}
+
+// Composite snapshot — used by both the API route and the page's SSR fetch.
+// Centralising here avoids the server → self HTTP round-trip on initial paint.
+async function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+  try { return await fn() } catch (e) {
+    console.error(`[observability] ${label} failed:`, e instanceof Error ? e.message : e)
+    return fallback
+  }
+}
+
+export async function getPipelineSnapshot(): Promise<PipelineSnapshot> {
+  const [overall, watcher, ingestion, hourly, dbt, dbtHistory, artifacts, errors] = await Promise.all([
+    safe('overall',        () => getOverallHealth(),          null),
+    safe('watcher',        () => getWatcherHealth(),          null),
+    safe('ingestion-all',  () => getIngestionStatsAll(),      null),
+    safe('hourly-24',      () => getHourlyIngestion(24),      [] as HourlyIngestion[]),
+    safe('dbt',            () => getDbtHealth(),              null),
+    safe('dbt-history',    () => getDbtRunHistory(6),         [] as DbtHistoryEntry[]),
+    safe('dbt-artifacts',  () => getDbtArtifacts(),           null),
+    safe('watcher-errors', () => getRecentWatcherErrors(50),  [] as WatcherError[]),
+  ])
+
+  // Merge bronze freshness from overall into watcher — avoids a duplicate
+  // MAX(ts) scan over raw_events (getWatcherHealth no longer runs its own).
+  const watcherMerged = watcher && overall ? {
+    ...watcher,
+    bronze_latest_event: overall.bronze_latest_event,
+    bronze_age_seconds: overall.bronze_age_seconds,
+    bronze_status: overall.bronze_status,
+  } : watcher
+
+  // Medallion layers needs dbt.per_test for test attribution — runs after dbt.
+  const layers = await safe(
+    'medallion',
+    () => getMedallionLayers(dbt?.per_test ?? []),
+    [] as MedallionLayer[]
+  )
+
+  return {
+    overall,
+    watcher: watcherMerged,
+    ingestion_1h: ingestion?.s1h ?? null,
+    ingestion_1d: ingestion?.s1d ?? null,
+    ingestion_7d: ingestion?.s7d ?? null,
+    hourly,
+    dbt,
+    dbt_history: dbtHistory,
+    artifacts,
+    layers,
+    errors,
+  }
 }
 
