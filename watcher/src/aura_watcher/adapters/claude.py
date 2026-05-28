@@ -125,21 +125,20 @@ class ClaudeAdapter:
         """Extract skill registrations from an attachment event.
 
         Claude Code's JSONL ships skill information in attachment events.
-        Two shapes seen in the wild:
-          1) `attachment.type == "skills"` with a `names` array (older /
-             observed in some tenants).
+        Three shapes seen in the wild:
+          1) `attachment.type == "skills"` with a `names` array.
           2) `attachment.type == "skill_listing"` with a `content` string
-             that is a markdown bullet list, e.g.:
+             that is a markdown bullet list (`- plugin:skill: desc`).
+          3) `attachment.type == "invoked_skills"` with a `skills` array
+             of `{name, path, content}` objects. This is the dominant
+             shape on current Claude Code builds — `skill_listing` does
+             not appear in our logs, but `invoked_skills` does, with
+             every actually-invoked skill carrying its full prompt
+             content. We persist only the name; the content stays in
+             raw_events.
 
-                 - plugin-name:skill-name: description
-                 - other-plugin:revise-claude-md: Update CLAUDE.md with ...
-
-             This is the dominant shape in current Claude Code builds —
-             the old parser missed it entirely, so raw_session_skills
-             stayed empty even with 5k+ attachment events on disk.
-
-        Both shapes are handled below. is_initial defaults to True for
-        skill_listing (it appears once near session start in practice).
+        is_initial defaults to True for skill_listing and invoked_skills
+        because they fire near session start in practice.
         """
         if raw.get("type") != "attachment":
             return []
@@ -184,6 +183,16 @@ class ClaudeAdapter:
                 if ident:
                     names.append(ident)
             is_initial = True  # skill_listing fires once near session start
+        elif att_type == "invoked_skills":
+            # `skills` is a list of {name, path, content}. Persist names only.
+            skills_arr = attachment.get("skills") or []
+            for sk in skills_arr:
+                if not isinstance(sk, dict):
+                    continue
+                name = sk.get("name")
+                if isinstance(name, str) and name.strip():
+                    names.append(name.strip())
+            is_initial = True
         else:
             return []
 
