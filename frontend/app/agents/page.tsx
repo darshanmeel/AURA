@@ -47,6 +47,14 @@ export default async function AgentsPage({
         <p className="hero-lede">
           The same agent name can run in multiple apps and projects. Each row below is one agent in one app.
         </p>
+        <p className="muted" style={{ fontSize: 12, marginTop: 8, maxWidth: 720 }}>
+          <strong>Note on attribution:</strong> Only subagents dispatched via the Task tool (with a{' '}
+          <span className="mono">subagent_type</span> argument) are resolved by name. Sessions launched
+          directly with <span className="mono">claude --agent &lt;name&gt;</span> appear as{' '}
+          <span className="mono">main</span> — the agent identity for top-level CLI launches lives in the
+          system prompt rather than in any structured JSONL field, so it can&rsquo;t be recovered after
+          the fact.
+        </p>
       </section>
 
       <Rule weight="thick" />
