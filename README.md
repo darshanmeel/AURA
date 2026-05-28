@@ -4,6 +4,11 @@ A local-first, Dockerized analytics platform for AI coding agent sessions (Claud
 
 > *Spend, with receipts.*
 
+📖 **Documentation** — start here:
+- [docs/screens/OVERVIEW.md](docs/screens/OVERVIEW.md) — operator's guide: when to open which screen, conventions, data lineage
+- [docs/screens/HOW-IT-WORKS.md](docs/screens/HOW-IT-WORKS.md) — architecture deep-dive: watcher internals, dbt layers, agent attribution, failure modes
+- [docs/screens/](docs/screens/) — 13 per-screen `.md` reference docs + screenshots
+
 ---
 
 ## Why Aura
@@ -201,56 +206,69 @@ For per-screen documentation see [docs/screens/](docs/screens/) — start
 with [OVERVIEW.md](docs/screens/OVERVIEW.md) for navigation and
 [HOW-IT-WORKS.md](docs/screens/HOW-IT-WORKS.md) for architecture.
 
+Each thumbnail below shows the page header / above-the-fold view. The
+full-page renders (with all scrolled content) live next to each
+per-screen `.md` in [docs/screens/](docs/screens/).
+
 ### Dashboard
 Single summary screen — cost, token volume, ledgers for apps/projects/agents,
 heatmap, side panels, and Skills & MCPs at the bottom.
-![Dashboard](docs/screens/dashboard.png)
+
+<img src="docs/screens/dashboard.png" alt="Dashboard" width="720">
 
 ### Tokens drill-down
 Token spend broken down by type, provider, model, and agent. Hourly
 buckets on `range=today`, daily otherwise. Distinct colour palette per
 token type (teal/gold/orange/violet/slate).
-![Tokens](docs/screens/tokens-page.png)
+
+<img src="docs/screens/tokens-page.png" alt="Tokens" width="720">
 
 ### Sessions list & Session detail
 Filterable ledger of every session with new 🧩 (skills) + ⚡ (MCPs) count
-columns and multi-agent rendering; then a per-session deep-dive across
-9 tabs.
-![Sessions](docs/screens/sessions-list.png)
-![Session Detail](docs/screens/session-detail.png)
+columns and multi-agent rendering; then a per-session deep-dive (the
+detail shot below is viewport-only — the full nine-tab capture lives in
+the per-screen doc to keep this README light).
+
+<img src="docs/screens/sessions-list.png" alt="Sessions list" width="720">
+<img src="docs/screens/session-detail-viewport.png" alt="Session detail (header + tab strip)" width="720">
 
 ### Apps & App detail
 Card grid by cost; per-app rollup with sessions, agents, people, sibling
 apps, prompt feed, and a "Skills & MCPs in this app" panel.
-![Apps](docs/screens/apps-list.png)
-![App Detail](docs/screens/app-detail.png)
+
+<img src="docs/screens/apps-list.png" alt="Apps list" width="720">
+<img src="docs/screens/app-detail.png" alt="App detail" width="720">
 
 ### Agents & Agent detail
 Subagent roster with **real attribution** (technical-writer, frontend-engineer,
 code-reviewer, …) — `fact_model_calls.agent` now joins
 `int_event_agent.agent_resolved` so spend no longer lumps under one
 `claude` row. Footnote on the list explains the `main` bucket.
-![Agents](docs/screens/agents-list.png)
-![Agent Detail](docs/screens/agent-detail.png)
+
+<img src="docs/screens/agents-list.png" alt="Agents list" width="720">
+<img src="docs/screens/agent-detail.png" alt="Agent detail" width="720">
 
 ### People & Person detail
 Operator roster with real names (311 / 349 sessions resolve to the
 configured `AURA_DEFAULT_PERSON_*`); per-person profile with agents
 delegated to, apps worked in, and the operator's prompt log.
-![People](docs/screens/people-list.png)
-![Person Detail](docs/screens/person-detail.png)
+
+<img src="docs/screens/people-list.png" alt="People list" width="720">
+<img src="docs/screens/person-detail.png" alt="Person detail" width="720">
 
 ### Errors
 Hard errors, warnings, and tool failures from `fact_errors`, filterable
 by kind and tool. Timestamps now carry date + time (e.g. `May 28 ·
 09:57:26`).
-![Errors](docs/screens/errors-list.png)
+
+<img src="docs/screens/errors-list.png" alt="Errors" width="720">
 
 ### Observability
 Pipeline health at a glance — verdict, flow strip, medallion layer ages,
 KPI grid, ingestion volume, source freshness, dbt tests, recent watcher
 errors. Polls every 10 s via `/api/observability`.
-![Observability](docs/screens/observability.png)
+
+<img src="docs/screens/observability.png" alt="Observability" width="720">
 
 ---
 
