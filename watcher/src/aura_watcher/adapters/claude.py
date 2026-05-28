@@ -122,29 +122,120 @@ class ClaudeAdapter:
         }
 
     def parse_skills(self, raw: dict, file_path: str) -> list[dict]:
+        """Extract skill registrations from an attachment event.
+
+        Claude Code's JSONL ships skill information in attachment events.
+        Two shapes seen in the wild:
+          1) `attachment.type == "skills"` with a `names` array (older /
+             observed in some tenants).
+          2) `attachment.type == "skill_listing"` with a `content` string
+             that is a markdown bullet list, e.g.:
+
+                 - plugin-name:skill-name: description
+                 - other-plugin:revise-claude-md: Update CLAUDE.md with ...
+
+             This is the dominant shape in current Claude Code builds —
+             the old parser missed it entirely, so raw_session_skills
+             stayed empty even with 5k+ attachment events on disk.
+
+        Both shapes are handled below. is_initial defaults to True for
+        skill_listing (it appears once near session start in practice).
+        """
         if raw.get("type") != "attachment":
             return []
-        
+
         attachment = raw.get("attachment")
-        if not attachment or attachment.get("type") != "skills":
+        if not attachment:
             return []
-        
+        att_type = attachment.get("type")
+
         session_id = raw.get("sessionId")
         if not session_id:
             parts = file_path.split(os.sep)
             session_id = parts[-2] if len(parts) >= 2 else "unknown"
 
-        names = attachment.get("names", [])
-        is_initial = attachment.get("isInitial", False)
-        
-        skills = []
+        names: list[str] = []
+        is_initial = False
+
+        if att_type == "skills":
+            names = list(attachment.get("names", []))
+            is_initial = bool(attachment.get("isInitial", False))
+        elif att_type == "skill_listing":
+            # Parse bullet-list content. Each non-empty line that starts
+            # with "- " carries one skill identifier (everything before
+            # the second ":" in `- plugin:skill: description`).
+            content = attachment.get("content", "")
+            if isinstance(content, list):
+                # Defensive: some emit arrays of strings.
+                content = "\n".join(c for c in content if isinstance(c, str))
+            for line in (content or "").splitlines():
+                line = line.strip()
+                if not line.startswith("- "):
+                    continue
+                body = line[2:]
+                # `<plugin>:<skill>: <description>` → keep `<plugin>:<skill>`
+                # `<skill>: <description>`         → keep `<skill>`
+                colon1 = body.find(":")
+                if colon1 == -1:
+                    continue
+                colon2 = body.find(":", colon1 + 1)
+                ident = body[:colon2] if colon2 != -1 else body[:colon1]
+                ident = ident.strip()
+                if ident:
+                    names.append(ident)
+            is_initial = True  # skill_listing fires once near session start
+        else:
+            return []
+
+        # Deduplicate within this single attachment event so the ON CONFLICT
+        # primary-key check on (session, skill) doesn't get redundant rows.
+        seen: set = set()
+        skills: list[dict] = []
         for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
             skills.append({
                 "tenant_id": "local",
                 "session_id": session_id,
                 "skill_name": name,
-                "is_initial": is_initial
+                "is_initial": is_initial,
             })
-            
         return skills
+
+    def parse_mcp_servers(self, raw: dict, file_path: str) -> list[dict]:
+        """Extract MCP server registrations from an attachment event.
+
+        Claude Code logs MCP-server loads as
+        `attachment.type == "mcp_instructions_delta"` with `addedNames`
+        like `["plugin:context7:context7"]`. We capture one row per
+        (session, server) so /sessions/<id> can show which MCP surfaces
+        the agent had access to in that session.
+        """
+        if raw.get("type") != "attachment":
+            return []
+        attachment = raw.get("attachment")
+        if not attachment or attachment.get("type") != "mcp_instructions_delta":
+            return []
+        names = attachment.get("addedNames") or []
+        if not names:
+            return []
+
+        session_id = raw.get("sessionId")
+        if not session_id:
+            parts = file_path.split(os.sep)
+            session_id = parts[-2] if len(parts) >= 2 else "unknown"
+
+        seen: set = set()
+        out: list[dict] = []
+        for name in names:
+            if not isinstance(name, str) or not name or name in seen:
+                continue
+            seen.add(name)
+            out.append({
+                "tenant_id": "local",
+                "session_id": session_id,
+                "mcp_server": name,
+            })
+        return out
 

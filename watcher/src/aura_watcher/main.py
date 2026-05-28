@@ -38,6 +38,7 @@ def process_file(file_path, writer, adapter, cp_manager):
         last_uuid = checkpoint["last_line_uuid"]
         events = []
         skill_batches: list[list[dict]] = []
+        mcp_batches: list[list[dict]] = []
         for line in lines:
             try:
                 if not line.strip(): continue
@@ -53,6 +54,13 @@ def process_file(file_path, writer, adapter, cp_manager):
                 except Exception as e:
                     print(f"Error parsing skills: {e}")
                     writer.log_error('skill_parse', file_path, e)
+                try:
+                    mcps = adapter.parse_mcp_servers(raw, file_path)
+                    if mcps:
+                        mcp_batches.append(mcps)
+                except Exception as e:
+                    print(f"Error parsing mcp servers: {e}")
+                    writer.log_error('mcp_parse', file_path, e)
             except Exception as e:
                 print(f"Error parsing line in {file_path}: {e}")
                 writer.log_error('process_file', file_path, e)
@@ -67,6 +75,8 @@ def process_file(file_path, writer, adapter, cp_manager):
         with _snapshot_lock:
             for sk in skill_batches:
                 writer.insert_session_skills(sk)
+            for mc in mcp_batches:
+                writer.insert_session_mcps(mc)
             if events:
                 writer.insert_events(events)
             if new_offset > offset:

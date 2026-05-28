@@ -143,6 +143,16 @@ skills_per_session AS (
     FROM {{ ref('stg_session_skills') }}
     GROUP BY session_id
 ),
+-- MCP servers loaded in each session (from mcp_instructions_delta
+-- attachment events). Parallel to skills_per_session.
+mcps_per_session AS (
+    SELECT
+        session_id,
+        COUNT(DISTINCT mcp_server)        AS mcp_count,
+        array_agg(DISTINCT mcp_server)    AS mcp_servers
+    FROM {{ ref('stg_session_mcps') }}
+    GROUP BY session_id
+),
 -- Staged session_meta (person, title). The `commits` column on session_meta
 -- exists with DEFAULT 0 but the watcher never updates it; commits are derived
 -- below from fact_git_commands instead, which already parses every `git commit`
@@ -202,7 +212,9 @@ SELECT
         ELSE 'Other'
     END                                             AS provider,
     COALESCE(sk.skill_count, 0)                     AS skill_count,
-    sk.skills_loaded
+    sk.skills_loaded,
+    COALESCE(mc.mcp_count, 0)                       AS mcp_count,
+    mc.mcp_servers
 FROM aggregated_sessions s
 LEFT JOIN tool_stats t          ON s.session_id = t.session_id
 LEFT JOIN end_turn_stats e      ON s.session_id = e.session_id
@@ -213,3 +225,4 @@ LEFT JOIN app_lookup al         ON al.cwd = s.cwd AND al.tenant_id = s.tenant_id
 LEFT JOIN session_meta_lookup sm ON sm.session_id = s.session_id
 LEFT JOIN session_commits sc    ON sc.session_id = s.session_id
 LEFT JOIN skills_per_session sk ON s.session_id = sk.session_id
+LEFT JOIN mcps_per_session mc   ON s.session_id = mc.session_id

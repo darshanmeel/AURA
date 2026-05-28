@@ -5,6 +5,7 @@ sources:
     schema: main
     tables:
       - name: raw_session_skills
+      - name: raw_session_mcps
 
   - name: aura
     schema: main

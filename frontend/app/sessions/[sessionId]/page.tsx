@@ -82,6 +82,24 @@ export default async function SessionDetailPage({
             {s.cwd && <span className="mono muted">{s.cwd?.split(/[/\\]/).pop()}</span>}
             {s.agent && <AgentLink name={s.agent} />}
             {s.git_branch && <span className="mono muted">{s.git_branch}</span>}
+            {Number(s.skill_count ?? 0) > 0 && (
+              <span
+                title={Array.isArray(s.skills_loaded) ? s.skills_loaded.join(', ') : ''}
+                className="mono"
+                style={{ color: 'var(--accent)', fontSize: 11 }}
+              >
+                🧩 {fmt.n(s.skill_count)} skill{Number(s.skill_count) === 1 ? '' : 's'}
+              </span>
+            )}
+            {Number(s.mcp_count ?? 0) > 0 && (
+              <span
+                title={Array.isArray(s.mcp_servers) ? s.mcp_servers.join(', ') : ''}
+                className="mono"
+                style={{ color: 'var(--accent-2, #efe6d6)', fontSize: 11 }}
+              >
+                ⚡ {fmt.n(s.mcp_count)} MCP{Number(s.mcp_count) === 1 ? '' : 's'}
+              </span>
+            )}
           </div>
 
           {/* Title — large serif, italic sub-part */}

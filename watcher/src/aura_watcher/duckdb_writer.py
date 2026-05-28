@@ -71,6 +71,13 @@ class DuckDBWriter:
                     is_initial    BOOLEAN DEFAULT FALSE,
                     PRIMARY KEY (tenant_id, session_id, skill_name)
                 );
+                CREATE TABLE IF NOT EXISTS raw_session_mcps (
+                    tenant_id     TEXT NOT NULL DEFAULT 'local',
+                    session_id    TEXT NOT NULL,
+                    mcp_server    TEXT NOT NULL,
+                    first_seen_at TIMESTAMP DEFAULT now(),
+                    PRIMARY KEY (tenant_id, session_id, mcp_server)
+                );
                 CREATE TABLE IF NOT EXISTS watcher_errors (
                     ts            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     source        VARCHAR,
@@ -110,6 +117,19 @@ class DuckDBWriter:
             conn.executemany(
                 f"INSERT INTO raw_session_skills ({cols}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
                 [list(s.values()) for s in skills]
+            )
+
+    def insert_session_mcps(self, mcps: list[dict]):
+        if not mcps:
+            return
+
+        cols = ", ".join(mcps[0].keys())
+        placeholders = ", ".join(["?"] * len(mcps[0]))
+
+        with self.get_connection() as conn:
+            conn.executemany(
+                f"INSERT INTO raw_session_mcps ({cols}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
+                [list(m.values()) for m in mcps]
             )
 
     def log_error(self, source: str, file_path: str | None, error: Exception):
