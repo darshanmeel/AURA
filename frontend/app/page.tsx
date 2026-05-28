@@ -173,83 +173,6 @@ export default async function DashboardPage({
 
       <Rule weight="thick" />
 
-      {/* Skills & MCPs — two side-by-side mini-tables. Both populate from the
-          watcher's parsed skill_listing + mcp_instructions_delta attachment
-          events; empty state is normal until the first dbt cycle after a fresh
-          parser deployment fills dim_sessions.skill_count / mcp_count. */}
-      <section style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-          <h2 className="h-section">Skills &amp; MCPs</h2>
-          <span className="section-meta">loaded per session · top 10 each</span>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-          {/* Top skills */}
-          <div>
-            <div className="section-head" style={{ marginBottom: 4 }}>
-              <h3 className="h-section" style={{ fontSize: 13 }}>🧩 Top skills</h3>
-              <span className="section-meta">{topSkills.length} skill{topSkills.length !== 1 ? 's' : ''}</span>
-            </div>
-            {topSkills.length === 0 ? (
-              <div className="empty-block">No skills loaded in this range.</div>
-            ) : (
-              <table className="ledger" style={{ tableLayout: 'fixed', width: '100%' }}>
-                <thead>
-                  <tr>
-                    <th>Skill</th>
-                    <th className="num" style={{ width: 90 }}>Sessions</th>
-                    <th style={{ width: 120 }}>Last used</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topSkills.map((r: any) => (
-                    <tr key={r.skill}>
-                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {r.skill}
-                      </td>
-                      <td className="num mono">{fmt.n(r.session_count)}</td>
-                      <td className="mono muted">{r.last_used ? fmt.date(r.last_used) : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-          {/* Top MCPs */}
-          <div>
-            <div className="section-head" style={{ marginBottom: 4 }}>
-              <h3 className="h-section" style={{ fontSize: 13 }}>⚡ Top MCP servers</h3>
-              <span className="section-meta">{topMcps.length} server{topMcps.length !== 1 ? 's' : ''}</span>
-            </div>
-            {topMcps.length === 0 ? (
-              <div className="empty-block">No MCP servers loaded in this range.</div>
-            ) : (
-              <table className="ledger" style={{ tableLayout: 'fixed', width: '100%' }}>
-                <thead>
-                  <tr>
-                    <th>MCP server</th>
-                    <th className="num" style={{ width: 90 }}>Sessions</th>
-                    <th style={{ width: 120 }}>Last used</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topMcps.map((r: any) => (
-                    <tr key={r.mcp_server}>
-                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {r.mcp_server}
-                      </td>
-                      <td className="num mono">{fmt.n(r.session_count)}</td>
-                      <td className="mono muted">{r.last_used ? fmt.date(r.last_used) : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      </section>
-
-      <Rule weight="thick" />
-
       <section className="cols">
         <div className="col-main">
           {/* Apps ledger — flat */}
@@ -596,6 +519,82 @@ export default async function DashboardPage({
             </div>
           </div>
         </aside>
+      </section>
+
+      <Rule weight="thick" />
+
+      {/* Skills & MCPs — lives at the bottom; useful context but not headline.
+          Empty state is normal until the first dbt cycle after a fresh parser
+          deployment populates raw_session_skills / raw_session_mcps. */}
+      <section style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <h2 className="h-section">Skills &amp; MCPs</h2>
+          <span className="section-meta">loaded per session · top 10 each</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+          {/* Top skills */}
+          <div>
+            <div className="section-head" style={{ marginBottom: 4 }}>
+              <h3 className="h-section" style={{ fontSize: 13 }}>🧩 Top skills</h3>
+              <span className="section-meta">{topSkills.length} skill{topSkills.length !== 1 ? 's' : ''}</span>
+            </div>
+            {topSkills.length === 0 ? (
+              <div className="empty-block">No skills loaded in this range.</div>
+            ) : (
+              <table className="ledger" style={{ tableLayout: 'fixed', width: '100%' }}>
+                <thead>
+                  <tr>
+                    <th>Skill</th>
+                    <th className="num" style={{ width: 90 }}>Sessions</th>
+                    <th style={{ width: 120 }}>Last used</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topSkills.map((r: any) => (
+                    <tr key={r.skill}>
+                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.skill}
+                      </td>
+                      <td className="num mono">{fmt.n(r.session_count)}</td>
+                      <td className="mono muted">{r.last_used ? fmt.date(r.last_used) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          {/* Top MCPs */}
+          <div>
+            <div className="section-head" style={{ marginBottom: 4 }}>
+              <h3 className="h-section" style={{ fontSize: 13 }}>⚡ Top MCP servers</h3>
+              <span className="section-meta">{topMcps.length} server{topMcps.length !== 1 ? 's' : ''}</span>
+            </div>
+            {topMcps.length === 0 ? (
+              <div className="empty-block">No MCP servers loaded in this range.</div>
+            ) : (
+              <table className="ledger" style={{ tableLayout: 'fixed', width: '100%' }}>
+                <thead>
+                  <tr>
+                    <th>MCP server</th>
+                    <th className="num" style={{ width: 90 }}>Sessions</th>
+                    <th style={{ width: 120 }}>Last used</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topMcps.map((r: any) => (
+                    <tr key={r.mcp_server}>
+                      <td className="mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.mcp_server}
+                      </td>
+                      <td className="num mono">{fmt.n(r.session_count)}</td>
+                      <td className="mono muted">{r.last_used ? fmt.date(r.last_used) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       </section>
     </div>
   )
