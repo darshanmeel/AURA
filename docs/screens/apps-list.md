@@ -6,46 +6,46 @@
 
 ## What this screen shows
 
-A roster of all "apps" (distinct working directories, aka projects) ranked by cost and activity. Each card shows high-level project metadata, spending, session/turn counts, and the agents that worked in it.
+Each project in the workspace: agents working in it, people driving them, and what it costs. Ranked by total spend per app.
 
 ## Layout & components
 
-- **Masthead strap** — eyebrow label "Apps · {count} projects · {range}", range filter button, aggregate cost pill
-- **Page hero** — large heading "{count} apps, _one ledger_", lede on project + agent + people tracking
-- **Apps grid** — responsive card layout; each card shows:
-  - Project ID + agent count (eyebrow)
-  - App name (h3) + optional description (truncated to 200 chars)
-  - {range} spend (right-aligned, bold)
-  - **Stats row** — Sessions / Turns / Commits / Errors
-  - **Agents row** — first 5 agents (chip style); overflow badge if > 5
+- **Masthead strap:** app count + range filter + total aggregate spend
+- **Hero section:** headline "N apps, one ledger." + lede
+- **Apps grid:** card-per-app, each showing:
+  - App name, project ID, agent count, description (first 200 chars)
+  - Cost badge (top-right, range-aware)
+  - Stats row: sessions / turns / commits / errors
+  - Agent chips (capped at 5, +N for overflow; now shows actual subagent names)
 
 ## Data sources
 
 | Component | Query | Mart |
 |---|---|---|
-| Apps ledger (lifetime) | `getApps()` (no range) | `dim_apps` |
-| Apps ledger (range) | `getApps(since)` | `int_entity_spend` + `dim_apps` JOIN |
-| Total aggregate cost | `getAppsTotalCost(since)` | `int_entity_spend` |
+| Apps list (no range) | `getApps()` | `dim_apps` |
+| Apps list (ranged) | `getApps(since)` | `int_entity_spend` × `dim_apps` |
+| Total cost | `getAppsTotalCost(since)` | `int_entity_spend` |
 
 ## How to read it
 
-- **App identity:** distinct `cwd` (working directory). One `cwd` = one app.
-- **Project rollup:** `project_id` groups apps; e.g., many apps may belong to the same monorepo project.
-- **Cost driver:** sum of all `fact_model_calls.calculated_cost` in that app's cwd within the range.
-- **Agent list:** agents that ran in the app (not exhaustive without a time-bound fact table; lifetime `dim_apps` has full agent list, range queries return NULL).
-- **Commits:** git commits detected in turn artifacts; NULL on range queries (no timestamp on fact_errors).
+- Each app = one cwd-rooted project (e.g., `AURA`, `Claude Code`)
+- **Cost:** top-right badge; sum of all model calls in that project for the range
+- **Agents:** actual subagent names (runner, frontend-engineer, dbt-expert, etc.), not placeholder 'claude'
+- **Stats:** sessions=distinct sessions; turns=total message turns; commits=tied to sessions; errors=NULL for ranged queries (no timestamp on fact_errors)
+- Click any card to navigate to app detail view
 
 ## Edge cases / empty states
 
-- **App with no cwd:** rare; UI shows `app_id` as fallback.
-- **Range with no data:** empty grid; placeholder message "No apps found. Sessions will appear once dbt has run."
-- **Agents > 5:** "Agents" row shows first 5 + "+N" overflow badge.
-- **Range vs. lifetime:** range queries use pre-aggregated `int_entity_spend` (fast); lifetime queries use `dim_apps` (complete, includes agents list).
+- No apps: "No apps found. Sessions will appear once dbt has run."
+- App with no project_id: uses app_id
+- Ranged query with errors: NULL (range queries don't include errors)
+- Agent_count and agents array: NULL for ranged queries (use dim_agents lifetime for detail view)
 
 ## Related screens
 
-- [App detail](./app-detail.md) — per-app breakdown (agents, sessions, people, activity timeline)
-- [Dashboard](./dashboard.md) — aggregate project rollup (no dedicated page; summary stats in main dashboard)
+- [App detail](./app-detail.md)
+- [Dashboard](./dashboard.md)
+- [Agents list](./agents-list.md)
 
 ## Screenshots
 

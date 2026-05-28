@@ -2,57 +2,50 @@
 
 **URL:** `/errors`  
 **Primary range:** 7d  
-**Variants:** `?range=today`, `?range=all`
+**Variants:** today, all-time
 
 ## What this screen shows
 
-Complete audit log of errors caught during tool executions, model calls, and the watcher process itself. Surface severity (error/warn/info), kind (tool_error, parse_error, etc.), source tool, raw message, and the session/turn where it occurred. Filterable by error kind; drillable to session detail.
+The complete error log across all agent sessions. Captures tool failures (Read, Bash, WebFetch), parse errors, timeouts, and severity-tagged events. Agents may recover and continue running; this table is the record of what went wrong and where to search in retros.
 
 ## Layout & components
 
-**Masthead:** Range filter + event count  
-**Hero section:** Summary copy (error count by severity, explanation)  
-**5-stat strip:** Total events, hard errors, warnings, sessions affected, tool failures  
-**Kind filter chips:** Toggleable category filter; chip counts  
-**Error table:** ts, severity, kind, tool, message, session (title + agent link), turn number  
-**Empty state:** "No errors matching this filter — a quiet day."
+- **Masthead strap**: Range filter + event count
+- **Hero section**: Display title "What went wrong." + summary prose (hard errors, warnings, info events)
+- **5-stat strip**: Total events, hard errors, warnings, affected sessions, tool failures
+- **Kind filter chips**: Tap to filter by error kind (All, tool_error, timeout, etc.)
+- **Errors table**: Columns are When, Severity, Kind, Tool, Message, Session, Turn
 
 ## Data sources
 
-| Component | Query | Table(s) |
+| Component | Query | Mart |
 |---|---|---|
-| Error feed + counts | `getErrors(since)` | `fact_errors` |
-| Summary KPIs | `getErrorsSummary(since)` | `fact_errors` |
-| Kind chip counts | `getErrorsByKind(since)` | `fact_errors` |
+| Errors feed (500 cap) | `getErrors` or `getErrorsFiltered` | `fact_errors` |
+| KPI strip | `getErrorsSummary` | `fact_errors` |
+| Kind histogram | `getErrorsByKind` | `fact_errors` |
 
 ## How to read it
 
-- **fact_errors** is the primary source; built by dbt from `fact_tool_executions` (is_error=TRUE) and `watcher_errors` (internal parse/lock failures).
-- **Severity** (error, warn, info) is assigned heuristically in the watcher based on message patterns.
-- **Kind** (tool_error, parse_error, checkpoint_conflict, etc.) indicates error category.
-- **Tool** shows the source (Read, Bash, WebFetch, etc.); NULL for watcher-internal errors.
-- **Session** links are clickable; navigates to `/sessions/{session_id}` with error highlighted.
-- **Tool failures** KPI = rows where kind = 'tool_error'; a proxy for tool call failures.
+- **Severity**: `error` (hard failure, agent may retry), `warn` (degraded but recovery likely), `info` (audit event)
+- **Kind**: `tool_error` (Read/Bash/WebFetch failure), `timeout`, `parse_error`, etc. — filter by kind to group related incidents
+- **Tool**: If not null, the tool that failed (e.g. "Bash", "WebFetch", "Read")
+- **When**: Date + time. Date is new as of May 28; previously time-only. Format: "May 28 · 09:57:26"
+- **Message**: Pre-truncated SQL-side to 200 chars; we do not slice on the frontend
+- **Session**: Session title (if available, unparsed) + agent name (defaults to "main") + session ID (8-char truncated) — click row to jump to session detail
 
 ## Edge cases / empty states
 
-- **No errors in range:** Empty table with "No errors matching this filter" message.
-- **Watcher errors** (parse/lock/format) may cluster on a different kind than tool_error.
-- **Messages are pre-truncated:** SQL-side limit at 200 chars; UI does not slice further.
-- **Session title + agent:** Joined from `dim_sessions`; if session not found, displays session_id.
+- No errors in range → displays "No errors matching this filter — a quiet day."
+- High-frequency same-kind errors → use Kind filter chips to focus investigation
+- Tool=null → watcher/infrastructure error (dbt, snapshot, lock failures are logged separately in observability)
 
 ## Related screens
 
 - [Session detail — Errors tab](./session-detail.md)
-- [Observability — watcher errors](./observability.md)
+- [Observability](./observability.md) — watcher/parser errors
 
 ## Screenshots
 
-**7-day range:**  
-![errors-list.png](./errors-list.png)
-
-**Today:**  
-![errors-list-today.png](./errors-list-today.png)
-
-**All-time:**  
-![errors-list-all.png](./errors-list-all.png)
+- 7d: ![](./errors-list.png)
+- Today: ![](./errors-list-today.png)
+- All: ![](./errors-list-all.png)

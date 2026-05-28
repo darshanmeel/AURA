@@ -2,54 +2,54 @@
 
 **URL:** `/tokens`  
 **Primary range:** 7d  
-**Variants:** today (hourly buckets), 30d (model mix)
+**Variants:** today (hourly buckets), 30d
 
 ## What this screen shows
 
-Detailed token volume breakdown across the selected range. The dashboard shows the headline chart; this page is the full drill-down by token type, model, provider, and agent.
+Token volume bucketed by hour (today) or day (longer ranges) across the selected range, broken down by token type, model, provider, and agent. Dashboard shows the headline; this page is the full drill-down.
 
 ## Layout & components
 
 - **Range filter** — today / 7d / 30d / all
-- **By token type** — stacked bars: input · output · cache (read · 5m · 1h)
-  - 5 colors: teal (input) · gold (output) · orange (cache 1h) · violet (cache 5m) · slate (cache read)
-- **By provider** — Anthropic vs Google (variable N, overlay via stacked bars)
-- **By model** — top-10 ranked by volume, tail lumped grey (palette rotation)
-- **By agent** — top-20 table: agent · input · output · cache write · cache read · total · cost · share bar
+- **By token type** — stacked bars (5 distinct colors: input/output/cache_5m/cache_1h/cache_read)
+- **By provider** — Anthropic vs Google (overlay via stacked bars)
+- **By model** — top-10 with palette rotation; tail lumped grey
+- **By agent** — top-20 table showing REAL subagents (input/output/cache_write/cache_read/total/cost/share)
 
 ## Data sources
 
 | Component | Query | Mart |
 |---|---|---|
 | By type | `getTokenSeries(since, hourly)` | `fact_model_calls` |
-| By provider | `getTokenSeriesByProvider` | `fact_model_calls` |
-| By model | `getTokenSeriesByModel` | `fact_model_calls` |
-| By agent | `getTokenByAgent` | `fact_model_calls × int_event_agent` |
+| By provider | `getTokenSeriesByProvider(since, hourly)` | `fact_model_calls` |
+| By model | `getTokenSeriesByModel(since, hourly)` | `fact_model_calls` |
+| By agent | `getTokenByAgent(since)` | `fact_model_calls` (with int_event_agent attribution) |
 
 ## How to read it
 
-- **Cache 1h (orange)** — most expensive cache write; spikes = costly inference
-- **Output tokens (gold)** — drives cost most (~5× input cost typical)
-- **Cache read (slate)** — cheap, often largest volume by count
-- **Input (teal)** — cheap baseline
-- **Cache 5m (violet)** — mid-tier write cost, intermediate lifetime
-- **Agent share bar** — which subagent wrote the most tokens in range
+- **Cache 1h (orange)** — priciest cache write
+- **Output (gold)** — priciest per-token cost (~5× input)
+- **Cache 5m (violet)** — mid-tier write cost
+- **Cache read (slate)** — cheap, high volume
+- **Input (teal)** — baseline cost
+- **Agent share bar** — visual percentage of total tokens per agent
 
-## Edge cases
+## Edge cases / empty states
 
-- "No token data in this range." → range with no `fact_model_calls` rows
-- Hourly bucketing only triggers when `range=today`; longer ranges always bucket by day
-- Tail models (beyond top-10) labeled "tail" and colored grey
+- "No token data in this range." → no `fact_model_calls` rows match
+- Hourly bucketing only when `range=today`; longer ranges bucket by day
+- Tail models (beyond top-10) aggregated and colored grey
+- Range with single agent → table shrinks naturally
 
 ## Implementation notes
 
-- Chart is responsive SVG (viewBox) with no chart library; renders stacked bars via `TokenSeriesChart`
-- Page is server-side (`force-dynamic`); `pivotByDim` runs at build time, not client
-- Token types stored in `fact_model_calls`: `input_tokens`, `output_tokens`, `cache_read`, `cache_5m`, `cache_1h`
-- Agent table supports variable N (no pagination); style is fixed-width columns with numeric alignment
+- Responsive SVG stacked bars (no chart library) via `TokenSeriesChart`
+- Page is server-side (`force-dynamic`); runs parallel queries for all 4 charts
+- Token columns in `fact_model_calls`: `input_tokens`, `output_tokens`, `cache_read`, `cache_5m`, `cache_1h`
+- Agent table: variable N rows (no pagination), fixed-width columns, numeric right-alignment
 
 ## Screenshots
 
 - **7d (primary):** ![](./tokens-page.png)
 - **Today (hourly):** ![](./tokens-page-today.png)
-- **30d (wider model mix):** ![](./tokens-page-30d.png)
+- **30d:** ![](./tokens-page-30d.png)

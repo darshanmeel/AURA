@@ -1,53 +1,68 @@
-# Session detail — Aura
+# Session detail
 
 **URL:** `/sessions/<sessionId>`  
-**Sample captured:** 044e06c4-f1a2-48e8-9640-02d674835e40 (57 skills, 641 turns, ~$115)  
-**Primary range:** N/A (session-scoped, no range filter)
+**Sample:** `044e06c4-f1a2-48e8-9640-02d674835e40` (57 skills, 3 agents, $115, 641 turns)  
+**Primary range:** N/A (session-scoped)
 
 ## What this screen shows
 
-Deep-dive into a single Claude Code session. Displays conversation transcripts, prompts, tool invocations, errors, costs, and tokens per-turn. Nine tabs (Details, Messages, Prompts, Agents, Errors, Files, Tokens, Tools, Git) reveal different dimensions of the same session. Fetched real-time via `lib/queries/sessions.ts`.
+Deep-dive into a single Claude Code session. Displays conversation transcripts, prompts, tool invocations, errors, costs, and tokens per-turn. Masthead renders all agents with tally. NEW: Dedicated "Skills & MCPs loaded" section between KPI strip and tabs shows visible chip lists of every skill and MCP server (no hover needed). Nine tabs (Details, Messages, Prompts, Agents, Errors, Files, Tokens, Tools, Git) reveal different dimensions of the same session.
 
-## Masthead
+## Masthead & eyebrow
 
-- **Left:** Eyebrow chips (provider, person, working dir, agent, git branch, skill/MCP counts)
-- **Center:** Session title (first 120 chars of first prompt, split at · for italic subtitle)
-- **Right:** SESSION COST hero stat in large color-coded typography; subheader with session_id, cwd, branch+commits, model, started, duration, status
+- **Eyebrow chips:** Provider, person, cwd (folder name only), agent strip (all agents + "(N agents)" tally if > 1), git branch, 🧩 N skills, ⚡ N MCPs
+- **Title:** Display name (first 120 chars), split at · for italic second part
+- **Meta grid (3×2):** Session ID, working dir, branch · commit count, model pill, started, duration · status
+- **Right:** SESSION COST hero stat with footer: X prompts · Y turns · Z tokens · N files
 
 ## KPI strip
 
-6 inline metrics: Turns · Output tokens · Cache 1h · Cache 5m · Cache hit % · $/turn
+6 inline metrics: Turns (+ N tool calls) · Output tokens (avg per turn) · Cache 1h (paid 2.5×) · Cache 5m (paid 1.25×) · Cache hit % · $ per turn (amortized)
 
-## Tabs (SessionTabs.tsx, all client-side state)
+## NEW — Skills & MCPs loaded section
 
-| Tab | What it shows | Data source |
-|---|---|---|
-| **Details** (default) | Turns table (first 20 of N): #, time, in/out tokens, cache write/read, stop_reason, tool, context % | `getSessionTurns()` → `fact_turns` |
-| **Messages** | Per-turn USER↔CLAUDE conversation. User & assistant bubbles with direction colors (green=human, orange=agent). Tools per turn. Expandable text. Thinking blocks. | `turns` + `toolExecutions` indexed by `assistant_event_uuid` |
-| **Prompts** | External user prompts with hero strip (most expensive, longest, most errored). Filter chips (All/Human/Agent/Errored/Overkill). Per-prompt: origin tag, model, cache rate, TTFT, stop reason, retry count, subagents, tool signature, cost. Collapsible tool calls + summary. | Lazy-fetched `/api/sessions/.../prompts-enriched` on tab open |
-| **Agents** | Agent/subagent distribution — which agents handled which turns | `getSessionPrompts()` grouping by `p.agent` |
-| **Errors** | Error ledger: time, severity tag, kind, tool, message, turn #, resolved-in (# turns until fix) | `getSessionErrors()` + `errorResolutions` map |
-| **Files** | Files touched in session. Edit/read/create attribution per file. Search. | `getSessionFilesWithAttribution()` or fallback `getSessionFiles()` |
-| **Tokens** | Per-turn stacked bar chart: cache-read (muted), ephemeral-5m (accent), output (ink), input (accent-2), + context-% overlay line. X-axis every 10 turns. Legend. | `turns` with `cache_read_input_tokens`, `ephemeral_*_input_tokens`, `output_tokens`, `input_tokens` |
-| **Tools** | Tool-call ledger: tool name, call timestamp, result timestamp, duration, success/error | `getSessionToolExecutions()` → `fact_tool_executions` |
-| **Git** | Git commands run during session: command, timestamp, exit code, stdout/stderr | `getSessionGitCommands()` → `fact_git_commands` |
+- **Visibility:** Renders only when session has ≥ 1 skill OR ≥ 1 MCP server; hides entirely otherwise
+- **Layout:** Two-column grid with header tally ("X skills · Y MCPs")
+- **Skills column:** Label "🧩 Skills", flex-wrapped monospace chips (accent colour, 11px, 1px border, 2px padding)
+- **MCPs column:** Label "⚡ MCP servers", flex-wrapped monospace chips (accent-2 colour, 11px, 1px border, 2px padding)
+- **Empty state:** If count > 0 but array is empty: "No skills loaded." / "No MCP servers loaded."
+- **Names visible:** Skill and MCP names appear directly as chip text — no hover required
+
+## Tabs (9 total, client-side in SessionTabs.tsx)
+
+| Tab | What it shows | Count badge | Data source |
+|---|---|---|---|
+| **Details** (default) | Overview, prompt heroes (most expensive, longest, most errored), thinking blocks, error resolutions, tool-mix pie | — | sessions.ts, fact_prompts, stg_events |
+| **Messages** | Per-turn USER↔CLAUDE / SUBAGENT flow. Direction icons + colours (green=human, orange=agent). Overkill flags. Tool list. Thinking blocks. | (N turns) | int_turns, stg_events |
+| **Prompts** | User & agent prompts, text preview, hero strip, filter chips (All/Human/Agent/Errored/Overkill). Per-prompt: model, cost, cache rate, TTFT, tool signature, retry count. | — | fact_prompts |
+| **Agents** | Agent/subagent breakdown per turn. Distribution chart. | — | int_event_agent |
+| **Errors** | Error ledger: timestamp, kind, tool, message, severity tag, turn #, resolved-in count | (N errors) | fact_errors |
+| **Files** | Files touched: path, file type, read/edit attribution, counts | — | fact_session_files |
+| **Tokens** | Per-turn stacked bar chart (cache read, ephemeral 5m+1h, output, input) + context % overlay line. X-axis every 10 turns. | — | fact_turns |
+| **Tools** | Tool-call ledger: name, call timestamp, result timestamp, duration, error flag, file path | — | fact_tool_executions |
+| **Git** | Git commands: command text, timestamp, success/error | — | fact_git_commands |
 
 ## How to read it
 
-- **Message direction**: USER→CLAUDE (green border + 👤) = human typed. CLAUDE→SUBAGENT (orange border + 🤖) = dispatch/orchestrator. Detected via text-prefix patterns in `DISPATCH_PATTERNS` regex array.
-- **Overkill detection**: Prompted with 1000s of tokens for a trivial task; flagged on Prompts tab.
-- **Cache metrics**: Cache hit rate = cache_read / (cache_read + ephemeral_5m + ephemeral_1h). Shown as % on Prompts row. 80%+ is green, 50%+ is accent, <50% is warn.
-- **Cost-per-turn**: Session cost / turn count. Displayed in KPI strip.
-- **Thinking blocks**: Collapsed by default; click "💭 show thinking" on Messages tab to expand.
+- **Multi-agent sessions:** Masthead agent strip lists every agent (main, runner, subagents) with "(N agents)" tally if > 1. Details about which agent handled which turn appear in Agents tab.
+- **Skills & MCPs visibility:** If zero skills AND zero MCPs, the "Skills & MCPs loaded" section hides entirely. Section always appears between KPI strip and tabs (when ≥ 1 of either).
+- **Message direction:** USER→CLAUDE (green) = human typed. CLAUDE→SUBAGENT (orange) = dispatch/orchestrator. Detected via prefix patterns.
+- **Tab badges:** Messages shows "(N)" for turn count. Errors shows "(N)" for error count. Other tabs hide badges if empty.
+- **Overkill flags:** Prompts tab marks multi-turn sequences with "overkill: <reason>" when task finishes sooner than expected.
+- **Cache colours:** Cache hit % uses green (≥80%), accent (≥50%), or warn (<50%).
+- **Thinking blocks:** Collapsed by default; click "💭 show thinking" on Messages tab to expand.
 
 ## Edge cases / empty states
 
-- **No turns**: Details + Messages show "No turn data retained."
-- **No errors**: Errors tab empty message.
-- **Session active**: `end_ts` NULL; status badge shows "active".
-- **No thinking**: Thinking-block disclosure hidden.
-- **Long sessions (500+ turns)**: Messages tab shows first 500; "show all" link on demand via `?turns=all` query param.
-- **Lazy Prompts fetch**: "loading enriched data…" note while CTE query runs (first open only).
+- **Session not found:** Returns 404 (notFound).
+- **Zero skills + zero MCPs:** "Skills & MCPs loaded" section does not render.
+- **No turns:** Details tab shows "Per-turn detail not retained." in TurnChart; Messages badge hides.
+- **No errors:** Errors tab badge hides; empty state shown.
+- **No files:** Files tab shows empty list.
+- **No tools:** Tools tab shows empty list.
+- **No git commands:** Git tab shows empty list.
+- **Session active:** `end_ts` NULL; status badge shows "active".
+- **Long sessions:** Prompts & Messages paginate; "show all" via `?turns=all` query param.
 
 ## Related screens
 

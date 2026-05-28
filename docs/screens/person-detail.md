@@ -1,59 +1,54 @@
-# Person detail — Aura
+# Person detail
 
 **URL:** `/people/<personId>`  
-**Sample:** `unknown` (catches all backfilled sessions whose person wasn't resolved)  
+**Sample:** `darshan` (the configured operator — 311 sessions)  
 **Primary range:** 7d  
 **Variants:** all-time
 
 ## What this screen shows
 
-Deep-dive profile for one operator (person) — their sessions, apps, agents, costs, and work patterns. Each person's identity comes from session metadata (`person_id` via OS username). The special ID `unknown` is the catch-all for sessions where the watcher couldn't determine person identity.
+Comprehensive profile of a single operator across all their work: total spend, sessions initiated, agents delegated to, apps worked in, and recent prompts in their own voice. Supports time-range filtering to isolate current week or all-time activity.
 
 ## Layout & components
 
-- **Masthead** — person name/id, range selector, quick pill (session count + cost)
-- **Profile head** — avatar, role, summary (sessions/apps/agents/commits), hero stat (spend for selected range)
-- **KPI strip** — 6-stat layout (Sessions, Apps, Agents, Commits, Tokens, Errors)
-- **Agents section** — who this person delegated to (cost split table with trend bar)
-- **Apps section** — projects/apps this person worked in (cost by project)
-- **Recent sessions** — last 20 sessions (date, agent, title, turns, cost)
-- **Prompts sidebar** — up to 8 most recent prompts in their voice + mini stats
+- **Masthead strap** — person ID, name, range filter, quick summary (session count + total cost)
+- **Profile head** — avatar, role, name, metadata (sessions / apps / agents / commits) + hero stat (range spend, tokens, turns)
+- **Stat strip** — 6 KPIs: Sessions, Apps, Agents, Commits, Tokens, Errors
+- **Main column** — 3 ledger tables: Agents delegated to (cost by agent), Apps worked in (cost by app), Recent sessions (20 most recent)
+- **Side panel** — Prompts sidebar (8 recent prompts in operator's voice with mini-stats: turns, tools, files, cost)
 
 ## Data sources
 
 | Component | Query | Mart |
 |---|---|---|
-| Person profile | `getPerson(personId)` | `dim_people` |
-| Range-aware KPIs | `getPersonRangeAggregates(personId, since)` | `int_entity_spend` (date-grain) |
-| Sessions list | `getPersonSessions(personId, since)` | `dim_sessions` |
-| Agents delegated to | `getPersonAgents(personId, since)` | `fact_model_calls` (range) / `dim_sessions` (lifetime) |
-| Apps worked in | `getPersonApps(personId, since)` | `fact_model_calls` (range) / `dim_sessions` (lifetime) |
-| Prompts sidebar | `getPersonPrompts(personId, limit, since)` | `fact_prompts` joined with `dim_sessions` |
-
-**Range logic:**
-- No filter → lifetime mart (fast path, from `dim_people`)
-- With filter → pre-aggregated `int_entity_spend` for KPIs, date-filtered joins on `fact_model_calls` for agents/apps
+| Person profile | `getPerson` | `dim_people` |
+| Sessions (range) | `getPersonSessions` | `dim_sessions` |
+| Agents (range) | `getPersonAgents` | `fact_model_calls` ∪ `dim_sessions` |
+| Apps (range) | `getPersonApps` | `fact_model_calls` ∪ `dim_apps` |
+| Range aggregates | `getPersonRangeAggregates` | `int_entity_spend` |
+| Prompts | `getPersonPrompts` | `fact_prompts` |
 
 ## How to read it
 
-1. **Person identity** — `person_id` is the OS username from session metadata. Matched to `person_name` via `dim_people` (resolve from `~/.aura/people.json` at ingest time).
-2. **Unknown** — catch-all for sessions where the watcher couldn't write `session_meta.person_id`. Once the session_meta backfill is complete, this ID will shrink.
-3. **Cost allocation** — KPI spend for the selected range comes from `int_entity_spend` (pre-aggregated daily). Individual agent/app costs are re-joined from `fact_model_calls` at the day grain for accuracy.
-4. **Prompts** — sidebar shows recent actual user input (truncated to 200 chars) + counts of turns/tools/files touched during that prompt's span.
+- **Person identity** — sourced from `session_meta` (environment variable `AURA_DEFAULT_PERSON_ID` if set, else extracted from JSONL)
+- **Session count badge** — counts sessions in the selected range; lifetime fallback when no range filter
+- **Cost split** — agents and apps show proportional bars (each row normalized to max cost in that category)
+- **Recent sessions** — limited to 20 most recent in the range; click title to drill into session detail
+- **Prompts sidebar** — shows 8 recent prompts; metadata includes timestamp, agent, turn count, tool calls, files edited, and cost
 
 ## Edge cases / empty states
 
-- **No person_id match** → 404 via `notFound()`
-- **No agents/apps data** → displays empty-block message
-- **No sessions** → displays empty-block message
-- **No prompts** → sidebar is hidden (graceful fallback if `fact_prompts` doesn't exist yet)
-- **Unknown ID with 0 sessions** → person detail page still renders if `dim_people` has the row, else 404
+- **Unknown person_id** — 404 (checked via `getPerson` null guard on line 57)
+- **Person with no sessions** — main column shows empty blocks ("No agent data yet", "No app data yet", "No sessions recorded yet")
+- **No prompts available** — sidebar hidden; fact_prompts table may not exist on all installations (try/catch on line 52)
+- **Range with zero data** — KPI numbers show 0; tables empty; range aggregates fall back to lifetime if sinceClause produces no rows
 
 ## Related screens
 
-- [People list](./people-list.md) — all operators, sorted by cost
-- [Session detail](./session-detail.md) — deep dive into one session
-- [Dashboard](./dashboard.md) — system-wide overview
+- [People list](./people-list.md)
+- [Session detail](./session-detail.md)
+- [Apps](./apps.md)
+- [Agents](./agents.md)
 
 ## Screenshots
 

@@ -7,8 +7,9 @@ they meaningfully differ.
 
 Captured on 2026-05-28 against the live local stack (watcher + dbt + frontend).
 
-**Start here:** [OVERVIEW.md](./OVERVIEW.md) — operator's guide that
-synthesises every screen below into a single navigation + lineage map.
+**Start here:**
+- [OVERVIEW.md](./OVERVIEW.md) — operator's guide: when to open which screen, the conventions used on every page, and the data lineage cheat sheet.
+- [HOW-IT-WORKS.md](./HOW-IT-WORKS.md) — architecture deep-dive: watcher internals, dbt layers, agent attribution, skills/MCPs propagation, and the failure modes we've actually seen.
 
 ## Index
 

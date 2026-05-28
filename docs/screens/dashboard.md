@@ -6,88 +6,77 @@
 
 ## What this screen shows
 
-The dashboard is AURA's homepage — a single-page summary of agent activity, spending, and resource usage across all sessions in a selected time range. An operator lands here to see at a glance: total spend by provider, cache hit rates, token volume over time, top apps/projects/agents by cost, recent errors, and the most common skills and MCP servers loaded.
+Aura's single summary page. Shows total spend with cost breakdowns by app, project, agent; KPI tiles; token volume (stacked by type); recent errors; and core operational context (top files, people, tools, providers, models, cache, skills & MCPs).
 
-## Layout & components
+## Layout & components (top → bottom)
 
-- **Masthead strap** — range selector (7d/today/30d/all), provider count, total people, apps, sessions, agents, pipeline status indicator
-- **Burn rate strip** — today's spend pace vs. 30-day average; projected 30-day run rate
-- **Hero section** — headline ("Spend, with receipts"), multi-line lede (provider summary + total cost over range), action buttons to Sessions/Apps/People
-- **Hero stat** — right side display of total cost + mini sparkline (daily spend over last 14 days) + token/tool/commit footers
-- **KPI strip (6 tiles)** — active sessions, cache hit rate, total tool calls, commits, error count, projected 30-day spend
-- **Token volume chart** — stacked bar chart, bucketed hourly for `range=today` or daily otherwise; token types: input, output, cache 5-min, cache 1-hour, cache read
-- **Apps ledger** — top 10 apps by cost; columns: rank, app name/id, agent count, session count, cost, relative share bar
-- **Projects ledger** — nested rollup; shows top projects with child apps indented beneath; columns: rank, project name, app count, session count, turns, cost, share
-- **Agents ledger** — top 20 agents by cost; columns: rank, agent name, app, project, session count, turns, cost, share
-- **Files section** — top 8 most-edited files; showing file extension badge, path (last 3 components), edit count bar
-- **Errors section** — recent errors (last 5); timestamp, severity badge, error kind, tool, message, session link
-- **Activity heatmap** — 7-day × 24-hour grid showing turn count and cost by day-of-week and hour; hover for details
-- **Side panel (right)** — Top people (6), Tool mix (bar chart), Providers (stacked bar + table), Models (stacked bar + top 8 table), Cache (5m vs 1h split), Editor's Note quote
-- **Skills & MCPs** — bottom section, two-column grid showing top 10 skills and top 10 MCP servers; columns: name, session count, last used date
+- **Masthead strap** — range label, provider count, people count, app count; range filter; pipeline status; session + agent totals
+- **Burn rate strip** — today's projected 30-day spend vs. rolling 30d average (context for spend pace)
+- **Hero section** — "Spend, with receipts" headline; hero stat (total cost over range, token/tool/commit counts); sparkline of daily spend
+- **KPI strip** — 6 metric tiles: active sessions, cache hit rate, tool calls, commits, errors, projected 30d cost
+- **Token volume chart** — stacked bars, distinct palette (teal/gold/orange/violet/slate), 180px height; hourly for today, daily for longer ranges
+- **Apps ledger** — top 10 by cost; agent count, sessions, cost, cost share bar
+- **Projects ledger** — rollup view; nested apps within each project
+- **Agents ledger** — top 20 by cost; app, project, sessions, turns, cost, share bar
+- **Files section** — top 8 most-edited files; edit count bar per file
+- **Errors section** — recent 5 errors; when, severity, kind, tool, message, session link
+- **Activity heatmap** — day-of-week × hour-of-day grid; turn count + cost + session starts
+- **Side panel** (right) — stacked cards: top 6 people (NOW SHOWS real names), tool mix (top 12 tools by call count), providers (cost split), models (top 8 of N), cache (5m vs 1h writes + reads), editor's note (loudest prompt of day)
+- **Skills & MCPs section** (BOTTOM) — 2-column layout; top 10 each; skill/MCP name, session count, last used date
 
 ## Data sources
 
-| Component | Query function | Source table(s) |
+| Component | Query | Mart |
 |---|---|---|
-| KPI strip (spend, sessions, cache, etc.) | `getDashboardKPIs` | `dim_sessions`, `fact_daily_spend`, `int_app_cwd_lookup` |
+| KPIs | `getDashboardKPIs` | `dim_sessions`, `fact_daily_spend` |
 | Daily spend sparkline | `getDailySpend` | `fact_daily_spend` |
-| Token series (hourly/daily) | `getTokenSeries` | `fact_model_calls` |
-| Apps ledger | `getTopApps` | `dim_apps` (lifetime) or `int_entity_spend` (range) |
-| Projects ledger | `getTopProjects` | `dim_sessions`, `int_app_cwd_lookup`, `dim_projects` |
-| Agents ledger | `getTopAgents` | `dim_agents` (lifetime) or `int_entity_spend` (range) |
+| Token chart | `getTokenSeries` | `fact_model_calls` (hourly/daily bucket) |
+| Top apps | `getTopApps` | `dim_apps` or `int_entity_spend` |
+| Top projects + nested apps | `getTopProjects` | `dim_sessions`, `int_app_cwd_lookup`, `dim_projects` |
+| Top agents | `getTopAgents` | `dim_agents` or `int_entity_spend` |
+| Recent errors | `getRecentErrors` | `fact_errors` |
+| Top files | `getTopFiles` | `fact_session_files` (joined to `dim_sessions`) |
+| Top people | `getTopPeople` | `dim_people` or `int_entity_spend` |
 | Tool mix | `getToolMix` | `fact_tool_executions` |
 | Providers split | `getProviderSplit` | `fact_daily_spend` |
-| Models breakdown | `getModelBreakdown` | `fact_daily_spend` |
-| Recent errors | `getRecentErrors` | `fact_errors` |
-| Top files | `getTopFiles` | `fact_session_files` ⋈ `dim_sessions` |
-| Top people | `getTopPeople` | `dim_people` (lifetime) or `int_entity_spend` (range) |
+| Model breakdown | `getModelBreakdown` | `fact_daily_spend` |
+| Spend pace | `getSpendPace` | `fact_spend_pace` |
 | Hourly activity heatmap | `getHourlyActivity` | `fact_hourly_activity` |
-| Spend pace (burn rate) | `getSpendPace` | `fact_spend_pace` |
-| Editor's note (loudest prompt) | `getLoudestPromptOfDay` | (from prompts module) |
-| Top skills | `getTopSkills` | `raw_session_skills` ⋈ `dim_sessions` |
-| Top MCPs | `getTopMcps` | `raw_session_mcps` ⋈ `dim_sessions` |
+| Top skills | `getTopSkills` | `raw_session_skills` × `dim_sessions` |
+| Top MCPs | `getTopMcps` | `raw_session_mcps` × `dim_sessions` |
 
 ## How to read it
 
-**Spend:** Start at the hero stat (top right) — that's the dollar total. Look at the daily sparkline to spot trends (flat = consistent, spike = one expensive day). The KPI "Projected 30d" extrapolates the daily average across the range to a 30-day forecast.
+**Cost drivers:** Apps ledger shows which codebases burn most; Projects nested view reveals cost per team structure. Agents ledger isolates agent-level spend (runner, subagent roles, etc.).
 
-**Activity:** The KPI strip shows sessions, tool calls, and commits. High active-sessions count = concurrent work; low error count = a quiet period. The heatmap reveals when work happens (e.g., if 9–10am is empty, batch jobs may be scheduled midnight).
+**Token health:** Token chart shows input/output split plus cache behavior (ephemeral 5m/1h writes, read cache). Palette: teal (input) → gold (output) → orange (5m) → violet (1h) → slate (read).
 
-**Tokens:** The token chart's bucket changes with range: hourly for today (24 bars, useful for spotting peak hours), daily for 7d/30d/all (one bar per day, trend view). Stacked colors show token mix: real input/output (bottom) vs. cache-weighted tokens (5m/1h/read); high cache-read portions = good reuse.
+**People:** Top people card now surfaces real names from `person_name` in `dim_people`; click through to `/people`.
 
-**Cache:** In the side panel, "Cache · ephemeral" shows 5-minute vs. 1-hour write volumes. A sudden 1-hour spike indicates expensive write operations that will save future reads; keep the cache hit rate in the KPI strip high (60%+ is good, >80% is excellent).
+**Skills & MCPs:** Newly positioned at bottom; empty until first dbt cycle after parser deploy populates `raw_session_skills` and `raw_session_mcps`. Useful for tracking agent capability adoption without cluttering headline metrics.
 
-**Errors:** If error count is non-zero, click "see all" to drill into `/errors`. A sudden spike may indicate a broken tool, model, or parsing issue.
-
-**Skills & MCPs:** These tables are populated after the first dbt cycle following a new skill/MCP deployment. Session count is the denominator for adoption; last-used date shows recency.
+**Empty states:** Any range with no data shows empty blocks per section (normal for fresh installs or time windows outside collected history).
 
 ## Edge cases / empty states
 
-- **No data in range:** Apps, Projects, Agents, Files, and Skills sections show empty-block placeholders (gray background, "No X data — dbt mart will populate after next run.").
-- **Range=today before first session:** Token chart returns empty array; displays "No token data in this range."
-- **Skills or MCPs not yet indexed:** Tables show "No skills/MCPs loaded in this range." until `raw_session_skills`/`raw_session_mcps` rows are populated.
-- **No errors:** Errors section shows "No errors recorded — a quiet [range]."
-- **Zero cost:** All darts/legends gracefully handle division by max(cost, 0.001) to avoid division-by-zero errors.
+- Fresh install (no `dim_sessions`, `raw_session_skills`, `raw_session_mcps`): dashboard renders with null KPIs, empty tables, empty Skills & MCPs section. Messages prompt "dbt mart will populate after next run."
+- Projects empty: shows message; Apps and Agents ledgers still populate.
+- No errors in range: "A quiet [range]."
+- Skills/MCPs empty: "No skills/MCPs loaded in this range."
+- People without names: falls back to `person_id`; fixed with recent parser update.
 
 ## Related screens
 
-- [Sessions list](./sessions-list.md) — detailed transcript explorer
-- [Tokens drill-down](./tokens-page.md) — per-model token breakdown
-- [Apps list](./apps-list.md) — app profile, sessions within each app
-- [Observability](./observability.md) — medallion health, dbt runtime, watcher lag
-- [People](./people.md) — person-specific spend and activity
-- [Errors detail](./errors.md) — full error log with filtering
+- [Sessions list](./sessions-list.md) — drill-down to individual session detail
+- [Apps detail](./apps-detail.md) — per-app cost & session breakdown
+- [People detail](./people-detail.md) — per-person spending & skill mix
+- [Tokens drill-down](./tokens-page.md) — full token volume by model / provider
+- [Errors detail](./errors-page.md) — all errors with filters and drill-down
+- [Agents list](./agents-list.md) — agent-level cost and session counts
 
 ## Screenshots
 
-**7d (primary):**
-![](./dashboard.png)
-
-**Today (hourly token buckets):**
-![](./dashboard-today.png)
-
-**30d:**
-![](./dashboard-30d.png)
-
-**All-time:**
-![](./dashboard-all.png)
+- 7d (primary): ![](./dashboard.png)
+- Today (hourly): ![](./dashboard-today.png)
+- 30d: ![](./dashboard-30d.png)
+- All-time: ![](./dashboard-all.png)

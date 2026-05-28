@@ -6,62 +6,51 @@
 
 ## What this screen shows
 
-The complete ledger of all Claude Code sessions, sortable by date, cost, turns, or tokens. Displays session metadata (person, app, agent, model), execution summary (turns, commits, cost), and a prompt preview with git branch info. Click any row to open the per-turn ledger and detailed analysis.
+The complete ledger of all Claude Code sessions, aggregated by time range and filtered by provider, status, agent, or search. Each row summarizes one session's scope (duration, person, agent(s), model), effort (turns, commits, cost), and extensibility (skills and MCP servers loaded). Click any row to drill into the per-turn ledger, errors, files, and prompt performance.
 
 ## Layout & components
 
-- **Range filter** — `today`, `7d` (default), `30d`, `all` — updates URL search param
-- **Session count pill** — total matching filters; shows subset if truncated (>200 rows)
-- **Search input** — filters by title, session ID, or cwd (path); case-insensitive substring
-- **Provider select** — `All`, `Anthropic`, `Google` 
-- **Status select** — `All`, `Active` (no `end_ts`), `Completed` (has `end_ts`)
-- **Sort select** — `Newest first`, `By cost`, `By turns`, `By tokens`
-- **Stat strip** — Sessions count, total cost (USD), aggregate turns, aggregate commits
-- **Sessions table** — 10 columns:
-  - **Started** — date + time + duration if completed; gray text
-  - **Person** — person_name or "—"
-  - **App** — app_id or last path segment (cwd); blue link
-  - **Agent** — agent name or "—"; blue link
-  - **Title · Prompt** — truncated session_title (200 chars) with session_id[:8] + git_branch below; clickable link
-  - **Model** — model pill (color-coded: Claude3.5/Opus/Sonnet/Haiku)
-  - **Turns** — turn_count; numeric
-  - **Commits** — commits; numeric
-  - **Cost** — total_cost in USD; strong (bold); numeric
-  - **→** — row chevron (visual affordance for clickability)
+- **Range filter / search / sort controls:** Date range (7d, 30d, 90d, today), full-text search (title/session ID/cwd), provider filter, status filter (active/completed), sort by (newest, cost, turns, tokens)
+- **KPI strip:** Sessions count, total cost, aggregate turns, aggregate commits—all for the filtered set
+- **Table columns:** Started · Person · App · Agent · Title · Model · Turns · Commits · 🧩 · ⚡ · Cost · [arrow]
+  - **Started:** Date and local time; duration if completed
+  - **Person:** Name (or '—' if unknown); Aura resolves via email → git config
+  - **App:** Project name from `cwd` or `dim_apps.app_id`
+  - **Agent:** Up to 2 agents shown, sorted with `main` deprioritised; "+N" badge if more
+  - **Title:** Session title or prompt text (200 char preview); session ID (first 8) and git branch below
+  - **Model:** Primary model used (Haiku/Sonnet/Opus/etc. as a pill)
+  - **Turns:** Count of assistant responses
+  - **Commits:** Git commits made
+  - **🧩:** Skill count; colour accent when > 0; hover shows skill names
+  - **⚡:** MCP server count; colour accent when > 0; hover shows server names
+  - **Cost:** USD total for the session
 
 ## Data sources
 
-| Component | Query | Mart / table |
+| Component | Query | Mart |
 |---|---|---|
-| Sessions list | `getSessions()` | `dim_sessions` |
-| Stats strip | `getSessionsStats()` | `dim_sessions` (aggregate) |
-| App lookup | Left join `dim_apps` on cwd | `dim_apps` |
-
-**Page size:** 50 rows (reserved for pagination; currently LIMIT 200 for stats cap).
+| Sessions list | `getSessions` | `dim_sessions` LEFT JOIN `dim_apps` |
+| Stats strip | `getSessionsStats` | `dim_sessions` |
 
 ## How to read it
 
-Each row is a single session:
-
-- **Cost** is the sum of all turns' `calculated_cost` (input tokens × per-model price + output tokens × per-model price per `model_pricing.csv`).
-- **Turns** is the count of assistant events (not user events); each turn may include multiple tool calls.
-- **Commits** is aggregated from `session_meta.commits` (git commits made during the session).
-- **Stat strip totals** use server-side sums from `getSessionsStats()`, not just the displayed subset (accurate even if >200 rows exist).
-- **Started** time and **duration** help identify when the work occurred. Duration only shows for completed sessions (where `end_ts` is not null).
+- **Multi-agent indicator:** A session with 2+ agents indicates orchestrated work (subagent dispatch). `main` alone = single-threaded session.
+- **Skill/MCP count tooltips:** Reveal exactly which plugins were loaded (e.g., "frontend-design, brainstorming" in skills; "plugin:context7:context7" in MCP).
+- **Person column:** Over 90% of sessions now resolve to real names; remaining "Unknown" entries have no email in git config or metadata.
+- **Cost aggregation:** Visible cost is per-session only; strip totals use server-side SUM to avoid pagination bias.
 
 ## Edge cases / empty states
 
-- **No sessions in range** — table shows `No sessions match these filters.` empty state (gray text in single row, colSpan=10)
-- **Active sessions** — no `end_ts`, so duration shows blank (only time + no duration suffix)
-- **No app_id** — falls back to cwd path last segment (e.g. "AURA" from "D:/darshanmeel/AURA")
-- **No git_branch** — omits the git_branch line below session_id[:8]
-- **Fetch error** — if DuckDB is not ready, shows `Could not load sessions — the database may not be ready yet.` message
+- **No sessions in range:** Empty row with "No sessions match these filters."
+- **Active session:** No `end_ts`, duration shows as "still running"
+- **Agent column = `main` only:** Session ran without subagent dispatch
+- **Person = Unknown:** Session was run by a user with no email in git config
+- **Skill count = 0 / MCP count = 0:** Neutral grey text; no hover tooltip (empty list)
 
 ## Related screens
 
-- [Session detail](./session-detail.md) — `/sessions/:id` per-turn ledger and analysis
-- [Apps](./apps-list.md) — `/apps` app-level rollup
-- [Observability](./observability.md) — `/observability` system health + medallion counts
+- [Session detail](./session-detail.md) — per-turn ledger, errors, files, prompt performance
+- [Apps](./apps-list.md) — project summary and cost rollup
 
 ## Screenshots
 

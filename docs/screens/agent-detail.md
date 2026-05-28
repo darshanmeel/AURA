@@ -18,7 +18,8 @@ Deep-dive into one Claude Code subagent. Shows which sessions used it, the cost 
 **Apps served** — which projects/apps this agent works in; table shows app ID, project ID, session count, turn count, cost, share bar  
 **Models routed to** — which Claude versions and providers this agent calls; table shows model, provider tag, session count, cost, share bar  
 **Recent sessions** — last N sessions for this agent; table shows start time, app, title, model, turn count, cost  
-**Side panels** — top files touched (with file kind tags), recent prompts directed at this agent (snippet + turn/file/cost rollup)
+**Side panels** — top files touched (with file kind tags), recent prompts directed at this agent (snippet + turn/file/cost rollup)  
+**Skills & MCPs** — top 10 skills and top 10 MCP servers this agent loaded across its sessions; tables show skill/MCP name, session count, last used timestamp
 
 ## Data sources
 
@@ -32,6 +33,8 @@ Deep-dive into one Claude Code subagent. Shows which sessions used it, the cost 
 | Files touched | `getAgentFiles(name, limit, since)` | `fact_session_files` + `dim_sessions` |
 | Prompts | `getAgentPrompts(name, limit, since)` | `fact_prompts` |
 | Range KPIs | `getAgentRangeAggregates(name, since)` | `int_entity_spend` + `dim_sessions` (tool_calls) |
+| Skills (new) | `getAgentSkills(name, since)` | `raw_session_skills` × `int_event_agent` (CTE) × `dim_sessions` |
+| MCPs (new) | `getAgentMcps(name, since)` | `raw_session_mcps` × `int_event_agent` (CTE) × `dim_sessions` |
 
 ## How to read it
 
@@ -40,6 +43,7 @@ Deep-dive into one Claude Code subagent. Shows which sessions used it, the cost 
 - **Range filtering.** 7d/30d/all-time uses `int_entity_spend` (pre-aggregated date grain) for fast header KPIs; session/file/prompt details filter on `start_ts` / `ts` directly.
 - **Tool calls on range filter.** `int_entity_spend.total_tool_calls` is hardcoded to 0; the page fetches real counts from `dim_sessions.tools_used` grouped by date.
 - **Commits are lifetime.** The "commits" stat shows all commits across history, not filtered by range—it's a proxy for agent maturity.
+- **Skills & MCPs query uses int_event_agent.agent_resolved** — finds every session the agent participated in (not just sessions where it was the mode). CTEs ensure the agent's true session set is used for counting.
 
 ## Edge cases & empty states
 
