@@ -142,7 +142,7 @@ All metrics in one `SELECT FROM dim_sessions WHERE start_ts >= since`, except co
 | Tool mix | `fact_tool_executions` | `COUNT(*) GROUP BY tool_name WHERE tool_call_ts >= since` |
 | Providers: cost | `fact_daily_spend` | `SUM(daily_cost) GROUP BY provider WHERE date >= since` |
 | Providers: % | client-side | `provider_cost / total_cost` |
-| Models: cost | `fact_daily_spend` | `SUM(daily_cost) GROUP BY model WHERE date >= since` |
+| Models: cost | `fact_daily_spend` | `SUM(daily_cost) GROUP BY model WHERE date >= since` (no LIMIT in SQL; page displays top 8 with a "+ N more · $X of $Y" disclosure when truncated) |
 | Cache 5m / 1h | `dim_sessions` | `SUM(ephemeral_5m_total)`, `SUM(ephemeral_1h_total) WHERE start_ts >= since` |
 | Cache reads | `dim_sessions` | `SUM(cache_read_total) WHERE start_ts >= since` |
 
@@ -287,7 +287,7 @@ When no filter: falls back to `dim_agents` lifetime mart.
 | Turns | `dim_agents.total_turns` | `SUM(int_entity_spend.total_turns)` |
 | Tool calls | `dim_agents.total_tool_calls` | `SUM(dim_sessions.tools_used) WHERE agent=? AND CAST(start_ts AS DATE) >= since` |
 | Tokens | `dim_agents.total_output_tokens` | `SUM(int_entity_spend.total_output_tokens)` — range-accurate |
-| Commits | `dim_agents.commits` | always lifetime via `agent.commits` directly; labeled **(lifetime)** when range filter active |
+| Commits | `dim_sessions` | `dim_agents` has no `commits` column — summed via separate `SELECT COALESCE(SUM(commits), 0) FROM dim_sessions WHERE agent=?` in `getAgent()`. Labeled **(lifetime)** when range filter active. |
 | Apps count | `dim_agents.app_count` | `NULL` → falls back to `dim_agents.app_count` (lifetime) |
 | Errors | `dim_agents.errors` | always lifetime |
 
@@ -379,6 +379,11 @@ These cannot be fixed in the frontend — the underlying dbt models don't expose
 | People list (`/people`) in range view | Commits | `getPeople()` reads `int_entity_spend.commits` = `0::BIGINT` (hardcoded). Fix in `int_entity_spend.sql`: join `stg_session_meta` to sum real commits at the person grain. |
 
 ---
+
+## Latent risks (not bugs today, worth knowing)
+
+- **`null ?? 0` masks empty data.** When a date range returns zero token rows but the rest of the dashboard has data, `SUM(total_input_tokens)` returns SQL `NULL` → JS `null`, and `null ?? 0` collapses to `0`. The UI shows "0 tokens" rather than "—". Unrealistic in practice (every assistant message has input tokens), but watch for it in the Cache panel for tenants who never use ephemeral caching.
+- **SQL injection latent.** Range queries splice `${since}` directly into template literals. `since` is always derived from `rangeSince(parseRange(...))` which only ever returns an ISO string or `null` — safe today. If a new API route ever accepts a raw `since` from a client, it must be sanitized.
 
 ## The semantic-model argument
 

@@ -406,25 +406,48 @@ export default async function DashboardPage({
           <div className="panel">
             <Eyebrow>Models</Eyebrow>
             <h3 className="h-panel">Where the money went.</h3>
-            <StackBar segments={models.map(m => {
-              const pfx = m.model.includes('opus') ? 'opus' : m.model.includes('sonnet') ? 'sonnet' : m.model.includes('gemini-2.5-pro') ? 'gpro' : m.model.includes('gemini') ? 'gflash' : 'haiku';
-              return {
-                pct: (m.cost / Math.max(kpis.total_cost, 0.001)) * 100,
-                cls: `seg-${pfx}`,
-                title: `${m.model}: ${fmt.usd(m.cost)}`
-              }
-            })} />
-            <table className="model-table">
-              <tbody>
-                {models.map(m => (
-                  <tr key={m.model}>
-                    <td><ModelPill model={m.model} /></td>
-                    <td className="num strong">{fmt.usd(m.cost)}</td>
-                    <td className="num muted">{fmt.pct(m.cost / Math.max(kpis.total_cost, 0.001))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {(() => {
+              const MODELS_VISIBLE = 8
+              const visibleModels = models.slice(0, MODELS_VISIBLE)
+              const hiddenModels = models.slice(MODELS_VISIBLE)
+              const visibleCost = visibleModels.reduce((a: number, m: any) => a + (m.cost ?? 0), 0)
+              const hiddenCost = hiddenModels.reduce((a: number, m: any) => a + (m.cost ?? 0), 0)
+              return (
+                <>
+                  <StackBar segments={visibleModels.map((m: any) => {
+                    const pfx = m.model.includes('opus') ? 'opus' : m.model.includes('sonnet') ? 'sonnet' : m.model.includes('gemini-2.5-pro') ? 'gpro' : m.model.includes('gemini') ? 'gflash' : 'haiku';
+                    return {
+                      pct: (m.cost / Math.max(kpis.total_cost, 0.001)) * 100,
+                      cls: `seg-${pfx}`,
+                      title: `${m.model}: ${fmt.usd(m.cost)}`
+                    }
+                  })} />
+                  <table className="model-table">
+                    <tbody>
+                      {visibleModels.map((m: any) => (
+                        <tr key={m.model}>
+                          <td><ModelPill model={m.model} /></td>
+                          <td className="num strong">{fmt.usd(m.cost)}</td>
+                          <td className="num muted">{fmt.pct(m.cost / Math.max(kpis.total_cost, 0.001))}</td>
+                        </tr>
+                      ))}
+                      {hiddenModels.length > 0 && (
+                        <tr>
+                          <td className="muted tiny">+ {hiddenModels.length} more</td>
+                          <td className="num muted tiny">{fmt.usd(hiddenCost)}</td>
+                          <td className="num muted tiny">{fmt.pct(hiddenCost / Math.max(kpis.total_cost, 0.001))}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                  {hiddenModels.length > 0 && (
+                    <div className="tiny muted" style={{ marginTop: 4 }}>
+                      top {MODELS_VISIBLE} of {models.length} · {fmt.usd(visibleCost)} of {fmt.usd(visibleCost + hiddenCost)}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           </div>
 
           {/* Cache */}

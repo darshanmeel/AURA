@@ -38,22 +38,32 @@ export async function getAllAgents(since: string | null = null) {
 }
 
 export async function getAgent(name: string) {
-  return queryOne(`
-    SELECT agent,
-           COUNT(DISTINCT app_id)         AS app_count,
-           SUM(session_count)             AS session_count,
-           SUM(total_turns)               AS total_turns,
-           SUM(total_tool_calls)          AS total_tool_calls,
-           SUM(total_cost)                AS total_cost,
-           SUM(total_output_tokens)       AS total_output_tokens,
-           array_distinct(array_agg(app_id))      AS apps,
-           array_distinct(array_agg(project_id))  AS projects,
-           MIN(first_seen)                AS first_seen,
-           MAX(last_seen)                 AS last_seen
-    FROM dim_agents
-    WHERE agent = ?
-    GROUP BY agent
-  `, [name])
+  // dim_agents has no commits column — sum it from dim_sessions in parallel.
+  const [agentRow, commitRow] = await Promise.all([
+    queryOne(`
+      SELECT agent,
+             COUNT(DISTINCT app_id)         AS app_count,
+             SUM(session_count)             AS session_count,
+             SUM(total_turns)               AS total_turns,
+             SUM(total_tool_calls)          AS total_tool_calls,
+             SUM(total_cost)                AS total_cost,
+             SUM(total_output_tokens)       AS total_output_tokens,
+             array_distinct(array_agg(app_id))      AS apps,
+             array_distinct(array_agg(project_id))  AS projects,
+             MIN(first_seen)                AS first_seen,
+             MAX(last_seen)                 AS last_seen
+      FROM dim_agents
+      WHERE agent = ?
+      GROUP BY agent
+    `, [name]),
+    queryOne(`
+      SELECT COALESCE(SUM(commits), 0) AS commits
+      FROM dim_sessions
+      WHERE agent = ?
+    `, [name]),
+  ])
+  if (!agentRow) return null
+  return { ...agentRow, commits: commitRow?.commits ?? 0 }
 }
 
 export async function getAgentApps(name: string, since: string | null = null) {

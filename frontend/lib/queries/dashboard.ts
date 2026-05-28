@@ -29,16 +29,7 @@ export async function getDashboardKPIs(since: string | null = null) {
       SUM(ephemeral_5m_total)                                               AS cache_5m_total,
       SUM(ephemeral_1h_total)                                               AS cache_1h_total,
       MIN(start_ts)                                                         AS first_session,
-      MAX(start_ts)                                                         AS last_session,
-      (SELECT prompt_text_200 FROM fact_prompts
-       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day' AND prompt_origin = 'human'
-       ORDER BY output_tokens_total DESC LIMIT 1)                          AS editor_quote,
-      (SELECT agent FROM fact_prompts
-       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day' AND prompt_origin = 'human'
-       ORDER BY output_tokens_total DESC LIMIT 1)                          AS editor_quote_agent,
-      (SELECT app_id FROM fact_prompts
-       WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day' AND prompt_origin = 'human'
-       ORDER BY output_tokens_total DESC LIMIT 1)                          AS editor_quote_app
+      MAX(start_ts)                                                         AS last_session
     FROM dim_sessions
     ${wh}
   `)
@@ -202,6 +193,9 @@ export async function getProviderSplit(since: string | null = null) {
 }
 
 export async function getModelBreakdown(since: string | null = null) {
+  // Return all models (no LIMIT) so the page can render a "top 8 of N · $X of $Y"
+  // disclosure when the model count exceeds the visible cap. Models per tenant are
+  // ~10 in practice — the unbounded read stays small.
   const wh = since ? `WHERE date >= '${since}'::DATE` : ''
   return query(`
     SELECT model, SUM(daily_cost) AS cost, SUM(session_count) AS sessions
@@ -209,7 +203,6 @@ export async function getModelBreakdown(since: string | null = null) {
     ${wh}
     GROUP BY model
     ORDER BY cost DESC
-    LIMIT 8
   `)
 }
 
