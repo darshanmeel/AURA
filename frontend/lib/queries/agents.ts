@@ -172,17 +172,26 @@ export async function getAgentFiles(name: string, limit = 8, since: string | nul
   `, [name, limit])
 }
 
-// Top skills loaded across sessions where this agent was the resolved agent.
+// Top skills loaded in any session where this agent had at least one event.
+// dim_sessions.agent is the MODE (most common resolved agent), which is 'main'
+// for 87% of sessions — filtering on it would miss almost every subagent.
+// Use int_event_agent.agent_resolved to find every session the agent touched.
 export async function getAgentSkills(name: string, since: string | null = null, limit = 10) {
   const sinceClause = since ? ` AND ds.end_ts >= '${since}'::TIMESTAMP` : ''
   return query(`
+    WITH agent_sessions AS (
+      SELECT DISTINCT session_id
+      FROM int_event_agent
+      WHERE agent_resolved = ?
+    )
     SELECT
       rs.skill_name                 AS skill,
       COUNT(DISTINCT rs.session_id) AS session_count,
       MAX(ds.end_ts)                AS last_used
     FROM raw_session_skills rs
-    JOIN dim_sessions ds ON ds.session_id = rs.session_id
-    WHERE ds.agent = ?${sinceClause}
+    JOIN agent_sessions a ON a.session_id = rs.session_id
+    JOIN dim_sessions ds  ON ds.session_id = rs.session_id
+    WHERE 1=1${sinceClause}
     GROUP BY rs.skill_name
     ORDER BY session_count DESC, last_used DESC
     LIMIT ${limit}
@@ -192,13 +201,19 @@ export async function getAgentSkills(name: string, since: string | null = null, 
 export async function getAgentMcps(name: string, since: string | null = null, limit = 10) {
   const sinceClause = since ? ` AND ds.end_ts >= '${since}'::TIMESTAMP` : ''
   return query(`
+    WITH agent_sessions AS (
+      SELECT DISTINCT session_id
+      FROM int_event_agent
+      WHERE agent_resolved = ?
+    )
     SELECT
       rm.mcp_server                 AS mcp_server,
       COUNT(DISTINCT rm.session_id) AS session_count,
       MAX(ds.end_ts)                AS last_used
     FROM raw_session_mcps rm
-    JOIN dim_sessions ds ON ds.session_id = rm.session_id
-    WHERE ds.agent = ?${sinceClause}
+    JOIN agent_sessions a ON a.session_id = rm.session_id
+    JOIN dim_sessions ds  ON ds.session_id = rm.session_id
+    WHERE 1=1${sinceClause}
     GROUP BY rm.mcp_server
     ORDER BY session_count DESC, last_used DESC
     LIMIT ${limit}

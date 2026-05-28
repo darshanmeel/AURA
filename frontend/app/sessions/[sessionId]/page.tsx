@@ -189,6 +189,75 @@ export default async function SessionDetailPage({
         <StatBlock label="$ / turn" value={fmt.usd(s.turn_count > 0 ? s.total_cost / s.turn_count : null)} footnote="amortized" />
       </section>
 
+      {/* Skills & MCPs loaded — visible chip list (not just hover on masthead).
+          Renders only when the session has at least one of each. */}
+      {(Number(s.skill_count ?? 0) > 0 || Number(s.mcp_count ?? 0) > 0) && (
+        <>
+          <Rule weight="thick" />
+          <section style={{ marginBottom: 24 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+              <h2 className="h-section">Skills &amp; MCPs loaded</h2>
+              <span className="section-meta">
+                {fmt.n(s.skill_count ?? 0)} skill{Number(s.skill_count) === 1 ? '' : 's'} ·{' '}
+                {fmt.n(s.mcp_count ?? 0)} MCP server{Number(s.mcp_count) === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+              <div>
+                <div className="meta-label" style={{ marginBottom: 8 }}>🧩 Skills</div>
+                {Array.isArray(s.skills_loaded) && s.skills_loaded.length > 0 ? (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {s.skills_loaded.map((sk: string) => (
+                      <span
+                        key={sk}
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          padding: '2px 8px',
+                          border: '1px solid var(--rule)',
+                          borderRadius: 2,
+                          background: 'var(--paper, transparent)',
+                          color: 'var(--accent)',
+                        }}
+                      >
+                        {sk}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="muted" style={{ fontSize: 12 }}>No skills loaded.</div>
+                )}
+              </div>
+              <div>
+                <div className="meta-label" style={{ marginBottom: 8 }}>⚡ MCP servers</div>
+                {Array.isArray(s.mcp_servers) && s.mcp_servers.length > 0 ? (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {s.mcp_servers.map((m: string) => (
+                      <span
+                        key={m}
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          padding: '2px 8px',
+                          border: '1px solid var(--rule)',
+                          borderRadius: 2,
+                          background: 'var(--paper, transparent)',
+                          color: 'var(--accent-2, #efe6d6)',
+                        }}
+                      >
+                        {m}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="muted" style={{ fontSize: 12 }}>No MCP servers loaded.</div>
+                )}
+              </div>
+            </div>
+          </section>
+        </>
+      )}
+
       <Rule weight="thick" />
 
       <SessionTabs
