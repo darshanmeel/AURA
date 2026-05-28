@@ -764,9 +764,9 @@ export async function getDbtRunHistory(limit: number = 6): Promise<DbtHistoryEnt
 
 export interface MedallionTable {
   name: string
-  rows: number
-  bytes: number | null              // approximate, from duckdb_tables() (null = unknown)
-  age_seconds: number | null        // freshness signal; null for static dims
+  rows: number | null               // null for views (counting re-evaluates the view; not worth ~10s/poll)
+  bytes: number | null              // approximate, from duckdb_tables() (null = unknown / view)
+  age_seconds: number | null        // freshness signal; null for static dims and uncounted views
   materialization: string           // table | view | incremental | external
 }
 
@@ -818,26 +818,7 @@ const LAYER_TABLES: Record<'bronze' | 'silver' | 'gold', { table: string; materi
   ],
 }
 
-interface TableSizeRow {
-  table_name: string
-  estimated_size: number | null
-}
-
 export async function getMedallionLayers(perTestResults: DbtTestResult[] = []): Promise<MedallionLayer[]> {
-  // Per-table byte estimates from DuckDB's information schema. estimated_size
-  // is a rough total-bytes-in-storage figure; null when the catalog doesn't
-  // report it. Wrapped because duckdb_tables() may be absent in older builds.
-  let sizesByTable = new Map<string, number | null>()
-  try {
-    const rows = await query<TableSizeRow>(
-      `SELECT table_name, estimated_size
-       FROM duckdb_tables()`
-    )
-    sizesByTable = new Map(rows.map(r => [r.table_name, r.estimated_size != null ? Number(r.estimated_size) : null]))
-  } catch (_e) {
-    // catalog unavailable — leave sizes empty
-  }
-
   // Per-relation test pass/fail attribution.
   const testsByRelation = new Map<string, { pass: number; total: number }>()
   for (const t of perTestResults) {
@@ -847,47 +828,58 @@ export async function getMedallionLayers(perTestResults: DbtTestResult[] = []): 
     testsByRelation.set(t.relation, entry)
   }
 
-  // Batch every table's COUNT(*) and MAX(ts) into ONE query — opening 23
-  // connections sequentially was timing out the API on a 1GB DB. Each
-  // sub-select is wrapped in TRY() at the SQL level so a missing table or
-  // column doesn't poison the whole UNION.
   const allTables = [
     ...LAYER_TABLES.bronze.map(t => ({ layer: 'bronze' as const, ...t })),
     ...LAYER_TABLES.silver.map(t => ({ layer: 'silver' as const, ...t })),
     ...LAYER_TABLES.gold.map(t => ({ layer: 'gold' as const, ...t })),
   ]
-  const probeRows: Map<string, { rows: number; age: number | null }> = new Map()
+
+  // Two cheap metadata-only fetches in parallel.
+  // (1) duckdb_tables() gives row counts for BASE TABLES via `estimated_size`
+  //     (despite the misleading name, this is the row count, not bytes —
+  //     verified empirically against COUNT(*)). Returns nothing for VIEWS, so
+  //     silver-layer view counts end up null and the UI renders '—'.
+  //     This replaces a 15-second UNION of per-table COUNT(*) scalar subqueries.
+  // (2) UNION ALL of MAX(ts) for tables that have a ts_column. ~10ms because
+  //     MAX uses DuckDB's zone maps. Views are excluded — running MAX(ts) on a
+  //     view re-evaluates the view (silver views read raw_events with filters,
+  //     which means a full raw_events scan each).
+  const tablesWithTs = allTables.filter(t => t.ts_column !== null && t.materialization !== 'view')
+
+  let countsByTable = new Map<string, number>()
+  let agesByTable = new Map<string, number | null>()
   try {
-    const unions = allTables.map(t => `
-      SELECT
-        '${t.table}'::VARCHAR AS table_name,
-        (SELECT COUNT(*) FROM ${t.table})::BIGINT AS rows,
-        ${t.ts_column
-          ? `(SELECT EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE FROM ${t.table})`
-          : 'NULL::DOUBLE'} AS age
-    `).join(' UNION ALL ')
-    const rows = await query<{ table_name: string; rows: number | string; age: number | null }>(unions)
-    for (const r of rows) {
-      probeRows.set(r.table_name, {
-        rows: Number(r.rows),
-        age: r.age != null ? Number(r.age) : null,
-      })
-    }
-  } catch (e) {
-    // Bulk probe failed (likely a missing table broke the UNION). Fall back
-    // to per-table queries — slower but resilient.
-    for (const t of allTables) {
-      try {
-        const r = await queryOne<{ n: number; age: number | null }>(
-          `SELECT COUNT(*) AS n, ${t.ts_column
-            ? `EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE`
-            : 'NULL::DOUBLE'} AS age FROM ${t.table}`
-        )
-        probeRows.set(t.table, { rows: Number(r?.n ?? 0), age: r?.age != null ? Number(r.age) : null })
-      } catch (_e) {
-        // skip missing
-      }
-    }
+    const [tablesMeta, ageRows] = await Promise.all([
+      query<{ table_name: string; estimated_size: number | string | null }>(
+        `SELECT table_name, estimated_size FROM duckdb_tables()`
+      ),
+      tablesWithTs.length === 0
+        ? Promise.resolve([] as Array<{ table_name: string; age: number | null }>)
+        : query<{ table_name: string; age: number | null }>(
+            tablesWithTs.map(t => `
+              SELECT '${t.table}'::VARCHAR AS table_name,
+                     EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE AS age
+              FROM ${t.table}
+            `).join(' UNION ALL ')
+          ),
+    ])
+    countsByTable = new Map(
+      tablesMeta.map(r => [r.table_name, Number(r.estimated_size ?? 0)])
+    )
+    agesByTable = new Map(
+      ageRows.map(r => [r.table_name, r.age != null ? Number(r.age) : null])
+    )
+  } catch (_e) {
+    // Bulk fetch failed — fall back to empty maps so the page still renders.
+    // The UI shows '—' everywhere the count/age is missing.
+  }
+
+  const probeRows: Map<string, { rows: number | null; age: number | null }> = new Map()
+  for (const t of allTables) {
+    probeRows.set(t.table, {
+      rows: countsByTable.has(t.table) ? countsByTable.get(t.table) ?? null : null,
+      age: agesByTable.get(t.table) ?? null,
+    })
   }
 
   const results: MedallionLayer[] = []
@@ -901,25 +893,21 @@ export async function getMedallionLayers(perTestResults: DbtTestResult[] = []): 
     let testsTotal = 0
 
     for (const t of def) {
-      const probe = probeRows.get(t.table)
-      if (!probe) continue       // table missing — silently drop from layer
+      const probe = probeRows.get(t.table) ?? { rows: null, age: null }
       const rows = probe.rows
       const ageSec = probe.age
 
-      const bytes = sizesByTable.has(t.table) ? sizesByTable.get(t.table) ?? null : null
+      // bytes is no longer derived — duckdb_tables().estimated_size is the row
+      // count (not bytes, despite the column name). Showing '—' is honest.
       tables.push({
         name: t.table,
         rows,
-        bytes,
+        bytes: null,
         age_seconds: ageSec,
         materialization: t.materialization,
       })
-      totalRows += rows
-      if (bytes == null) {
-        totalBytes = null            // any null poisons the layer total
-      } else if (totalBytes != null) {
-        totalBytes += bytes
-      }
+      if (rows != null) totalRows += rows
+      totalBytes = null
       if (ageSec != null && (youngestAge == null || ageSec < youngestAge)) {
         youngestAge = ageSec
       }

@@ -6,7 +6,7 @@ description = "Local analytics for AI coding agent transcripts"
 [database]
 path = "/data/aura.duckdb"
 read_path = "/data/aura_read.duckdb"
-snapshot_interval_secs = 2
+snapshot_interval_secs = 30
 
 [watcher]
 logs_dir = "~/.claude/projects"

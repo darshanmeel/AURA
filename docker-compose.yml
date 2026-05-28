@@ -14,7 +14,11 @@ services:
       # still resolve. The read DB therefore lives in a sibling directory.
       - AURA_READ_DB_PATH=/data/read/aura.duckdb
       - AURA_LOGS_DIR=/logs/claude
-      - AURA_SNAPSHOT_INTERVAL=2
+      # 30s matches frontend revalidate_seconds. The previous 2s interval
+      # rewrote the read DB so frequently it invalidated the frontend's
+      # connection-cache inode tracker mid-request, making warm hits as slow
+      # as cold ones (observability /api hit was 30s+ even after dbt finished).
+      - AURA_SNAPSHOT_INTERVAL=30
       - AURA_DBT_RUN_INTERVAL_MINUTES=5
       # Set to false to disable secret/base64 redaction (raw JSONL passes through unchanged).
       # WARNING: disabling means any API keys or tokens in payloads are stored verbatim.
