@@ -460,28 +460,57 @@ function MultiModelPill({
 // ── Compact message bubble for Messages tab ──────────────────────────────────
 const PREVIEW_LEN = 280
 
-// Role labels for the four directions a turn can flow.
-//   main thread (is_sidechain=false):  USER → CLAUDE  /  CLAUDE → USER
-//   sidechain   (is_sidechain=true ):  CLAUDE → SUBAGENT  /  SUBAGENT → CLAUDE
-// is_sidechain is taken from fact_turns and propagated through
-// getSessionTurns → SessionTabs. A turn with is_sidechain=true is by
-// definition a Task-tool dispatch: the user-side text is the dispatch
-// payload (Claude → subagent), and the assistant-side text is the
-// subagent's reply that flows back to Claude through the Task result.
-function turnRoleLabels(isSidechain: boolean): { user: string; assistant: string; userColor: string; assistantColor: string } {
-  if (isSidechain) {
+// Message-direction classifier.
+//
+// `is_sidechain` alone is not enough — it catches inline Task-tool dispatches
+// inside an interactive session, but misses orchestrator-launched runs (the
+// whole session is itself a subagent doing work, started by `claude-code
+// --prompt …` from an outer orchestrator). Those show is_sidechain=false but
+// the user_prompt is clearly a dispatch payload ("You are agent X…",
+// "You are dispatched as…", "You are an expert …").
+//
+// Heuristic: a user_prompt matching `^You are (agent|dispatched|an?\s|the\s)`
+// is a dispatch system-prompt, not something a real human typed. Combined
+// with is_sidechain we cover both cases.
+const DISPATCH_PREFIX = /^You are (agent\b|dispatched\b|an?\s|the\s|a\s)/i
+
+type Direction = {
+  kind: 'human' | 'agent'
+  userLabel: string
+  userColor: string
+  userBorder: string
+  userIcon: string
+  assistLabel: string
+  assistColor: string
+  assistBorder: string
+  assistIcon: string
+}
+
+function classifyDirection(userText: string, isSidechain: boolean): Direction {
+  const isDispatch = isSidechain || DISPATCH_PREFIX.test((userText ?? '').trimStart())
+  if (isDispatch) {
     return {
-      user:      'CLAUDE → SUBAGENT',
-      assistant: 'SUBAGENT → CLAUDE',
-      userColor:      'var(--accent)',
-      assistantColor: 'var(--accent)',
+      kind: 'agent',
+      userLabel:    isSidechain ? 'CLAUDE → SUBAGENT' : 'ORCHESTRATOR → AGENT',
+      userColor:    'var(--accent)',
+      userBorder:   'var(--accent)',
+      userIcon:     '🤖',
+      assistLabel:  isSidechain ? 'SUBAGENT → CLAUDE' : 'AGENT → ORCHESTRATOR',
+      assistColor:  'var(--accent)',
+      assistBorder: 'rgba(239,130,50,0.5)',
+      assistIcon:   '⚡',
     }
   }
   return {
-    user:      'USER → CLAUDE',
-    assistant: 'CLAUDE → USER',
-    userColor:      'var(--accent-2)',
-    assistantColor: 'var(--muted)',
+    kind: 'human',
+    userLabel:    'USER → CLAUDE',
+    userColor:    'var(--accent-green, #4caf82)',
+    userBorder:   'var(--accent-green, #4caf82)',
+    userIcon:     '👤',
+    assistLabel:  'CLAUDE → USER',
+    assistColor:  'var(--ink-2)',
+    assistBorder: 'var(--ink-2)',
+    assistIcon:   '🤖',
   }
 }
 
@@ -499,7 +528,7 @@ function MessageTurn({
   const assistText: string = turn.assistant_response ?? ''
   const userTrunc = !userExpanded && userText.length > PREVIEW_LEN
   const assistTrunc = !assistExpanded && assistText.length > PREVIEW_LEN
-  const roles = turnRoleLabels(!!turn.is_sidechain)
+  const dir = classifyDirection(userText, !!turn.is_sidechain)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -523,17 +552,21 @@ function MessageTurn({
         )}
       </div>
 
-      {/* User bubble */}
+      {/* User bubble — orchestrator/dispatch payloads get an orange border + 🤖,
+          real human prompts get green + 👤 so the two never visually mix. */}
       {userText && (
         <div style={{ marginLeft: 44 }}>
           <div style={{
             padding: '8px 12px',
-            borderLeft: '2px solid var(--accent-2)',
-            background: 'rgba(239,230,214,0.06)',
+            borderLeft: `2px solid ${dir.userBorder}`,
+            background: dir.kind === 'agent' ? 'rgba(239,130,50,0.05)' : 'rgba(76,175,130,0.05)',
             borderRadius: '0 4px 4px 0',
           }}>
-            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: roles.userColor, marginBottom: 4, fontFamily: 'var(--mono)' }}>
-              {roles.user}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              <span style={{ fontSize: 11 }}>{dir.userIcon}</span>
+              <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: dir.userColor, fontFamily: 'var(--mono)' }}>
+                {dir.userLabel}
+              </span>
             </div>
             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
               <PromptText text={userTrunc ? userText.slice(0, PREVIEW_LEN) : userText} />
@@ -555,12 +588,16 @@ function MessageTurn({
         <div style={{ marginLeft: 44 }}>
           <div style={{
             padding: '8px 12px',
-            borderLeft: '2px solid var(--ink-2)',
+            borderLeft: `2px solid ${dir.assistBorder}`,
             borderRadius: '0 4px 4px 0',
+            background: dir.kind === 'agent' ? 'rgba(239,130,50,0.03)' : 'transparent',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: roles.assistantColor, fontFamily: 'var(--mono)' }}>
-                {roles.assistant}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11 }}>{dir.assistIcon}</span>
+                <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: dir.assistColor, fontFamily: 'var(--mono)' }}>
+                  {dir.assistLabel}
+                </span>
               </div>
               <span className="mono muted" style={{ fontSize: 10 }}>{fmt.k(turn.output_tokens)} out</span>
             </div>
@@ -926,10 +963,16 @@ export function SessionTabs({
               <ol className="prompts" style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
                 {filteredPrompts.map((p: any, i: number) => {
                   const toolCalls: any[] = Array.isArray(p.tool_calls) ? p.tool_calls : []
-                  const origin: string | null = p.prompt_origin ?? null
-                  const isAgent = origin === 'agent'
                   const fullText: string = p.prompt_text_full ?? p.prompt_text_200 ?? ''
                   const previewText: string = p.prompt_text_200 ?? ''
+                  // Reuse the same classifier the Messages tab uses, so
+                  // dispatch-style prompts ("You are agent …") get tagged
+                  // CLAUDE → SUBAGENT even when fact_prompts.prompt_origin
+                  // says 'human' (which is is_sidechain-only and misses
+                  // orchestrator-launched sessions).
+                  const dispatchByText = DISPATCH_PREFIX.test(fullText.trimStart())
+                  const isAgent = p.prompt_origin === 'agent' || dispatchByText
+                  const origin: string | null = p.prompt_origin ?? (dispatchByText ? 'agent' : null)
 
                   // New insight columns (all defensively read)
                   const cacheRate: number | null  = typeof p.cache_hit_rate === 'number' ? p.cache_hit_rate : null
@@ -966,10 +1009,12 @@ export function SessionTabs({
                         {origin && (
                           <span
                             title={isAgent
-                              ? 'This prompt is the Task-tool dispatch payload — Claude dispatching to a subagent inside a sidechain'
+                              ? 'Dispatch payload — Claude or an orchestrator handing work to a subagent. Not human-typed.'
                               : 'External human prompt typed into the main thread'}
                             style={{
-                              display: 'inline-block',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
                               padding: '1px 7px',
                               borderRadius: 3,
                               fontSize: 10,
@@ -980,9 +1025,12 @@ export function SessionTabs({
                               color: isAgent ? 'var(--accent)' : 'var(--accent-green, #4caf82)',
                               border: `1px solid ${isAgent ? 'rgba(239,130,50,0.3)' : 'rgba(80,180,120,0.3)'}`,
                             }}>
-                            {isAgent
-                              ? `CLAUDE → SUBAGENT${p.agent ? ` (${p.agent})` : ''}`
-                              : 'USER → CLAUDE'}
+                            <span>{isAgent ? '🤖' : '👤'}</span>
+                            <span>
+                              {isAgent
+                                ? `CLAUDE → SUBAGENT${p.agent ? ` (${p.agent})` : ''}`
+                                : 'USER → CLAUDE'}
+                            </span>
                           </span>
                         )}
 
