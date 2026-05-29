@@ -12,10 +12,12 @@ directory.
 
 ## 0 — The grand strategy
 
-![Dashboard at 7d](./dashboard.png)
+![Dashboard at 30d](./dashboard.png)
 
-The single summary screen above is the *output* of the entire pipeline.
-Everything in this document describes how that page gets populated.
+The single summary screen above is the *output* of the entire pipeline
+(shown here at `range=30d` — the default `today` view is empty until the
+day's first sessions are ingested, since every KPI filters on the event
+date). Everything in this document describes how that page gets populated.
 
 **Local-first, batch-shaped, single-process per surface.** Everything runs in
 Docker on the developer's machine. No managed cloud, no Kafka, no separate
@@ -404,6 +406,11 @@ frontend/
     SessionTabs.tsx       # session detail tabs (client component)
     TokenSeriesChart.tsx  # stacked bar chart (server component, SVG only)
     PipelineLive.tsx      # observability live polling
+
+scripts/
+  verify/                 # ad-hoc Playwright/DuckDB verification scripts
+                          # (verify_*.mjs) — dev tooling, not part of the
+                          # running stack; run from the repo root
 ```
 
 ---

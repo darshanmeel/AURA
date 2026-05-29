@@ -91,7 +91,7 @@ Two truly independent stages: JSON → bronze (the watcher's job) and bronze →
 | **People** (`/people`) | Rich operator cards: cost, sessions, turns, commits, apps chips, agents chips, % of org spend |
 | **Person detail** (`/people/[personId]`) | Agents this person delegates to, apps they work in, recent sessions, **"What {name} actually types"** prompt log |
 | **Sessions** (`/sessions`) | Filterable ledger of every session with title, model, turns, cost, person, agent |
-| **Session detail** (`/sessions/[id]`) | Per-turn ledger with tabs for messages, prompts, agents, errors, files, tokens, tools, git |
+| **Session detail** (`/sessions/[id]`) | Per-turn ledger (the default Details view) with tabs for prompts, agents, errors, files, tokens, tools, git |
 | **Errors** (`/errors`) | Hard errors, warnings, tool failures across all sessions with filters by kind/tool/severity |
 | **Observability** (`/observability`) | Single consolidated pipeline view: derived verdict block, 5-stage flow strip (Watcher → Bronze → Silver → Gold → Consumers), medallion-layer cards with per-table rows / size / age, 4-column KPI grid, 1h/1d/7d ingestion sparklines, source freshness table, dbt test grid + per-relation breakdown, last 6 dbt invocations, live watcher errors feed, expandable `run_results.json` / `sources.json`. Polls every 10 s. |
 
@@ -201,14 +201,12 @@ Keys are OS usernames; values flow into `session_meta` at ingestion time.
 
 ## Screenshots
 
-Captured against the live local stack with 13 Haiku Playwright agents.
+Captured against the live local stack. Every shot below is the
+above-the-fold viewport (1440×900) — the first screen you see on each
+page, not a full-page scroll capture.
 For per-screen documentation see [docs/screens/](docs/screens/) — start
 with [OVERVIEW.md](docs/screens/OVERVIEW.md) for navigation and
 [HOW-IT-WORKS.md](docs/screens/HOW-IT-WORKS.md) for architecture.
-
-Each thumbnail below shows the page header / above-the-fold view. The
-full-page renders (with all scrolled content) live next to each
-per-screen `.md` in [docs/screens/](docs/screens/).
 
 ### Dashboard
 Single summary screen — cost, token volume, ledgers for apps/projects/agents,
@@ -224,13 +222,13 @@ token type (teal/gold/orange/violet/slate).
 <img src="docs/screens/tokens-page.png" alt="Tokens" width="720">
 
 ### Sessions list & Session detail
-Filterable ledger of every session with new 🧩 (skills) + ⚡ (MCPs) count
-columns and multi-agent rendering; then a per-session deep-dive (the
-detail shot below is viewport-only — the full nine-tab capture lives in
-the per-screen doc to keep this README light).
+Filterable ledger of every session with 🧩 (skills) + ⚡ (MCPs) count
+columns and multi-agent rendering; then a per-session deep-dive — the
+detail shot below is the default **Details** view (per-turn ledger and
+stat cards) that opens when you click a session.
 
 <img src="docs/screens/sessions-list.png" alt="Sessions list" width="720">
-<img src="docs/screens/session-detail-viewport.png" alt="Session detail (header + tab strip)" width="720">
+<img src="docs/screens/session-detail-viewport.png" alt="Session detail — Details (per-turn) view" width="720">
 
 ### Apps & App detail
 Card grid by cost; per-app rollup with sessions, agents, people, sibling
