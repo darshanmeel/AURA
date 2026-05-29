@@ -66,12 +66,12 @@
   .wordmark b{ color:var(--accent); font-style:normal; font-weight:600; }
   .link{ font-family:var(--mono); font-size:20px; color:var(--accent); }
 
-  .cta h2{ font-size:72px; }
-  .cta .links{ position:relative; margin-top:auto; display:flex; flex-direction:column; gap:18px; }
-  .cta .links a{ font-family:var(--mono); font-size:30px; color:var(--ink); text-decoration:none;
+  .close h2{ font-size:64px; }
+  .close .where{ position:relative; margin-top:auto; display:flex; flex-direction:column; gap:18px; }
+  .close .where a{ font-family:var(--mono); font-size:30px; color:var(--ink); text-decoration:none;
     display:flex; align-items:center; gap:16px; }
-  .cta .links .pri{ color:var(--accent); font-weight:600; }
-  .cta .links .arrow{ color:var(--accent); }
+  .close .where .label{ font-family:var(--sans); font-size:22px; color:var(--mute); margin-bottom:2px; }
+  .close .where .mark{ color:var(--accent); }
 
   @media print{
     body{ background:#fff; padding:0; }
@@ -85,10 +85,11 @@
 <body>
 
   <div class="helper">
-    <b>Export to PDF for LinkedIn:</b> open this file in Chrome → Print (Ctrl/Cmd-P) →
-    Destination "Save as PDF" → Paper size "1080×1080" (or set Margins: None, Scale: Default,
-    enable "Background graphics"). Each slide becomes one page. Upload the PDF to LinkedIn as a
-    <b>document</b> and it renders as a swipeable carousel. 7 slides · square 1080×1080.
+    <b>Export to PDF for LinkedIn:</b> open in Chrome → Print (Ctrl/Cmd-P) → Destination
+    "Save as PDF" → Margins: None, enable "Background graphics". Each slide becomes one page.
+    Upload the PDF to LinkedIn as a <b>document</b> for a swipeable carousel. 6 slides · square 1080×1080.
+    <br/><b>Optional:</b> an observability slide using <code>observability.png</code> is included as a
+    commented-out block at the end of this file — uncomment it (and bump the slide counters) if you want to show pipeline health.
   </div>
 
   <div class="deck">
@@ -97,58 +98,44 @@
     <section class="slide s-title">
       <div class="dots"></div>
       <div class="kicker"><span class="dot"></span> Aura — spend, with receipts</div>
-      <div class="num">01 / 07</div>
+      <div class="num">01 / 06</div>
       <div class="big-stat">$2,666</div>
       <div class="stat-sub">in 30 days of Claude Code. One agent ate two-thirds of it.<br/>I couldn't see any of it the day before.</div>
       <div class="foot">
         <div class="wordmark"><b>Aura</b> · local-first agent analytics</div>
-        <div class="link">github.com/darshanmeel/AURA</div>
+        <div class="link">open-source · MIT</div>
       </div>
     </section>
 
-    <!-- 2 — the problem -->
+    <!-- 2 — what it is -->
     <section class="slide">
       <div class="dots"></div>
-      <div class="kicker"><span class="dot"></span> The problem</div>
-      <div class="num">02 / 07</div>
-      <h2>Your agents keep a diary. <em>Nobody reads it.</em></h2>
-      <p>Every Claude Code session is written to disk — every prompt, model call, token count, tool invocation, file edit.</p>
-      <p style="margin-top:22px;">It's a goldmine. And almost nobody looks, because it's unreadable, there's no total, and there's no memory once a session scrolls off.</p>
+      <div class="kicker"><span class="dot"></span> What Aura is</div>
+      <div class="num">02 / 06</div>
+      <h2>Local-first analytics for <em>AI-coding-agent sessions.</em></h2>
+      <p>It reads the JSONL transcripts your agents already write, transforms them with dbt, and surfaces cost, attribution, and pipeline health.</p>
+      <p style="margin-top:22px;">Everything runs in Docker on your own machine. Nothing leaves your laptop. MIT-licensed and open.</p>
       <div class="foot">
-        <div class="wordmark">~/.claude/projects/**/*.jsonl</div>
+        <div class="wordmark"><em>Spend, with receipts.</em></div>
         <div class="link">02</div>
       </div>
     </section>
 
-    <!-- 3 — what it is -->
-    <section class="slide">
-      <div class="dots"></div>
-      <div class="kicker"><span class="dot"></span> What Aura is</div>
-      <div class="num">03 / 07</div>
-      <h2>Local-first analytics for <em>AI-coding-agent sessions.</em></h2>
-      <p>It watches your transcripts, transforms them with dbt, and surfaces cost, productivity, and pipeline-health signals through a dashboard.</p>
-      <p style="margin-top:22px;">Everything runs in Docker on your own machine. No data leaves your laptop. MIT-licensed.</p>
-      <div class="foot">
-        <div class="wordmark"><em>Spend, with receipts.</em></div>
-        <div class="link">03</div>
-      </div>
-    </section>
-
-    <!-- 4 — dashboard screenshot -->
+    <!-- 3 — dashboard screenshot -->
     <section class="slide">
       <div class="dots"></div>
       <div class="kicker"><span class="dot"></span> Every dollar, split</div>
-      <div class="num">04 / 07</div>
+      <div class="num">03 / 06</div>
       <div class="shot-wrap"><img class="shot" src="dashboard.png" alt="Aura dashboard at 30 days" /></div>
       <div class="cap">Spend by app, project, agent, person, and individual prompt — reconciled to one total.</div>
     </section>
 
-    <!-- 5 — what you act on -->
+    <!-- 4 — what it surfaces (overkill kept) -->
     <section class="slide">
       <div class="dots"></div>
-      <div class="kicker"><span class="dot"></span> What a bill never tells you</div>
-      <div class="num">05 / 07</div>
-      <h2 style="font-size:54px;">The things you can actually <em>act on.</em></h2>
+      <div class="kicker"><span class="dot"></span> What the invoice never tells you</div>
+      <div class="num">04 / 06</div>
+      <h2 style="font-size:54px;">The things you can actually <em>see.</em></h2>
       <ul>
         <li>Overkill detection<small>Fixed a typo on a top-tier model? It gets flagged.</small></li>
         <li>Real subagent attribution<small>Delegated work shows as its own row — not a faceless "claude".</small></li>
@@ -156,28 +143,34 @@
       </ul>
       <div class="foot">
         <div class="wordmark">Cost by prompt · by agent · by person</div>
-        <div class="link">05</div>
+        <div class="link">04</div>
       </div>
     </section>
 
-    <!-- 6 — sessions screenshot -->
+    <!-- 5 — sessions screenshot -->
     <section class="slide">
       <div class="dots"></div>
       <div class="kicker"><span class="dot"></span> Down to the session</div>
-      <div class="num">06 / 07</div>
+      <div class="num">05 / 06</div>
       <div class="shot-wrap"><img class="shot" src="sessions-list.png" alt="Aura sessions list" /></div>
       <div class="cap">A filterable ledger of every session — model, turns, cost, agent. Click in for per-turn detail.</div>
     </section>
 
-    <!-- 7 — CTA -->
-    <section class="slide cta">
+    <!-- 6 — close (no pitch, just where it lives) -->
+    <section class="slide close">
       <div class="dots"></div>
       <div class="kicker"><span class="dot"></span> See your own month</div>
-      <div class="num">07 / 07</div>
-      <h2 style="margin-top:40px;">Point it at your transcripts. <em>You'll be surprised by at least one number.</em></h2>
-      <div class="links">
-        <a class="pri" href="https://blogs.crosshire.ch/blogs/aura-spend-with-receipts"><span class="arrow">→</span> Read the full write-up · blogs.crosshire.ch</a>
-        <a href="https://github.com/darshanmeel/AURA"><span class="arrow">→</span> Clone it · github.com/darshanmeel/AURA</a>
+      <div class="num">06 / 06</div>
+      <h2 style="margin-top:36px;">It's open. Point it at your own transcripts.</h2>
+      <div class="where">
+        <div>
+          <div class="label">Full write-up</div>
+          <a href="https://blogs.crosshire.ch/blogs/aura-spend-with-receipts"><span class="mark">→</span> blogs.crosshire.ch/blogs/aura-spend-with-receipts</a>
+        </div>
+        <div>
+          <div class="label">Repo</div>
+          <a href="https://github.com/darshanmeel/AURA"><span class="mark">→</span> github.com/darshanmeel/AURA</a>
+        </div>
       </div>
       <div class="foot">
         <div class="wordmark"><b>Aura</b> · open-source · MIT · runs on your machine</div>
@@ -186,5 +179,19 @@
     </section>
 
   </div>
+
+  <!--
+  OPTIONAL observability slide — uncomment, move inside .deck before the close,
+  and renumber (.num "06 / 07" etc.) if you want to show pipeline health:
+
+  <section class="slide">
+    <div class="dots"></div>
+    <div class="kicker"><span class="dot"></span> The pipeline watches itself</div>
+    <div class="num">06 / 07</div>
+    <div class="shot-wrap"><img class="shot" src="observability.png" alt="Aura observability tab" /></div>
+    <div class="cap">A derived verdict, medallion-layer freshness, dbt test results, and the live watcher error feed.</div>
+  </section>
+  -->
+
 </body>
 </html>
