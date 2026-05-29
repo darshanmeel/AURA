@@ -238,3 +238,7 @@ frontend/node_modules/
 frontend/tsconfig.tsbuildinfo
 frontend/next-env.d.ts
 
+
+# LinkedIn carousel source + export are personal collateral — local only
+docs/blog/linkedin-carousel.html
+docs/blog/linkedin-carousel.pdf
