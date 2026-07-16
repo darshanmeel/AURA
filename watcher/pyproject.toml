@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=40.8.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aura-watcher"
+version = "0.1.0"
+description = "Real-time JSONL watcher for Claude Code transcripts"
+requires-python = ">=3.11"
+
+dependencies = [
+    "watchdog>=3.0.0",
+    "duckdb>=0.9.0",
+    "pydantic>=2.0",
+    "tomli>=2.0; python_version < '3.11'",
+    "dbt-core>=1.7.0",
+    "dbt-duckdb>=1.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.ruff]
+# 125 (not the default 88) so CI is green against the existing code style —
+# the longest line in watcher/src is 122 chars (see main.py:1036); this adds
+# a little headroom without licensing much longer lines going forward.
+line-length = 125
+
+[tool.ruff.lint]
+# Conservative set for CI: pyflakes (F) + pycodestyle errors/warnings (E, W)
+# + isort (I). No stylistic/opinionated rule families (e.g. D, ANN, UP) so
+# this doesn't turn into a large-scale reformat.
+select = ["E", "F", "W", "I"]

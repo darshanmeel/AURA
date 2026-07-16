@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aura: Spend, with receipts — Crosshire Journal</title>
+<meta name="description" content="What Aura is, why I built it, how it works, and why anyone running an agentic coding assistant should be running something like it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500;1,6..72,600&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f1e9d8;       /* warm page background */
+    --ink:#1b1916;         /* headings */
+    --body:#2c2924;        /* body text */
+    --muted:#6b6253;       /* metadata / secondary */
+    --accent:#7a2a18;      /* rust */
+    --code-bg:#efeadc;     /* inline + block code */
+    --rule:#d8cdb4;        /* hairline rules */
+    --serif:"Newsreader","Source Serif Pro",Georgia,serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:"Inter",system-ui,-apple-system,Segoe UI,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--paper);color:var(--body);
+    font-family:var(--serif);font-size:21px;line-height:1.5;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:46rem;margin:0 auto;padding:64px 24px 96px}
+  /* masthead */
+  .eyebrow{
+    font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--accent);margin:0 0 28px;display:flex;align-items:center;gap:8px;
+  }
+  .eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent);display:inline-block}
+  h1{
+    font-family:var(--serif);font-weight:400;color:var(--ink);
+    font-size:clamp(44px,7vw,76px);line-height:1.02;letter-spacing:-.02em;margin:0 0 18px;
+  }
+  h1 em{font-style:italic;font-weight:500}
+  .meta{
+    font-family:var(--mono);font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--muted);margin:0 0 8px;
+  }
+  .lede{font-size:24px;line-height:1.5;color:var(--body);margin:28px 0 0}
+  hr{border:0;border-top:1px solid var(--rule);margin:44px 0}
+  hr.thick{border-top:2px solid var(--ink)}
+  h2{
+    font-family:var(--serif);font-weight:500;color:var(--ink);
+    font-size:38px;line-height:1.1;letter-spacing:-.012em;margin:56px 0 18px;
+  }
+  h3{font-family:var(--serif);font-weight:600;color:var(--ink);font-size:25px;line-height:1.2;margin:40px 0 12px}
+  p{margin:0 0 28px}
+  a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(122,42,24,.35)}
+  a:hover{border-bottom-color:var(--accent)}
+  strong{font-weight:600;color:var(--ink)}
+  em{font-style:italic}
+  ul,ol{margin:0 0 28px;padding-left:1.3em}
+  li{margin:0 0 10px}
+  li::marker{color:var(--accent)}
+  blockquote{
+    margin:32px 0;padding:2px 0 2px 22px;border-left:2px solid var(--accent);
+    font-style:italic;color:var(--body);
+  }
+  blockquote p{margin:0}
+  code{
+    font-family:var(--mono);font-size:.82em;background:var(--code-bg);
+    color:var(--ink);padding:1px 5px;border-radius:2px;
+  }
+  pre{
+    font-family:var(--mono);font-size:14.5px;line-height:1.6;background:var(--code-bg);
+    color:var(--ink);padding:20px 22px;border-radius:4px;overflow:auto;margin:0 0 28px;
+    border:1px solid var(--rule);
+  }
+  pre code{background:none;padding:0;font-size:inherit}
+  figure{margin:36px 0}
+  img{max-width:100%;height:auto;display:block;border:1px solid var(--rule);border-radius:4px}
+  figcaption{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--muted);margin-top:10px;text-align:center;
+  }
+  .endnote{font-size:16px;color:var(--muted);font-style:italic}
+  .endnote a{color:var(--muted);border-bottom-color:rgba(107,98,83,.4)}
+</style>
+</head>
+<body>
+<article class="wrap">
+
+  <p class="eyebrow">Crosshire Journal · Tooling / AI / Observability</p>
+  <h1>Aura: Spend, <em>with receipts.</em></h1>
+  <p class="meta">Darshan Singh · 29 May 2026 · ~11 min read</p>
+
+  <p class="lede">I ran one query against a month of my own Claude Code
+  transcripts and learned I'd spent <strong>$2,666</strong> in thirty days —
+  32,600 tool calls, 1,072 commits, a 97% cache-hit rate, and a single agent
+  quietly eating two-thirds of the bill. None of that was visible the day
+  before. It was sitting in JSONL files on my disk the whole time, unread.</p>
+
+  <p>That gap — between <em>how much your AI coding agent is doing</em> and
+  <em>what you can actually see of it</em> — is the entire reason Aura exists.</p>
+
+  <p>This post explains what Aura is, why I built it, how it works under the
+  hood, and why I think anyone running an agentic coding assistant should be
+  running something like it.</p>
+
+  <hr class="thick">
+
+  <h2>The problem: your agents keep a diary, and nobody reads it</h2>
+
+  <p>If you use Claude Code, Cursor, Aider, or any agentic assistant, every
+  session you run is written to disk as a structured log. For Claude Code it's
+  <code>~/.claude/projects/**/*.jsonl</code> — one line per event: every prompt,
+  every model call with its exact token counts, every tool invocation, every
+  file edit, every error.</p>
+
+  <p>It is, genuinely, a goldmine. It records how you think, what you delegate,
+  where your agents fail, and precisely what each of those things costs. And
+  almost nobody looks at it, because:</p>
+
+  <ul>
+    <li><strong>It's unreadable.</strong> Tens of thousands of nested JSON
+    events per day.</li>
+    <li><strong>There's no total.</strong> Your provider bill is one number a
+    month later, with no breakdown by project, by agent, by prompt.</li>
+    <li><strong>There's no memory.</strong> Once a session scrolls off your
+    terminal, the reasoning and the receipts are gone unless you go spelunking
+    in the raw files.</li>
+  </ul>
+
+  <p>You're flying an increasingly expensive aircraft with the instrument panel
+  taped over. Aura un-tapes it.</p>
+
+  <hr>
+
+  <h2>What Aura is</h2>
+
+  <p><strong>Aura is a local-first analytics platform for AI-coding-agent
+  sessions.</strong> It watches your transcripts, transforms them with dbt, and
+  surfaces cost, productivity, behavioural, and pipeline-health signals through
+  a Next.js dashboard. Everything runs in Docker on your own machine. No data
+  leaves your laptop.</p>
+
+  <p>The tagline is <em>"Spend, with receipts,"</em> and that's the design
+  constraint, not just a slogan: <strong>every dollar Aura shows you is
+  traceable back to the prompt, the model call, and the file edit that produced
+  it</strong> — and every page that shows a cost for a given time range
+  reconciles to the same total. No drift between the dashboard and the per-app
+  breakdown and the per-person breakdown. One number, provable from four
+  directions.</p>
+
+  <figure>
+    <img src="dashboard.png" alt="The Aura dashboard at 30 days">
+    <figcaption>The Aura dashboard — 30-day view, real transcripts</figcaption>
+  </figure>
+
+  <p>Today it speaks fluent Claude Code. Gemini and Codex adapters are next —
+  the architecture was built for more than one provider from day one.</p>
+
+  <hr>
+
+  <h2>Why I built it (and why a bill isn't enough)</h2>
+
+  <p>The monthly invoice tells you <em>that</em> you spent money. It never tells
+  you the things you actually need to act on:</p>
+
+  <ul>
+    <li><strong>Which project burned the budget?</strong> Aura splits every
+    dollar by app, project, agent, person, and individual prompt.</li>
+    <li><strong>Did you use a sledgehammer on a thumbtack?</strong> Aura's
+    <em>overkill detection</em> scores each prompt on complexity (characters,
+    tool calls, files touched) and compares it to the model tier you used. Fixed
+    a typo with Opus? It gets flagged.</li>
+    <li><strong>Who's doing the work?</strong> When your main agent dispatches a
+    subagent via the <code>Task</code> tool, Aura attributes every event in that
+    window to the <em>real</em> subagent — so <code>technical-writer</code>,
+    <code>frontend-engineer</code>, and <code>code-reviewer</code> show up as
+    distinct rows instead of collapsing into one anonymous <code>claude</code>.</li>
+    <li><strong>Are the numbers even current?</strong> A built-in Observability
+    tab shows ingestion freshness, dbt run status, and watcher failures, so you
+    always know whether what you're looking at is live or stale.</li>
+  </ul>
+
+  <p>I wanted the honest picture — for myself as an individual, and for any team
+  that wants a shared, un-spun view of what their agents actually return for the
+  money.</p>
+
+  <hr>
+
+  <h2>How it works</h2>
+
+  <p>Aura is deliberately boring on the inside. No Kafka, no managed warehouse,
+  no orchestrator. Three small, independent surfaces and a single file
+  database.</p>
+
+  <pre><code>~/.claude/projects/*.jsonl
+        │
+        ▼
+   watcher (Python)         ──writes──▶   aura.duckdb   (the write DB)
+   tail + parse + redact                       │
+        │                                      │ snapshot every 30s (atomic)
+        │ dbt every 5 min                      ▼
+        ▼                              read/aura.duckdb  (the read snapshot)
+   dbt models (DuckDB)                          │
+   staging → intermediate → marts               ▼
+                                        Next.js 14 dashboard · localhost:3000</code></pre>
+
+  <p><strong>1. The watcher (bronze).</strong> A Python process tails the JSONL
+  files using polling (not inotify — it has to work on Windows and Docker
+  bind-mounts where filesystem events silently vanish). It parses each line,
+  redacts secrets and base64 blobs, and writes one row to a <code>raw_events</code>
+  table with an <code>INSERT … ON CONFLICT DO NOTHING</code> so re-runs never
+  double-count. On startup it backfills every existing file
+  <strong>newest-first</strong>, so today's data lands on the dashboard before
+  the historical catch-up finishes.</p>
+
+  <p><strong>2. dbt (silver → gold).</strong> Every five minutes — against
+  whatever's in <code>raw_events</code> <em>right now</em>, never blocking on
+  backfill — dbt rebuilds a clean medallion stack: staging views, intermediate
+  models, and the marts the dashboard reads (<code>fact_model_calls</code>,
+  <code>fact_daily_spend</code>, <code>dim_sessions</code>,
+  <code>fact_prompts</code>, and friends). Cost is <strong>anchored to the event
+  timestamp, never session-start</strong>, so a session that began yesterday and
+  ran into today gets its tokens counted on the correct day. Pricing is
+  SCD-aware: rates have <code>valid_from</code>/<code>valid_to</code>, so
+  historical sessions stay correctly priced even after a price change.</p>
+
+  <p><strong>3. The snapshot trick.</strong> DuckDB allows one writer at a time.
+  Aura sidesteps the lock the easy way — <em>never have two readers fighting the
+  writer.</em> The watcher atomically copies the write DB to a read-only
+  snapshot every 30 seconds; the frontend only ever queries the snapshot. The
+  frontend's connection layer watches the file's inode and transparently reopens
+  when the snapshot is replaced, so it never serves stale data after a refresh.
+  The cost is up to 30 seconds of lag. The win is zero connection contention and
+  a dashboard that never locks up the ingester.</p>
+
+  <p><strong>4. The frontend (Next.js 14, App Router).</strong> Server
+  components read DuckDB directly — almost no API layer. Charts are hand-rolled
+  SVG (no charting library to fight). One time-range model
+  (<code>today / 7d / 30d / all</code>) flows through every page, and ranged
+  queries hit a single pre-aggregated <code>int_entity_spend</code> mart so the
+  totals reconcile everywhere by construction.</p>
+
+  <p>The whole thing is designed to run a 200k+ event analytics stack on one
+  laptop without an orchestrator — and it does.</p>
+
+  <hr>
+
+  <h2>What you actually get</h2>
+
+  <p>A quick tour of the surfaces. (All screenshots are the real dashboard
+  against my own month of transcripts.)</p>
+
+  <ul>
+    <li><strong>Dashboard</strong> — the headline spend, a KPI strip (cache hit
+    rate, tool calls, commits, errors, 30-day projection), the daily spend
+    chart, and ledgers for apps, projects, and agents.</li>
+    <li><strong>Sessions</strong> — a filterable ledger of every session: title,
+    model, turns, cost, person, agent, plus 🧩 skills and ⚡ MCP counts. Click
+    one and you land on the per-turn <strong>Details</strong> view — the full
+    deep-dive, tab by tab.</li>
+  </ul>
+
+  <figure>
+    <img src="sessions-list.png" alt="Sessions list">
+    <figcaption>Sessions — every run, filterable, with skills/MCP counts</figcaption>
+  </figure>
+
+  <ul>
+    <li><strong>Apps / Agents / People</strong> — every entity gets a roster
+    <em>and</em> a profile page. The app page shows the agents in rotation, the
+    people who worked in it, sibling apps in the project, and a live prompt feed.
+    The agent page shows who delegates to it and the files it touches. The people
+    page shows real operator cards with their share of org spend — and
+    <em>"What {name} actually types."</em></li>
+  </ul>
+
+  <figure>
+    <img src="app-detail.png" alt="App detail">
+    <figcaption>App detail — agents, people, and the live prompt feed</figcaption>
+  </figure>
+
+  <ul>
+    <li><strong>Tokens</strong> — spend broken out by token type, provider,
+    model, and agent, with a distinct palette per type so cache reads don't blur
+    into output.</li>
+    <li><strong>Errors</strong> — hard errors, warnings, and tool failures across
+    every session, filterable by kind, tool, and severity.</li>
+    <li><strong>Observability</strong> — the pipeline's own health: a derived
+    verdict, a Watcher → Bronze → Silver → Gold → Consumers flow strip,
+    medallion-layer freshness, source-freshness checks, dbt test results, and the
+    live watcher error feed. It polls every 10 seconds.</li>
+  </ul>
+
+  <figure>
+    <img src="observability.png" alt="Observability">
+    <figcaption>Observability — is the pipeline live, and are the numbers fresh?</figcaption>
+  </figure>
+
+  <hr>
+
+  <h2>Why you should use it</h2>
+
+  <p><strong>If you're an individual:</strong> you get introspection on your own
+  habits. You'll find out which projects you over-spend on, which prompts you
+  route to a model that's three tiers too big, and where your agents quietly burn
+  tokens retrying the same failing tool. The first time overkill detection flags
+  a $4 typo fix, it pays for the setup.</p>
+
+  <p><strong>If you're a team:</strong> you get a shared, honest picture of agent
+  ROI. Cost by person and by project, attribution down to the real subagent,
+  error rates per agent, and a pipeline-health tab so nobody argues about whether
+  the numbers are fresh. Because every cost reconciles to a single source, the
+  dashboard total and the per-person sum are <em>the same number</em> — there's
+  nothing to litigate.</p>
+
+  <p><strong>If you care about privacy:</strong> everything is local-first.
+  Nothing is shipped anywhere. And the path to multi-user is designed around
+  column masking from the start — prompt and response text gets hashed before it
+  would ever leave a machine, so a central store can aggregate cost and token
+  counts without ever seeing what anyone typed.</p>
+
+  <hr>
+
+  <h2>The honest part</h2>
+
+  <p>Aura is a tool I built for myself first, so the edges are honest:</p>
+
+  <ul>
+    <li>It reads <strong>Claude Code</strong> today. Gemini and Codex are on the
+    roadmap (the pricing seed already has Gemini rows; only the adapter is
+    missing).</li>
+    <li>Sessions launched as <strong>top-level CLI agents</strong>
+    (<code>claude --agent &lt;name&gt;</code>) roll up under <code>main</code>,
+    because that identity lives in a system prompt, not a structured field.
+    Delegated subagents (via <code>Task</code>) <em>are</em> attributed
+    correctly.</li>
+    <li>Every dbt model is a full rebuild (<code>table</code>/<code>view</code>),
+    not incremental. At one developer's scale — 100k–500k events — a rebuild
+    every five minutes finishes in under a minute. Past ~1M rows you'll want
+    incremental facts; the plan for that is written down, not yet shipped.</li>
+  </ul>
+
+  <p>These are deliberate "simplest thing that works" choices, not oversights.
+  The roadmap is in the repo.</p>
+
+  <hr>
+
+  <h2>Getting started</h2>
+
+  <p>You need Docker, Docker Compose, and a <code>~/.claude/projects/</code>
+  directory with at least one session.</p>
+
+  <pre><code>git clone https://github.com/darshanmeel/AURA.git
+cd AURA
+docker-compose up --build
+# then open http://localhost:3000</code></pre>
+
+  <p>On first boot the watcher starts its snapshot and dbt workers immediately,
+  backfills your existing transcripts newest-first, and hands off to the live
+  poller. The dashboard populates while the historical catch-up is still
+  running.</p>
+
+  <blockquote>
+    <p>One footnote from experience: the dashboard defaults to the
+    <strong>today</strong> range. If your most recent sessions were yesterday,
+    "today" will look empty — switch to <code>7d</code> or <code>30d</code> and
+    the receipts appear. Everything filters on the event date, so an empty
+    "today" means exactly that, not a broken pipeline.</p>
+  </blockquote>
+
+  <hr>
+
+  <h2>The point</h2>
+
+  <p>Your agents are already writing everything down. Aura just reads it back to
+  you — with the totals, the attribution, and the receipts that the raw logs
+  never quite hand over on their own. Spend, with receipts.</p>
+
+  <p>The repo is open. Point it at your transcripts and see what a month of your
+  own agent usage actually looks like. I suspect, like me, you'll be surprised by
+  at least one number.</p>
+
+  <hr>
+
+  <p class="endnote">Aura is MIT-licensed and runs entirely on your machine.
+  Architecture deep-dive: <a href="https://github.com/darshanmeel/AURA/blob/main/docs/screens/HOW-IT-WORKS.md">HOW-IT-WORKS.md</a>.
+  Operator's guide: <a href="https://github.com/darshanmeel/AURA/blob/main/docs/screens/OVERVIEW.md">OVERVIEW.md</a>.</p>
+
+</article>
+</body>
+</html>

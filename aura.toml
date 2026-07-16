@@ -1,0 +1,10 @@
+# Project metadata only. Runtime configuration (DB paths, snapshot interval,
+# dbt cadence, ports, people config path, etc.) lives in docker-compose.yml
+# environment variables — that file is authoritative. Nothing in this
+# codebase reads this file at runtime; do not add config here expecting it
+# to take effect.
+
+[aura]
+name = "AURA"
+version = "0.2.0"
+description = "Local analytics for AI coding agent transcripts"

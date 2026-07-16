@@ -1,0 +1,22 @@
+[tenant]
+id = "local"
+
+[watcher]
+roots = [
+  { agent = "claude", path = "/logs/claude" },
+  # { agent = "gemini", path = "/logs/gemini" },
+]
+debounce_ms = 200
+snapshot_interval_seconds = 2
+redact_payload = false                # v0.1 default; SaaS will force true
+
+[duckdb]
+write_path = "/data/aura.duckdb"
+read_path  = "/data/aura_read.duckdb"
+
+[dbt]
+run_interval_minutes = 60             # 0 disables
+
+[ui]
+timezone = "UTC"                      # display tz; storage stays UTC
+live_refresh_seconds = 2

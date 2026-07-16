@@ -1,0 +1,155 @@
+version: 2
+
+# aura_semantic.yml — extended descriptions for marts that are not already
+# covered by schema.yml, plus key intermediate models.
+# schema.yml owns the test assertions; this file owns the human-readable docs.
+# dbt merges both files — models listed here must NOT also appear in schema.yml.
+
+models:
+
+  # ── Intermediates (documented here; no tests needed) ──────────────────────
+
+  - name: int_entity_spend
+    description: >
+      Daily-grain spend roll-up keyed to fact_model_calls.ts (event timestamp),
+      so all date-range cost aggregations reconcile with fact_daily_spend.
+      Grain: (tenant_id, entity_type, entity_id, date).
+
+      entity_type values: 'app' | 'agent' | 'person'.
+      entity_id:
+        'app'    → dim_apps.app_id  (via int_app_cwd_lookup)
+        'agent'  → fact_model_calls.agent
+        'person' → dim_sessions.person_id
+
+      Purpose: range-filtered API queries (e.g. ?range=7d) read from this
+      model instead of re-scanning fact_model_calls directly, eliminating
+      repeated inline re-aggregations across apps.ts, agents.ts, people.ts,
+      and dashboard.ts. project_id is populated only for entity_type='app'.
+    columns:
+      # D-M2: PK/grain tests for int_entity_spend live here (the model is
+      # declared in this file, so its tests must be here too).
+      - name: tenant_id
+        description: Tenant scope. Never null; defaults to 'local'.
+        tests:
+          - not_null
+      - name: entity_type
+        description: "'app', 'agent', or 'person'."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['app', 'agent', 'person']
+      - name: entity_id
+        description: app_id, agent name, or person_id depending on entity_type.
+        tests:
+          - not_null
+      - name: date
+        description: >
+          UTC calendar date derived from fact_model_calls.ts (event timestamp),
+          not dim_sessions.start_ts. This ensures cost aggregations for a given
+          date range reconcile exactly with fact_daily_spend.
+        tests:
+          - not_null
+      - name: project_id
+        description: Parent project scope; populated for entity_type='app' only.
+      - name: session_count
+        description: >
+          Distinct sessions with model-call activity on this event date
+          (COUNT(DISTINCT session_id) over fact_model_calls, by CAST(ts AS DATE)).
+      - name: total_turns
+        description: >
+          Count of model calls (turns) on this event date
+          (COUNT(*) over fact_model_calls), not a sum of session turn_count.
+      - name: total_cost
+        description: >
+          Sum of fact_model_calls.calculated_cost on this event date (USD).
+          Anchored to event ts, not session start_ts, so it reconciles exactly
+          with fact_daily_spend for the same range.
+        tests:
+          - not_null
+      - name: total_tool_calls
+        description: >
+          Count of tool executions on this date, attributed by
+          fact_tool_executions.tool_call_ts (not the cost event date).
+      - name: commits
+        description: >
+          Sum of session commits attributed to the session start_ts date — the
+          one metric anchored to start_ts, since commits have no per-event ts.
+
+  # ── Additional mart descriptions (supplement schema.yml tests) ────────────
+
+  - name: fact_git_commands
+    description: >
+      One row per Bash tool call whose command CONTAINS 'git ' anywhere in
+      the string (WHERE tool_name = 'Bash' AND command LIKE '%git %') —
+      NOT "starts with 'git '" as previously documented here: verified
+      2026-07-16, only 2704/12166 rows actually start with 'git ' (the rest
+      are compound shell commands such as 'cd x && git status' or
+      'git add . && git commit'). No tool_use_id column is selected by this
+      model (fact_tool_executions.tool_use_id is not carried through), so
+      there is no enforced single-column grain; (tenant_id, session_id, ts)
+      is NOT unique either (verified 2026-07-16: 1 duplicate group across
+      12166 rows — two git Bash calls can share a millisecond timestamp
+      within the same session). See schema.yml for the not_null/relationship
+      tests actually enforced on this model.
+    columns:
+      - name: git_op
+        description: First git sub-command (e.g. commit, push, status, diff).
+        tests:
+          - not_null
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: session_id
+        tests:
+          - not_null
+          # Verified 2026-07-16: 0 orphans / 12166 rows.
+          - relationships:
+              arguments:
+                to: ref('dim_sessions')
+                field: session_id
+      - name: ts
+        tests:
+          - not_null
+
+  - name: fact_session_files
+    description: >
+      One row per (session_id, file_path). Aggregated file edit/write/read
+      counts and attributed token weight per session.
+      Grain: (tenant_id, session_id, file_path) — verified 2026-07-16: 0
+      nulls and 0 duplicate groups across 32708 rows.
+    columns:
+      - name: file_path
+        description: Absolute path of the file as it appears in tool calls.
+        tests:
+          - not_null
+      - name: edit_count
+        description: Number of Edit tool calls referencing this file.
+      - name: write_count
+        description: Number of Write tool calls referencing this file.
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: session_id
+        tests:
+          - not_null
+          # Verified 2026-07-16: 0 orphans / 32708 rows.
+          - relationships:
+              arguments:
+                to: ref('dim_sessions')
+                field: session_id
+
+  - name: dim_projects
+    description: >
+      One row per (tenant_id, project_id). Derived from dim_apps.
+      Grain: (tenant_id, project_id) — verified 2026-07-16: 0 nulls and 0
+      duplicate groups across 309 rows; project_id alone is also unique in
+      the current (single-tenant) dataset.
+    columns:
+      - name: project_id
+        tests:
+          - not_null
+          - unique
+      - name: tenant_id
+        tests:
+          - not_null

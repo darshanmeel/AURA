@@ -1,0 +1,45 @@
+aura:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('AURA_DB_PATH', '/data/aura.duckdb') }}"
+      # This is the WRITE database where watcher ingests raw events.
+      # After dbt transforms, snapshot worker syncs to /data/read/aura.duckdb for frontend.
+      # Override AURA_DB_PATH on a host dev machine, e.g.:
+      #   export AURA_DB_PATH=C:/Users/you/aura/aura.duckdb
+      # dbt task parallelism: how many independent models dbt builds at once.
+      # Env-tunable; default 4. (Distinct from DuckDB's own per-query threads
+      # in `settings` below — both were effectively 1 before, so a full cycle
+      # ran single-threaded on an 8-core VM and took ~10 min, holding the lock
+      # and blocking backfill + snapshots the whole time.)
+      threads: "{{ env_var('AURA_DBT_THREADS', '4') | int }}"
+      settings:
+        preserve_insertion_order: false
+        # DuckDB per-query (intra-query) worker threads. Env-driven so it can
+        # be retuned without rebuilding the image. Lowered 4->2 (2026-07-14):
+        # fewer parallel hash tables per query = lower peak memory, DuckDB's
+        # own documented OOM remedy — needed to keep fact_prompts inside the
+        # 3GB memory_limit. (Was 1 originally → heavy marts ran single-threaded
+        # and pinned one core; 2 balances parallelism against memory.)
+        threads: "{{ env_var('AURA_DBT_DUCKDB_THREADS', '4') | int }}"
+        # DuckDB does not read the container's cgroup memory limit — left
+        # unset it detects the whole Docker VM (~7.7 GiB) and over-allocates,
+        # then slams into the watcher container's mem_limit and thrashes while
+        # building the `table` marts (observed: fact_tool_executions stalled at
+        # ~1.8/2.0 GiB, ~10% CPU, for 15+ min). Pin an explicit ceiling BELOW
+        # the container limit so DuckDB spills instead of OOM-thrashing.
+        # Env-driven so it can be retuned without rebuilding the image (only
+        # docker-compose mem_limit + this env need to change). 3GB was too low:
+        # with threads>1 several heavy `table` marts build concurrently and
+        # share this one instance-wide pool, so fact_turns hit OOM at ~2.7 GiB.
+        # 4GB (container raised to 6g) gives the concurrent builds headroom.
+        memory_limit: "{{ env_var('AURA_DBT_MEMORY_LIMIT', '4GB') }}"
+        # NB: do NOT set `temp_directory` here. With threads>1 dbt opens several
+        # DuckDB connections against the same in-process instance; the first use
+        # fixes the temp dir, and every later connection's `SET temp_directory`
+        # throws "Cannot switch temporary directory after the current one has
+        # been used", crashing `dbt run` so the marts never rebuild (symptom:
+        # fact_model_calls frozen, new models show "(no pricing)"). DuckDB spills
+        # to its default location beside the DB file instead — slower on the
+        # Windows bind-mount but correct.

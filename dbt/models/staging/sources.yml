@@ -1,0 +1,107 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: main
+    tables:
+      - name: raw_session_skills
+      - name: raw_session_mcps
+
+  - name: aura
+    schema: main
+    description: >
+      Bronze-layer tables written directly by the Aura watcher process.
+      Used as the canonical source for dbt source freshness checks and
+      for the Observability tab (reads target/sources.json).
+    tables:
+      - name: raw_events
+        description: >
+          Every JSONL event parsed and written by the watcher.
+          One row per parsed event; ts is the event timestamp from the
+          JSONL payload (not the wall-clock ingest time).
+        loaded_at_field: ts
+        freshness:
+          warn_after: {count: 5, period: minute}
+          error_after: {count: 30, period: minute}
+        columns:
+          - name: tenant_id
+          - name: uuid
+          - name: session_id
+          - name: event_type
+          - name: ts
+          - name: file_path
+          - name: byte_offset
+          - name: payload
+
+      - name: session_meta
+        description: >
+          Written by the watcher when a new session is first observed.
+          No freshness rule — sessions only appear when a new JSONL file
+          is created, so absence of recent rows is normal.
+        columns:
+          - name: session_id
+            description: Matches raw_events.session_id; primary key.
+          - name: tenant_id
+            description: Tenant scope; defaults to 'local'.
+          - name: person_id
+            description: OS username of the developer who owns the session.
+          - name: person_name
+            description: Display name resolved from ~/.aura/people.json.
+          - name: commits
+            description: Commit counter incremented by the watcher; default 0.
+          - name: session_title
+            description: >
+              Session title — set from the ai-title event (last-seen-wins)
+              or from the first user prompt text (truncated to 80 chars).
+          - name: permission_mode
+            description: >
+              Permission mode recorded from the permission-mode event.
+              Values: normal | acceptEdits | plan | bypassPermissions.
+              NULL until the watcher migration adds the column.
+          - name: mode
+            description: >
+              Agent mode recorded from the mode event (e.g. 'normal').
+              NULL until the watcher migration adds the column.
+          - name: ingested_at
+            description: Wall-clock timestamp when the row was first written.
+
+      - name: ingest_checkpoints
+        description: >
+          Per-file read cursor maintained by the watcher.  Tracks the
+          last byte_offset successfully ingested for each JSONL file.
+          No freshness rule — updated only when a file grows.
+        columns:
+          - name: file_path
+          - name: last_offset
+
+      - name: watcher_errors
+        description: >
+          Errors surfaced by the watcher during JSONL parsing or ingest.
+          Declared as a source so dbt models and the Observability tab
+          can reference it via source().  No freshness rule is set —
+          absence of recent rows is the healthy state; alerting on
+          staleness would misfire.
+        loaded_at_field: ts
+        columns:
+          - name: ts
+          - name: source
+          - name: file_path
+          - name: error_message
+          - name: stack_trace
+
+      - name: session_verdicts
+        description: >
+          One row per (tenant_id, session_id). Written by the watcher via the
+          verdicts-inbox JSONL file (see HOW-IT-WORKS.md). Upserted on conflict
+          so only the latest verdict per session is retained.
+        columns:
+          - name: session_id
+            description: Session identifier. Matches dim_sessions.session_id.
+          - name: tenant_id
+            description: Tenant scope; defaults to 'local'.
+          - name: verdict
+            description: Quality verdict — accepted, wrong, or needs_review.
+          - name: note
+            description: Optional free-text annotation, max 500 chars.
+          - name: created_at
+            description: Wall-clock time of last upsert.

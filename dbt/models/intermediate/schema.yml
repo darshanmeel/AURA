@@ -1,0 +1,100 @@
+version: 2
+
+# NOTE: dbt_utils is not installed in this project (no packages.yml / dbt_packages/).
+# Composite-key uniqueness is asserted via not_null on every grain column.
+# If dbt_utils is added in the future, replace these with
+# dbt_utils.unique_combination_of_columns for a tighter uniqueness guarantee.
+
+models:
+  # NOTE: int_entity_spend is described in models/marts/aura_semantic.yml; its
+  # PK/grain not_null + accepted_values tests live there too (a model may only be
+  # declared in ONE schema file). See D-M2.
+  - name: int_turns
+    description: >
+      One row per assistant turn (message_id). Deduplicated at stg_assistant_messages;
+      compaction_inferred is a diagnostic boolean only and is not used in cost
+      calculations (spec §5.4).
+      Grain: turn_id (globally unique message_id).
+    columns:
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: session_id
+        tests:
+          - not_null
+      - name: turn_id
+        description: >
+          message_id from the JSONL assistant event. Deduplicated at staging
+          (last row per message_id by ts DESC, byte_offset DESC).
+          Primary key of this model.
+        tests:
+          - not_null
+          - unique
+
+  - name: dim_turn_messages
+    description: >
+      "Wide" companion to int_turns / fact_turns: carries only the large
+      per-turn text columns (user_prompt, assistant_response) as a thin
+      passthrough view over int_turns. Split out so that fact_turns (a
+      `table` mart) does not need to materialize the ASOF-joined user_prompt
+      or the 20-position content-block COALESCE for assistant_response —
+      doing so exhausted DuckDB's memory pool. Keep as a VIEW; join back to
+      fact_turns/int_turns on turn_id when the text is actually needed.
+      Grain: turn_id (same primary key as int_turns).
+    columns:
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: session_id
+        tests:
+          - not_null
+      - name: turn_id
+        description: >
+          message_id from the JSONL assistant event. Same primary key as
+          int_turns.turn_id.
+        tests:
+          - not_null
+          - unique
+
+  - name: int_app_cwd_lookup
+    description: >
+      One row per (tenant_id, cwd) expansion from dim_apps.all_cwds.
+      Lets downstream models attribute sessions to their app regardless
+      of cwd path variant (trailing slash, alternate checkout, etc.).
+      Grain: (tenant_id, cwd).
+    columns:
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: cwd
+        tests:
+          - not_null
+      - name: app_id
+        tests:
+          - not_null
+
+  - name: int_event_agent
+    description: >
+      Resolves (tenant_id, event_uuid) → agent_resolved.
+      Defaults to 'main'; overridden when an event falls inside a
+      Task/Agent sidechain dispatch window.
+      Grain: (tenant_id, event_uuid).
+    columns:
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: event_uuid
+        description: >
+          UUID from raw_events / stg_events. Together with tenant_id
+          forms the primary key of this lookup. `unique` here is the
+          regression guard for the nested/overlapping dispatch-window
+          fan-out fixed in D-M9 (a sidechain event matching more than one
+          Task dispatch window used to produce duplicate rows, inflating
+          this model above raw_events row count).
+        tests:
+          - not_null
+          - unique
+      - name: agent_resolved
+        description: Subagent type string, or 'main' for non-sidechain events.
+        tests:
+          - not_null

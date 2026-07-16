@@ -1,0 +1,33 @@
+
+# Name your project! Project names should be lowercase and use underscores as separators
+# See documentation: https://docs.getdbt.com/docs/build/projects
+
+name: 'aura'
+version: '1.0.0'
+config-version: 2
+
+profile: 'aura'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_modules"
+
+models:
+  aura:
+    staging:
+      +tags: ["staging"]
+      materialized: view
+    intermediate:
+      +tags: ["intermediate"]
+      materialized: view
+    marts:
+      +tags: ["marts"]
+      materialized: table

@@ -1,0 +1,91 @@
+version: 2
+
+models:
+  - name: stg_events
+    description: >
+      Thin pass-through view over raw_events. One row per raw JSONL event.
+      No deduplication is applied here; dedup happens in downstream staging
+      models keyed on their respective identifiers (message_id, tool_use_id).
+    columns:
+      - name: uuid
+        description: >
+          Raw event UUID written by the watcher. Primary key of raw_events.
+          Never null — the watcher rejects rows without a UUID.
+        tests:
+          - not_null
+      - name: session_id
+        description: JSONL session identifier. Never null.
+        tests:
+          - not_null
+      - name: ts
+        description: Event timestamp from the JSONL payload (not ingest wall-clock). Never null.
+        tests:
+          - not_null
+      - name: event_type
+        description: >
+          JSONL event type (e.g. 'assistant', 'user', 'summary'). Never null.
+        tests:
+          - not_null
+
+  - name: stg_assistant_messages
+    description: >
+      One row per message_id. Deduplicated from stg_events (event_type='assistant')
+      by ROW_NUMBER() OVER (PARTITION BY tenant_id, message_id ORDER BY ts DESC,
+      byte_offset DESC) = 1. Multi-block assistant turns are collapsed to the last
+      block so token counts are not double-counted in downstream marts.
+    columns:
+      - name: message_id
+        description: >
+          Claude message UUID. Unique per tenant after dedup. Never null
+          (the WHERE clause in the model filters message_id IS NOT NULL).
+        tests:
+          - not_null
+          - unique
+      - name: tenant_id
+        description: Tenant scope. Never null.
+        tests:
+          - not_null
+      - name: session_id
+        description: Session this assistant message belongs to. Never null.
+        tests:
+          - not_null
+      - name: ts
+        description: Timestamp of the winning (last) block for this message_id. Never null.
+        tests:
+          - not_null
+
+  - name: stg_tool_calls
+    description: >
+      One row per tool_use block inside an assistant message content array.
+      Exploded from stg_events WHERE event_type='assistant' and the payload
+      contains a tool_use content item. tool_use_id and event_uuid are always
+      present after the WHERE filter.
+    columns:
+      - name: tool_use_id
+        description: >
+          Claude-assigned tool use identifier ($.id from the content item).
+          Always present for rows passing the tool_use type filter.
+        tests:
+          - not_null
+      - name: event_uuid
+        description: >
+          UUID of the parent assistant event row (raw_events.uuid).
+          Always present — sourced from stg_events.uuid which is not_null.
+        tests:
+          - not_null
+
+  - name: stg_tool_results
+    description: >
+      One row per tool result, deduplicated across the two ingestion paths
+      (content-array tool_result block and top-level toolUseResult field).
+      When the Case 2 LEFT JOIN finds no matching tool call, tool_use_id is
+      NULL — this is valid and intentional (see dedup comment in the model).
+      Only event_uuid is asserted not_null; tool_use_id is not asserted because
+      null values are a deliberate fallback in the dedup logic.
+    columns:
+      - name: event_uuid
+        description: >
+          UUID of the source user event row. Always present — sourced from
+          stg_events.uuid which is not_null.
+        tests:
+          - not_null

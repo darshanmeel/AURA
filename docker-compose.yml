@@ -1,0 +1,136 @@
+
+services:
+  watcher:
+    build:
+      context: .
+      dockerfile: watcher/Dockerfile
+    volumes:
+      - ./data:/data
+      - ${CLAUDE_LOGS_DIR:-~/.claude/projects}:/logs/claude:ro
+    environment:
+      - AURA_DB_PATH=/data/aura.duckdb
+      # NOTE: the snapshot writes a file whose BASENAME matches the source
+      # (`aura.duckdb`) so DuckDB views compiled with `aura.main.x` refs
+      # still resolve. The read DB therefore lives in a sibling directory.
+      - AURA_READ_DB_PATH=/data/read/aura.duckdb
+      - AURA_LOGS_DIR=/logs/claude
+      # Snapshot interval. take_snapshot copies the WHOLE DuckDB file (multi-GB)
+      # while holding _snapshot_lock, and on a large DB that copy takes minutes —
+      # so a short interval makes snapshots run effectively back-to-back and the
+      # lock is never released for live ingestion or the initial backfill. We do
+      # not need real-time read freshness, so the interval is set well above the
+      # copy duration: the lock is held only briefly relative to the period,
+      # leaving live ingestion and dbt the bulk of the time. Lower it only if you
+      # need fresher dashboard data AND the copy is fast (small DB).
+      # (Was 30s, which on the grown ~2.5GB DB starved ingestion continuously.)
+      - AURA_SNAPSHOT_INTERVAL=600
+      # dbt cadence. A full cycle currently takes ~20 min (stg_tool_results
+      # ~450-634s + fact_prompts ~493s + the rest) but the interval was 5 min,
+      # so cycles ran BACK-TO-BACK and dbt held the single write lock almost
+      # continuously — starving live ingestion (raw_events went ~3h stale,
+      # "ingestion halted" alarm). Raised 5->25 (2026-07-14) so the interval
+      # EXCEEDS the cycle time, leaving the watcher a window each period to
+      # flush live/backfill writes and refresh the snapshot. Interim measure:
+      # once the heavy marts go incremental (cycle drops to ~1-2 min) this can
+      # come back down for fresher dashboards.
+      - AURA_DBT_RUN_INTERVAL_MINUTES=25
+      # dbt TASK threads = how many models build concurrently.
+      # AURA_DBT_DUCKDB_THREADS = DuckDB's per-query (intra-query) threads.
+      # Both lowered 4->2 (2026-07-14) to keep fact_prompts inside the 3GB
+      # ceiling: at 3GB fact_prompts OOM'd because its range-joins over the
+      # wide fact_tool_executions exceeded the pool. Fewer TASK threads means
+      # fewer heavy marts share the pool at once; fewer DuckDB threads is
+      # DuckDB's own documented OOM remedy (fewer parallel hash tables per
+      # query = lower peak memory). Trade-off: slower cycles. int_event_agent
+      # (38s) and fact_tool_executions (150s) already fit at 3GB; only
+      # fact_prompts needed this. Raise both back toward 4 only if the
+      # memory ceiling is also raised.
+      - AURA_DBT_THREADS=2
+      - AURA_DBT_DUCKDB_THREADS=2
+      # Set to false to disable secret/base64 redaction (raw JSONL passes through unchanged).
+      # WARNING: disabling means any API keys or tokens in payloads are stored verbatim.
+      - AURA_REDACT_PAYLOAD=true
+      # T8: content-hash mode (default OFF — empty string is falsy in the
+      # watcher's "1"/"true" check). Set to "1" or "true" to replace
+      # conversational text (message.content) with sha256:<hex> markers AT
+      # INGEST TIME, so user_prompt / assistant_response / prompt_text_200 /
+      # summary_200 are cryptographically non-recoverable downstream. Applies
+      # to NEW ingests only — does not rewrite existing raw_events rows — and
+      # DISABLES the session replay / conversation view for anything ingested
+      # while it's on (the underlying text is gone, not just masked in the
+      # UI). See README "Privacy: column masking before anything leaves the
+      # machine" for the full rationale.
+      - AURA_HASH_CONTENT=${AURA_HASH_CONTENT:-}
+      # Optional JSON object to override model context window sizes without rebuilding.
+      # Example: AURA_MODEL_WINDOWS_JSON={"claude-opus-5-20260601":1000000}
+      - AURA_MODEL_WINDOWS_JSON=
+      # Person identity override. Inside this container getpass.getuser() returns
+      # 'root', which masks who actually ran the Claude Code session on the host.
+      # Set these to the developer using the laptop so dim_people / session_meta
+      # show the human, not the container's root user. Sourced from .env (copy
+      # .env.example); falls back to generic defaults when unset.
+      - AURA_DEFAULT_PERSON_ID=${AURA_DEFAULT_PERSON_ID:-local}
+      - AURA_DEFAULT_PERSON_NAME=${AURA_DEFAULT_PERSON_NAME:-Local User}
+      # Backfill batch size: files ingested per persistent-connection batch
+      # before the DuckDB file lock is released so snapshot_worker/dbt_worker
+      # get a window to refresh the read DB DURING backfill. Smaller = fresher
+      # dashboard (lock freed more often), at the cost of slightly more batch
+      # overhead. NB: this does NOT change how much data each dbt run crunches
+      # — dbt always rebuilds the `table` marts from the full raw_events.
+      - AURA_BACKFILL_BATCH_SIZE=100
+      # DuckDB memory ceiling for dbt (see dbt/profiles.yml). Must stay BELOW
+      # mem_limit so DuckDB SPILLS TO DISK instead of the container OOM-killing
+      # dbt. Was 3000MB, raised to 4000MB (2026-07-14): after the staging
+      # materialization + thread reduction, int_event_agent (34s) and
+      # fact_tool_executions (128s) fit fine at 3GB, but fact_prompts' single
+      # query exhausts the entire 3GB pool and OOM's even at threads=2 (its
+      # range-joins over the wide fact_tool_executions). 4GB is the reliable
+      # floor for fact_prompts; still 2GB below the old 6GB stopgap. Kept ~1GB
+      # below mem_limit so DuckDB spills instead of the container OOM-killing dbt.
+      - AURA_DBT_MEMORY_LIMIT=4000MB
+    healthcheck:
+      # Liveness = the read snapshot is being refreshed. The staleness threshold
+      # MUST exceed AURA_SNAPSHOT_INTERVAL plus worst-case copy + dbt-wait time:
+      # snapshot_worker skips while dbt holds the lock, so at a 600s interval the
+      # read DB can legitimately be ~20 min stale during dbt-heavy periods. 1800s
+      # avoids false "unhealthy" on a non-real-time setup. start_period covers the
+      # initial backfill + first snapshot.
+      test: ["CMD", "python", "-c", "import os, time; p='/data/read/aura.duckdb'; exit(0 if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < 1800 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 600s
+    # DuckDB table-mart builds (dbt) plus the concurrent batched backfill need
+    # headroom. Kept ~1g above AURA_DBT_MEMORY_LIMIT (4000MB) so DuckDB spills
+    # to disk at its ceiling instead of the container OOM-killing dbt.
+    # Raised 4g->5g (2026-07-14) alongside the memory ceiling: fact_prompts
+    # needs a 4GB DuckDB pool (it OOM'd at 3GB even at threads=2). Still well
+    # below the old 7g.
+    mem_limit: 5g
+    # Run a tiny init (PID 1) that forwards signals and REAPS child processes.
+    # The watcher spawns `dbt run` as a subprocess; without an init, a dbt child
+    # that dies mid-signal becomes an unreapable zombie and `docker compose stop`
+    # wedges the whole container (seen 2026-07-14: "PID is zombie and can not be
+    # killed", requiring docker rm -f). init:true makes stop/restart reliable.
+    init: true
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data:ro
+    environment:
+      - AURA_READ_DB_PATH=/data/read/aura.duckdb
+      - NODE_ENV=production
+    depends_on:
+      - watcher
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://$(hostname):3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 512m
+    restart: unless-stopped

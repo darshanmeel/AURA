@@ -1,0 +1,338 @@
+version: 2
+
+models:
+  - name: fact_model_calls
+    description: >
+      Grain: event_uuid (raw_events.uuid of the winning row per
+      (tenant_id, message_id) — see stg_assistant_messages dedup). Verified
+      2026-07-16 against production data: calculated_cost and model are
+      never null for any row (215570/215570); reported_cost_usd is null for
+      every row in the current (all-'claude'-source) dataset by design —
+      it is only populated for source='sdk_trace' rows — so it is
+      deliberately NOT asserted not_null here.
+    columns:
+      - name: event_uuid
+        tests:
+          - not_null
+          - unique
+      - name: calculated_cost
+        tests:
+          - not_null
+      - name: model
+        tests:
+          - not_null
+      - name: session_id
+        tests:
+          - not_null
+          # dim_sessions is built directly from fact_turns (which is 1:1
+          # with fact_model_calls via stg_assistant_messages), so every
+          # session_id here is guaranteed present in dim_sessions.
+          # Verified 2026-07-16: 0 orphans / 215570 rows.
+          - relationships:
+              arguments:
+                to: ref('dim_sessions')
+                field: session_id
+      - name: tenant_id
+        tests:
+          - not_null
+
+  - name: fact_turns
+    columns:
+      - name: turn_id
+        description: >
+          message_id from stg_assistant_messages. Same primary key as
+          int_turns.turn_id (fact_turns is a 1:1 passthrough — the LEFT
+          JOINs to stg_tool_calls counts and fact_model_calls in the model
+          SQL are both against unique keys, so cardinality is preserved).
+        tests:
+          - not_null
+          - unique
+      - name: session_id
+        tests:
+          - not_null
+          # dim_sessions.session_stats CTE aggregates directly FROM
+          # fact_turns, so this relationship holds by construction.
+          # Verified 2026-07-16: 0 orphans / 215570 rows.
+          - relationships:
+              arguments:
+                to: ref('dim_sessions')
+                field: session_id
+      - name: tenant_id
+        tests:
+          - not_null
+
+  - name: dim_sessions
+    columns:
+      - name: session_id
+        tests:
+          - not_null
+          - unique
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: source
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['claude', 'sdk_trace']
+      - name: session_status
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['completed', 'budget_killed', 'interrupted', 'error', 'unknown']
+      - name: verdict
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['accepted', 'wrong', 'needs_review']
+              config:
+                where: "verdict IS NOT NULL"
+
+  - name: dim_apps
+    description: >
+      Grain: (tenant_id, app_id, project_id) — see GROUP BY in the model
+      SQL. app_id ALONE is not unique: verified 2026-07-16, two collisions
+      exist in production data (app_id='fitscore' spans project_id
+      'fitscore' and 'crosshire'; app_id='learn' spans 'learn-multilang-ru-tr'
+      and 'crosshire'), so a plain `unique` test on app_id would be a false
+      guarantee. dbt_utils is not installed (no packages.yml) and this file
+      may only carry generic-test config, not a new singular-test SQL file,
+      so true composite uniqueness is NOT enforced here — not_null on every
+      grain column is the closest available guard. Revisit with
+      dbt_utils.unique_combination_of_columns if the package is ever added.
+    columns:
+      - name: app_id
+        tests:
+          - not_null
+      - name: project_id
+        tests:
+          - not_null
+      - name: tenant_id
+        tests:
+          - not_null
+
+  - name: dim_agents
+    description: >
+      Grain: (tenant_id, agent, app_id, project_id) — the same agent in two
+      apps is two rows (verified: agent alone is NOT unique in production
+      data, by design per the model's own header comment). app_id/project_id
+      are NOT asserted not_null: they come from a LEFT JOIN to
+      int_app_cwd_lookup with no COALESCE fallback (unlike `agent`, which
+      does COALESCE to 'main'), so a session with a null cwd could
+      legitimately produce a null app_id/project_id row even though none
+      exist in the current dataset. Composite uniqueness not enforced here
+      for the same dbt_utils-unavailable reason as dim_apps (verified
+      2026-07-16: 0 duplicate groups on the full 4-column grain by manual
+      query, but no generic test expresses it without a new file).
+    columns:
+      - name: agent
+        tests:
+          - not_null
+      - name: tenant_id
+        tests:
+          - not_null
+
+  - name: fact_prompts
+    columns:
+      - name: prompt_id
+        tests:
+          - not_null
+          - unique
+      - name: cache_hit_rate
+        tests:
+          - not_null
+      - name: app_id
+        description: >
+          Nullable (2158/23959 null in production — prompts whose session
+          cwd has no dim_apps match). relationships only evaluates non-null
+          values, so this is safe: verified 0 orphans / 23959 rows
+          2026-07-16.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_apps')
+                field: app_id
+      # NOT tested: session_id -> dim_sessions relationship. Verified
+      # 2026-07-16: 63 orphans / 23959 rows. Root cause: dim_sessions is
+      # aggregated from fact_turns, so a session whose first prompt has not
+      # yet produced a completed assistant turn (still pending mid-cycle)
+      # has no dim_sessions row yet. This is an expected, legitimate
+      # orphan condition, not a data bug — adding the test would go red
+      # on every dbt cycle.
+      # NOT tested: agent -> dim_agents.agent relationship. Verified
+      # 2026-07-16: 386 orphans / 23959 rows. Root cause: fact_prompts.agent
+      # is the FIRST resolved agent within the prompt's span (per-call),
+      # while dim_agents.agent is the per-SESSION mode() (dominant agent).
+      # A session that dispatches multiple distinct subagents can have
+      # prompt-level agent values that never win the session-level mode,
+      # so they never appear in dim_agents.agent at all — a legitimate
+      # grain mismatch, not a data bug.
+
+  - name: fact_spend_pace
+    description: >
+      One row per tenant. Current-day burn rate and 30-day rolling averages
+      for the dashboard "burn rate" widget. Refreshed on every dbt run.
+    columns:
+      - name: tenant_id
+        tests:
+          - not_null
+          - unique
+      - name: today_cost
+        tests:
+          - not_null
+      - name: today_pace_hourly
+        tests:
+          - not_null
+      - name: avg_30d_cost
+        tests:
+          - not_null
+      - name: avg_30d_turns
+        tests:
+          - not_null
+      - name: avg_30d_tools
+        tests:
+          - not_null
+      - name: hours_elapsed_today
+        tests:
+          - not_null
+
+  - name: fact_hourly_activity
+    description: >
+      Time-of-day activity heatmap over the last 7 complete UTC days.
+      Grain: (day_of_week, hour_of_day). Always 168 rows (7 × 24 grid,
+      zero-filled). day_of_week: 0=Monday … 6=Sunday
+      (DuckDB dayofweek remapped via (dow+6)%7).
+    columns:
+      - name: day_of_week
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3, 4, 5, 6]
+      - name: hour_of_day
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+                         12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+      - name: turn_count
+        tests:
+          - not_null
+      - name: total_cost
+        tests:
+          - not_null
+      - name: session_starts
+        tests:
+          - not_null
+
+  - name: dim_people
+    description: >
+      Grain: (tenant_id, person_id) — GROUP BY in the model SQL, with
+      person_id IS NOT NULL AND person_id <> 'unknown' already filtered in
+      the WHERE clause, so not_null is guaranteed structurally, not just
+      empirically.
+    columns:
+      - name: person_id
+        tests:
+          - not_null
+          - unique
+      - name: tenant_id
+        tests:
+          - not_null
+
+  # NOTE: dim_projects is NOT added here even though it has a real test gap
+  # (verified 2026-07-16: grain (tenant_id, project_id) has 0 nulls and 0
+  # dup groups across 309 rows; project_id alone is also unique). It is
+  # already declared in aura_semantic.yml — see the fact_session_files /
+  # fact_git_commands note below for why this lane cannot extend that file.
+
+  - name: fact_tool_executions
+    description: >
+      One row per tool_use block (tc.tool_use_id from stg_tool_calls, always
+      present per that model's own WHERE-filter guarantee). Grain: tool_use_id.
+      Verified 2026-07-16 against production data: 0 nulls and 0 duplicates
+      on tool_use_id across 237110 rows.
+    columns:
+      - name: tool_use_id
+        tests:
+          - not_null
+          - unique
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: session_id
+        tests:
+          - not_null
+          # Verified 2026-07-16: 0 orphans / 237110 rows.
+          - relationships:
+              arguments:
+                to: ref('dim_sessions')
+                field: session_id
+
+  - name: fact_daily_spend
+    description: >
+      Grain: (tenant_id, date, agent, model) — GROUP BY in the model SQL.
+      Composite uniqueness verified by manual query 2026-07-16 (0 duplicate
+      groups on the full 4-column grain) but not enforced by a generic test
+      here: dbt_utils is not installed and this file may only carry
+      generic-test config, not a new singular-test SQL file. not_null on
+      every grain column is the closest available guard.
+    columns:
+      - name: tenant_id
+        tests:
+          - not_null
+      - name: date
+        tests:
+          - not_null
+      - name: agent
+        description: >
+          NOT tested for a relationships match to dim_agents.agent.
+          Verified 2026-07-16: 122 orphans / 381 rows. Root cause:
+          fact_daily_spend.agent comes from fact_model_calls.agent (the
+          per-call resolved agent), while dim_agents.agent is the
+          per-SESSION mode() (dominant agent, from dim_sessions). A session
+          that dispatches multiple distinct subagents produces per-call
+          agent values that can lose the session-level mode vote and so
+          never appear in dim_agents.agent at all — a legitimate grain
+          mismatch, not a data bug.
+        tests:
+          - not_null
+      - name: model
+        tests:
+          - not_null
+
+  # NOTE: fact_session_files and fact_git_commands are NOT added here even
+  # though both have real test gaps (verified 2026-07-16: fact_session_files
+  # grain (tenant_id, session_id, file_path) has 0 nulls / 0 dup groups on
+  # 32681 rows and 0 orphans on session_id -> dim_sessions; fact_git_commands
+  # has 0 nulls on tenant_id/session_id/git_op across 12156 rows and 0
+  # orphans on session_id -> dim_sessions). Both models are already declared
+  # in aura_semantic.yml, and dbt errors ("two schema.yml entries for the
+  # same model") if the same model appears in two YAML files — this lane
+  # owns schema.yml files only, so extending the aura_semantic.yml entries
+  # is out of scope here. Flagged as a caveat for a follow-up.
+
+  - name: fact_errors
+    description: >
+      Union of tool errors and assistant-side error stop_reasons. NOTE:
+      this model has no tenant_id column at all (flagged for dbt-expert) —
+      the relationships test below is therefore not tenant-scoped, unlike
+      every other fact->dim relationship test in this file. Safe on the
+      current single-tenant ('local') dataset; verified 2026-07-16.
+    columns:
+      - name: session_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_sessions')
+                field: session_id
+      - name: ts
+        tests:
+          - not_null
+      - name: kind
+        tests:
+          - not_null

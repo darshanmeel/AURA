@@ -1,0 +1,13 @@
+{
+  "name": "aura-number-verify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless number-map integrity runner for the Aura READ DuckDB. Emits <AURA_ARTIFACTS_DIR>/number_verify.json for the /observability page.",
+  "scripts": {
+    "verify": "node run_all.mjs"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "1.5.3-r.1"
+  }
+}
