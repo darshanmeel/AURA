@@ -11,12 +11,12 @@ and NO per-line uuid — the adapter synthesises both.
 
 import json
 import os
+from datetime import UTC, datetime
 
 import pytest
 
+from aura_watcher import lake
 from aura_watcher.adapters.sdk_trace import SdkTraceAdapter
-from aura_watcher.duckdb_writer import DuckDBWriter
-
 
 # ---------------------------------------------------------------------------
 # Fixture lines — one per kind. These mirror the external tracer's output.
@@ -125,12 +125,12 @@ EXPECTED_KEYS = {
 
 
 def _trace_file(tmp_path, name="trace_session_42.jsonl"):
-    """Write all fixture kinds to a trace file and return its path + stem."""
+    """Write all fixture kinds to a trace file; return its logical path + stem."""
     fp = tmp_path / name
     fp.write_bytes(
         b"".join((json.dumps(k) + "\n").encode("utf-8") for k in ALL_KINDS)
     )
-    return str(fp), os.path.splitext(name)[0]
+    return f"trace1/{name}", os.path.splitext(name)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -138,9 +138,7 @@ def _trace_file(tmp_path, name="trace_session_42.jsonl"):
 # ---------------------------------------------------------------------------
 
 def test_fixed_key_set_across_all_kinds(tmp_path):
-    """insert_events anchors the column list on events[0] and SKIPS any event
-    with a differing key set. So the adapter MUST return the identical key set
-    on every kind."""
+    """Every kind returns the identical key set (the fixed raw_events shape)."""
     fp, _ = _trace_file(tmp_path)
     adapter = SdkTraceAdapter()
     offset = 0
@@ -410,85 +408,40 @@ def test_parse_skills_and_mcp_are_noop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Integration: insert_events accepts every kind (identical key sets)
+# Every kind coerces into a valid lake raw_events row
 # ---------------------------------------------------------------------------
 
-def test_insert_events_accepts_all_kinds(tmp_path):
+def test_every_kind_coerces_to_lake_row(tmp_path):
     fp, _ = _trace_file(tmp_path)
-    db_path = tmp_path / "aura.duckdb"
-    writer = DuckDBWriter(str(db_path))
     adapter = SdkTraceAdapter()
-
-    events = []
-    offset = 0
-    for raw in ALL_KINDS:
-        ev = adapter.parse_line(raw, file_path=fp, byte_offset=offset)
-        offset += 1
-        events.append(ev)
-
-    writer.insert_events(events)
-
-    with writer.get_connection() as conn:
-        count = conn.execute("SELECT count(*) FROM raw_events").fetchone()[0]
-        # All 9 kinds inserted — none skipped for key mismatch.
-        assert count == len(ALL_KINDS)
-        # The single cost-bearing row is the result event.
-        cost_rows = conn.execute(
-            "SELECT reported_cost_usd FROM raw_events "
-            "WHERE reported_cost_usd IS NOT NULL"
-        ).fetchall()
-        assert len(cost_rows) == 1
-        assert cost_rows[0][0] == 0.0421
-        # source column populated by the adapter (not the table default).
-        sources = {
-            r[0] for r in conn.execute("SELECT DISTINCT source FROM raw_events").fetchall()
-        }
-        assert sources == {"sdk_trace"}
+    rows = [lake.coerce_row("raw_events", {"tenant_id": "local", **adapter.parse_line(raw, fp, i)})
+            for i, raw in enumerate(ALL_KINDS)]
+    assert len(rows) == len(ALL_KINDS)
+    assert [r["reported_cost_usd"] for r in rows if r["reported_cost_usd"] is not None] == [0.0421]
+    assert {r["source"] for r in rows} == {"sdk_trace"}
+    assert all(r["is_sidechain"] is False for r in rows)
 
 
 # ---------------------------------------------------------------------------
-# Schema migration: source + reported_cost_usd columns exist
+# S3: ts = anchor_ts + t, no file mtime involved
 # ---------------------------------------------------------------------------
 
-def test_schema_has_new_columns(tmp_path):
-    db_path = tmp_path / "aura.duckdb"
-    writer = DuckDBWriter(str(db_path))
-    with writer.get_connection() as conn:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(raw_events)").fetchall()}
-    assert "source" in cols
-    assert "reported_cost_usd" in cols
+def test_ts_is_anchor_plus_t(tmp_path):
+    fp, _ = _trace_file(tmp_path)
+    adapter = SdkTraceAdapter()
+    adapter.anchor_ts = datetime(2026, 11, 1, 10, 0, 0, tzinfo=UTC)
+    ev = adapter.parse_line(RESULT, fp, 0)
+    assert lake.to_ts(ev["ts"]) == "2026-11-01 10:00:01.500000"
 
 
-def test_migration_adds_columns_to_existing_db(tmp_path):
-    """An existing DB created without the new columns must gain them on the
-    next DuckDBWriter() init (idempotent ALTER ... ADD COLUMN IF NOT EXISTS)."""
-    import duckdb
+# ---------------------------------------------------------------------------
+# M2: payload stays valid JSON when a newline precedes a long blob
+# ---------------------------------------------------------------------------
 
-    db_path = str(tmp_path / "legacy.duckdb")
-    # Hand-build a legacy raw_events without source / reported_cost_usd.
-    conn = duckdb.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE raw_events (
-            tenant_id TEXT NOT NULL DEFAULT 'local',
-            uuid TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            agent TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            ts TIMESTAMP NOT NULL,
-            file_path TEXT NOT NULL,
-            byte_offset BIGINT NOT NULL,
-            payload VARCHAR NOT NULL,
-            PRIMARY KEY (tenant_id, uuid)
-        )
-        """
-    )
-    conn.close()
-
-    # Re-open through the writer — migrations should add the columns.
-    DuckDBWriter(db_path)
-    conn = duckdb.connect(db_path)
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(raw_events)").fetchall()}
-    conn.close()
-    assert "source" in cols
-    assert "reported_cost_usd" in cols
+def test_payload_with_newline_blob_stays_valid_json(tmp_path, monkeypatch):
+    import aura_watcher.adapters.sdk_trace as sdk_mod
+    monkeypatch.setattr(sdk_mod, "_REDACT_ENABLED", True)
+    fp, _ = _trace_file(tmp_path)
+    raw = {"t": 1.0, "turn": 1, "kind": "text", "content": "x\n" + "A" * 300}
+    payload = json.loads(SdkTraceAdapter().parse_line(raw, fp, 0)["payload"])
+    assert payload["content"] == "x\n<base64:300 bytes>"

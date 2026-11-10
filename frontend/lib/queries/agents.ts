@@ -1,5 +1,5 @@
 import { query, queryOne } from '../db'
-import { tsFilter } from './_helpers'
+import { assertTs } from './_helpers'
 
 export async function getAllAgents(since: string | null = null) {
   // No range filter: lifetime mart is correct (fast path).
@@ -31,7 +31,7 @@ export async function getAllAgents(since: string | null = null) {
       SUM(es.total_tool_calls)         AS total_tool_calls
     FROM int_entity_spend es
     WHERE es.entity_type = 'agent'
-      AND es.date >= '${since}'::DATE
+      AND es.date >= '${assertTs(since)}'::DATE
     GROUP BY es.entity_id
     ORDER BY total_cost DESC NULLS LAST
   `)
@@ -77,27 +77,34 @@ export async function getAgentApps(name: string, since: string | null = null) {
     `, [name])
   }
   // Range path: join fact_model_calls for accurate date-filtered cost.
+  // One row per session before joining dim_sessions, so session-level
+  // turn/tool counts are not multiplied by the number of model calls (M9).
   return query(`
+    WITH calls AS (
+      SELECT tenant_id, session_id, SUM(calculated_cost) AS cost
+      FROM fact_model_calls
+      WHERE agent = ?
+        AND CAST(ts AS DATE) >= ?::DATE
+      GROUP BY tenant_id, session_id
+    )
     SELECT
       al.app_id                          AS app_id,
       al.project_id                      AS project_id,
-      COUNT(DISTINCT fmc.session_id)     AS session_count,
+      COUNT(DISTINCT c.session_id)       AS session_count,
       SUM(ds.turn_count)                 AS total_turns,
-      SUM(fmc.calculated_cost)           AS total_cost,
+      SUM(c.cost)                        AS total_cost,
       SUM(ds.tools_used)                 AS total_tool_calls
-    FROM fact_model_calls fmc
-    JOIN dim_sessions ds ON ds.session_id = fmc.session_id
+    FROM calls c
+    JOIN dim_sessions ds ON ds.session_id = c.session_id AND ds.tenant_id = c.tenant_id
     LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
-    WHERE fmc.agent = ?
-      AND CAST(fmc.ts AS DATE) >= ?::DATE
-      AND al.app_id IS NOT NULL
+    WHERE al.app_id IS NOT NULL
     GROUP BY al.app_id, al.project_id
     ORDER BY total_cost DESC
   `, [name, since])
 }
 
 export async function getAgentModels(name: string, since: string | null = null) {
-  const sinceClause = since ? ` AND ft.assistant_ts >= '${since}'` : ''
+  const sinceClause = since ? ` AND ft.assistant_ts >= '${assertTs(since)}'` : ''
   return query(`
     SELECT ft.model, SUM(ft.calculated_cost) AS cost,
            COUNT(DISTINCT ft.session_id) AS sessions
@@ -111,12 +118,12 @@ export async function getAgentModels(name: string, since: string | null = null) 
 }
 
 export async function getAgentSessions(name: string, limit = 12, since: string | null = null) {
-  const sinceClause = since ? ` AND ds.start_ts >= '${since}'` : ''
+  const sinceClause = since ? ` AND ds.start_ts >= '${assertTs(since)}'` : ''
   return query(`
     SELECT ds.session_id, ds.start_ts, ds.end_ts, ds.model, ds.turn_count,
-           ds.total_cost, ds.session_title, ds.cwd, da.app_id
+           ds.total_cost, ds.session_title, ds.cwd, al.app_id
     FROM dim_sessions ds
-    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
     WHERE ds.agent = ?${sinceClause}
     ORDER BY ds.start_ts DESC
     LIMIT ?
@@ -140,24 +147,29 @@ export async function getAgentPeople(name: string, since: string | null = null) 
   }
   // Range path: join fact_model_calls for accurate date-filtered cost.
   return query(`
+    WITH calls AS (
+      SELECT tenant_id, session_id, SUM(calculated_cost) AS cost
+      FROM fact_model_calls
+      WHERE agent = ?
+        AND CAST(ts AS DATE) >= ?::DATE
+      GROUP BY tenant_id, session_id
+    )
     SELECT
       ds.person_id,
       ds.person_name,
-      COUNT(DISTINCT fmc.session_id)   AS session_count,
+      COUNT(DISTINCT c.session_id)     AS session_count,
       SUM(ds.turn_count)               AS total_turns,
-      SUM(fmc.calculated_cost)         AS total_cost
-    FROM fact_model_calls fmc
-    JOIN dim_sessions ds ON ds.session_id = fmc.session_id
-    WHERE fmc.agent = ?
-      AND CAST(fmc.ts AS DATE) >= ?::DATE
-      AND ds.person_id IS NOT NULL
+      SUM(c.cost)                      AS total_cost
+    FROM calls c
+    JOIN dim_sessions ds ON ds.session_id = c.session_id AND ds.tenant_id = c.tenant_id
+    WHERE ds.person_id IS NOT NULL
     GROUP BY ds.person_id, ds.person_name
     ORDER BY total_cost DESC
   `, [name, since])
 }
 
 export async function getAgentFiles(name: string, limit = 8, since: string | null = null) {
-  const sinceClause = since ? ` AND ds.start_ts >= '${since}'` : ''
+  const sinceClause = since ? ` AND ds.start_ts >= '${assertTs(since)}'` : ''
   return query(`
     SELECT fsf.file_path, fsf.file_ext,
            SUM(fsf.tokens_attributed)            AS tokens,
@@ -177,7 +189,7 @@ export async function getAgentFiles(name: string, limit = 8, since: string | nul
 // for 87% of sessions — filtering on it would miss almost every subagent.
 // Use int_event_agent.agent_resolved to find every session the agent touched.
 export async function getAgentSkills(name: string, since: string | null = null, limit = 10) {
-  const sinceClause = since ? ` AND ds.end_ts >= '${since}'::TIMESTAMP` : ''
+  const sinceClause = since ? ` AND ds.end_ts >= '${assertTs(since)}'::TIMESTAMP` : ''
   return query(`
     WITH agent_sessions AS (
       SELECT DISTINCT session_id
@@ -188,7 +200,7 @@ export async function getAgentSkills(name: string, since: string | null = null, 
       rs.skill_name                 AS skill,
       COUNT(DISTINCT rs.session_id) AS session_count,
       MAX(ds.end_ts)                AS last_used
-    FROM raw_session_skills rs
+    FROM stg_session_skills rs
     JOIN agent_sessions a ON a.session_id = rs.session_id
     JOIN dim_sessions ds  ON ds.session_id = rs.session_id
     WHERE 1=1${sinceClause}
@@ -199,7 +211,7 @@ export async function getAgentSkills(name: string, since: string | null = null, 
 }
 
 export async function getAgentMcps(name: string, since: string | null = null, limit = 10) {
-  const sinceClause = since ? ` AND ds.end_ts >= '${since}'::TIMESTAMP` : ''
+  const sinceClause = since ? ` AND ds.end_ts >= '${assertTs(since)}'::TIMESTAMP` : ''
   return query(`
     WITH agent_sessions AS (
       SELECT DISTINCT session_id
@@ -210,7 +222,7 @@ export async function getAgentMcps(name: string, since: string | null = null, li
       rm.mcp_server                 AS mcp_server,
       COUNT(DISTINCT rm.session_id) AS session_count,
       MAX(ds.end_ts)                AS last_used
-    FROM raw_session_mcps rm
+    FROM stg_session_mcps rm
     JOIN agent_sessions a ON a.session_id = rm.session_id
     JOIN dim_sessions ds  ON ds.session_id = rm.session_id
     WHERE 1=1${sinceClause}

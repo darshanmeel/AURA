@@ -34,13 +34,10 @@ models:
   - name: dim_turn_messages
     description: >
       "Wide" companion to int_turns / fact_turns: carries only the large
-      per-turn text columns (user_prompt, assistant_response) as a thin
-      passthrough view over int_turns. Split out so that fact_turns (a
-      `table` mart) does not need to materialize the ASOF-joined user_prompt
-      or the 20-position content-block COALESCE for assistant_response —
-      doing so exhausted DuckDB's memory pool. Keep as a VIEW; join back to
-      fact_turns/int_turns on turn_id when the text is actually needed.
-      Grain: turn_id (same primary key as int_turns).
+      per-turn text columns (user_prompt, assistant_response). Incremental
+      table (delete+insert, scoped to recent_sessions()) so the publish step
+      can copy it into the read DB, which has no views. Kept out of
+      fact_turns on purpose. Grain: turn_id (same primary key as int_turns).
     columns:
       - name: tenant_id
         tests:

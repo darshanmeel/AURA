@@ -18,4 +18,5 @@
 *.cfg   text eol=lf
 *.ini   text eol=lf
 *.txt   text eol=lf
+*.jsonl text eol=lf
 Dockerfile text eol=lf

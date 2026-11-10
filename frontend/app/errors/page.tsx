@@ -1,6 +1,6 @@
 'use client'
 
-import React, { Suspense, useState, useEffect } from 'react'
+import React, { Suspense, useState, useEffect, useMemo } from 'react'
 import { Eyebrow, Rule, StatBlock, SeverityTag, AgentLink } from '../../components/atoms'
 import { RangeFilter } from '../../components/RangeFilter'
 import { fmt } from '../../lib/fmt'
@@ -38,7 +38,8 @@ interface ErrorRow {
 function ErrorsPageInner() {
   const searchParams = useSearchParams()
   const range = parseRange(searchParams?.get('range') ?? undefined)
-  const since = rangeSince(range)
+  // Memoised: rangeSince returns a new string per call, which would refire the effect.
+  const since = useMemo(() => rangeSince(range), [range])
 
   const [allErrors, setAllErrors] = useState<ErrorRow[]>([])
   const [loading, setLoading]     = useState(true)
@@ -48,7 +49,10 @@ function ErrorsPageInner() {
     const params = new URLSearchParams()
     if (since) params.append('since', since)
     fetch(`/api/errors?${params.toString()}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
       .then(d => {
         // endpoint returns { errors: [...] } or a bare array
         const rows = Array.isArray(d) ? d : (d.errors ?? [])

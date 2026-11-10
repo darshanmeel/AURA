@@ -27,10 +27,13 @@ calculated_cost = input_tokens         × input_rate
                 + output_tokens        × output_rate
                 + ephemeral_5m_tokens  × cache_write_rate_5m
                 + ephemeral_1h_tokens  × cache_write_rate_1h
+                + residual_cache_tokens × cache_write_rate_5m
                 + cache_read_tokens    × cache_read_rate
+
+residual_cache_tokens = GREATEST(cache_creation_tokens − ephemeral_5m_tokens − ephemeral_1h_tokens, 0)
 ```
 
-Rates come from the `model_pricing` seed, joined in `fact_model_calls`.
+Rates come from the `model_pricing` seed, joined in `fact_model_calls`. The residual is 0 when the event carries the 5m/1h breakdown; for older events without it, the whole `cache_creation_input_tokens` is priced at the 5-minute write rate (the API default TTL).
 
 ### Source-specific cost: `sdk_trace` sessions (verbatim)
 

@@ -15,10 +15,7 @@
 -- fact_tool_executions (the only ref() of this model) is itself now
 -- incremental (see that model's header), so a full rebuild here would still
 -- redo all the work an incremental downstream fact no longer needs.
--- Cursor is ingest_checkpoints.last_seen_at, not raw_events.ts — raw_events.ts
--- is frozen at first insert and unsafe as a cursor (backfill/resume can
--- write old ts values at an arbitrary wall-clock moment); see
--- fact_prompts.sql header for the full story.
+-- Cursor: the recent_sessions() macro (lake ingested_at since the last build).
 -- unique_key is (tenant_id, event_uuid): NOT a strict primary key — verified
 -- 2026-07-16 that event_uuid can appear twice in this model's own output
 -- (144/238137 rows in production), specifically when a single raw event row
@@ -37,26 +34,12 @@
 -- column pair this dedup logic already reasons about) rather than switching
 -- to the COALESCE(tool_use_id, event_uuid) dedup expression itself, which
 -- would be a needless second change bundled into this one.
-{% set lookback_hours = var('stg_tool_results_lookback_hours', 24) %}
 
 WITH
 {% if is_incremental() %}
--- Files touched (grown or re-read) within the lookback window, per tenant.
-recent_files AS (
-    SELECT tenant_id, file_path
-    FROM {{ source('aura', 'ingest_checkpoints') }}
-    WHERE last_seen_at >= now() - INTERVAL '{{ lookback_hours }} hours'
-),
--- Sessions with at least one recently-touched file. delete+insert on
--- (tenant_id, event_uuid) then replaces every tool-result row of that
--- session's events.
-recent_sessions AS (
-    SELECT DISTINCT re.tenant_id, re.session_id
-    FROM {{ source('aura', 'raw_events') }} re
-    JOIN recent_files rf
-        ON  rf.tenant_id = re.tenant_id
-        AND rf.file_path = re.file_path
-),
+-- delete+insert on (tenant_id, event_uuid) then replaces every tool-result
+-- row of these sessions' events.
+recent_sessions AS ({{ recent_sessions() }}),
 {% endif %}
 unioned_results AS (
     -- Case 1: Unnested content array (type = 'tool_result')
@@ -67,7 +50,8 @@ unioned_results AS (
         se.ts,
         json_extract_string(content_item, '$.tool_use_id') as tool_use_id,
         json_extract_string(content_item, '$.content') as output_text,
-        json_extract_string(content_item, '$.is_error') = 'true' as is_error
+        json_extract_string(content_item, '$.is_error') = 'true' as is_error,
+        1 AS src_case
     FROM {{ ref('stg_events') }} se
     CROSS JOIN UNNEST(CAST(json_extract(se.payload, '$.message.content') AS JSON[])) as t(content_item)
     {% if is_incremental() %}
@@ -88,7 +72,8 @@ unioned_results AS (
         e.ts,
         tc.tool_use_id as tool_use_id,
         json_extract_string(e.payload, '$.toolUseResult.text') as output_text,
-        COALESCE(json_extract_string(e.payload, '$.toolUseResult.isError') = 'true', FALSE) as is_error
+        COALESCE(json_extract_string(e.payload, '$.toolUseResult.isError') = 'true', FALSE) as is_error,
+        2 AS src_case
     FROM {{ ref('stg_events') }} e
     LEFT JOIN {{ ref('stg_tool_calls') }} tc
         ON tc.event_uuid = json_extract_string(e.payload, '$.sourceToolAssistantUUID')
@@ -116,10 +101,12 @@ unioned_results AS (
 -- COALESCE(tool_use_id, event_uuid) achieves both goals in a single QUALIFY:
 --   - non-null tool_use_id  -> partition key is tool_use_id  (dedup as before)
 --   - null    tool_use_id   -> partition key is event_uuid   (no collapse)
-SELECT * FROM unioned_results
+-- src_case and event_uuid make the pick deterministic when ts ties.
+SELECT * EXCLUDE (src_case), {{ built_at() }} AS _built_at
+FROM unioned_results
 QUALIFY ROW_NUMBER() OVER (
     PARTITION BY tenant_id, COALESCE(tool_use_id, event_uuid)
     ORDER BY
         CASE WHEN output_text IS NOT NULL AND LENGTH(output_text) > 0 THEN 0 ELSE 1 END,
-        ts
+        ts, src_case, event_uuid
 ) = 1

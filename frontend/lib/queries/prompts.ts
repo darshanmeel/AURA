@@ -53,17 +53,6 @@ export async function getAgentPrompts(agent: string, limit = 6, since: string | 
   `, [agent, limit])
 }
 
-export async function getOverkillPrompts(limit = 5) {
-  return query(`
-    SELECT prompt_text_200, agent, app_id, model_primary, overkill_reason,
-           cost_total, session_id, prompt_ts
-    FROM fact_prompts
-    WHERE is_overkill = TRUE
-    ORDER BY cost_total DESC
-    LIMIT ?
-  `, [limit])
-}
-
 export async function getLoudestPromptOfDay() {
   return query(`
     SELECT prompt_text_200, agent, app_id, model_primary, output_tokens_total

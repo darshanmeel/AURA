@@ -130,7 +130,7 @@ function SessionsPageInner() {
       {/* 5-stat strip for filtered set */}
       <section className="strip strip-tight">
         <StatBlock
-          label="Sessions"
+          label="Sessions started in range"
           value={fmt.n(totalCount)}
           footnote={sessions.length < totalCount ? `showing ${fmt.n(sessions.length)} of ${fmt.n(totalCount)}` : 'matching filters'}
         />

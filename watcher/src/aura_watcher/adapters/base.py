@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 import abc
+import posixpath
+
+
+def session_id_from_path(file_path: str) -> str:
+    """S8: a transcript is ``<project_dir>/<session_id>.jsonl``, so the
+    fallback session id is the file stem, never the parent directory."""
+    return posixpath.splitext(posixpath.basename(file_path))[0] or "unknown"
 
 
 class Adapter(abc.ABC):
@@ -21,8 +28,8 @@ class Adapter(abc.ABC):
     raw:
         The decoded JSON object for a single JSONL line.
     file_path:
-        Absolute path of the JSONL file being ingested (used for
-        project-id extraction and logging).
+        Logical posix path of the JSONL file (``claude/<rel>`` or
+        ``trace<N>/<rel>``, spec §2.6); stored in ``raw_events.file_path``.
     byte_offset:
         Byte position of the start of this line in *file_path*
         (stored in ``raw_events.byte_offset`` for checkpoint logic).
@@ -65,8 +72,8 @@ class Adapter(abc.ABC):
         raw:
             The decoded JSON object for a single JSONL line.
         file_path:
-            Absolute path of the JSONL file being ingested (used for
-            session_id derivation when the record lacks ``sessionId``).
+            Logical posix path of the JSONL file (used for session_id
+            derivation when the record lacks ``sessionId``).
 
         Returns
         -------
@@ -77,3 +84,9 @@ class Adapter(abc.ABC):
             Line is not a recognised session-attribute record; caller ignores it.
         """
         return None
+
+    def parse_skills(self, raw: dict, file_path: str) -> list[dict]:
+        return []
+
+    def parse_mcp_servers(self, raw: dict, file_path: str) -> list[dict]:
+        return []

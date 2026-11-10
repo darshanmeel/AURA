@@ -11,10 +11,17 @@
 --     USER→CLAUDE). Sidechain assistant turns now receive user_prompt=NULL, which
 --     is correct: the dispatch text is already shown as the parent's tool-call side.
 --
--- user_prompt extraction: try plain-string content first (most common).
--- If content is a JSON array, walk up to 8 positions for a text-type block.
--- The 8-position limit covers real sessions where tool_result blocks precede
--- the actual text block. list_filter would be cleaner but this is readable.
+-- user_prompt extraction: plain-string content only. A prompt whose content
+-- is an array (a text block next to an image or attachment) is dropped by the
+-- '[' shape filter below, so the content[N].text fallbacks never fire today;
+-- fact_prompts drops the same prompts (Q4). Measure the share before changing
+-- it (spec §6.2); if it is > 1 %, take the first text block of array content:
+--   SELECT avg(CASE WHEN json_type(payload, '$.message.content') = 'ARRAY'
+--                    AND list_contains(json_extract_string(payload, '$.message.content[*].type'), 'text')
+--              THEN 1 ELSE 0 END)
+--   FROM stg_events
+--   WHERE event_type = 'user' AND NOT is_sidechain
+--     AND json_extract_string(payload, '$.userType') = 'external'
 WITH real_user_prompts AS (
     SELECT
         tenant_id,
@@ -84,33 +91,8 @@ WITH real_user_prompts AS (
         -- ASOF JOIN resolves the correct "which human prompt does this turn answer"
         -- even across long tool-use chains.
         u.user_prompt,
-        -- assistant_response: type-guarded COALESCE walks up to 20 content block
-        -- positions, returning text only for blocks where type='text'.
-        -- Thinking blocks (type='thinking') and tool-use blocks (type='tool_use')
-        -- are skipped. 20 positions covers the observed maximum leading-block depth
-        -- across all sessions (profiled: max first-text-block index was 12).
-        COALESCE(
-            CASE WHEN json_extract_string(a.payload, '$.message.content[0].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[0].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[1].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[1].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[2].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[2].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[3].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[3].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[4].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[4].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[5].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[5].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[6].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[6].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[7].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[7].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[8].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[8].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[9].type')  = 'text' THEN json_extract_string(a.payload, '$.message.content[9].text')  END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[10].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[10].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[11].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[11].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[12].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[12].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[13].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[13].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[14].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[14].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[15].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[15].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[16].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[16].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[17].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[17].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[18].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[18].text') END,
-            CASE WHEN json_extract_string(a.payload, '$.message.content[19].type') = 'text' THEN json_extract_string(a.payload, '$.message.content[19].text') END
-        ) AS assistant_response,
+        -- assistant_response: first text block (macros/assistant_text.sql).
+        {{ assistant_text('a.payload') }} AS assistant_response,
         a.cwd,
         a.git_branch,
         a.claude_version,

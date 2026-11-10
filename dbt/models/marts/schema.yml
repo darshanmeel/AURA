@@ -97,11 +97,8 @@ models:
       exist in production data (app_id='fitscore' spans project_id
       'fitscore' and 'crosshire'; app_id='learn' spans 'learn-multilang-ru-tr'
       and 'crosshire'), so a plain `unique` test on app_id would be a false
-      guarantee. dbt_utils is not installed (no packages.yml) and this file
-      may only carry generic-test config, not a new singular-test SQL file,
-      so true composite uniqueness is NOT enforced here — not_null on every
-      grain column is the closest available guard. Revisit with
-      dbt_utils.unique_combination_of_columns if the package is ever added.
+      guarantee. Composite uniqueness is enforced by the singular test
+      tests/grain_dim_apps.sql.
     columns:
       - name: app_id
         tests:
@@ -115,17 +112,11 @@ models:
 
   - name: dim_agents
     description: >
-      Grain: (tenant_id, agent, app_id, project_id) — the same agent in two
-      apps is two rows (verified: agent alone is NOT unique in production
-      data, by design per the model's own header comment). app_id/project_id
-      are NOT asserted not_null: they come from a LEFT JOIN to
-      int_app_cwd_lookup with no COALESCE fallback (unlike `agent`, which
-      does COALESCE to 'main'), so a session with a null cwd could
-      legitimately produce a null app_id/project_id row even though none
-      exist in the current dataset. Composite uniqueness not enforced here
-      for the same dbt_utils-unavailable reason as dim_apps (verified
-      2026-07-16: 0 duplicate groups on the full 4-column grain by manual
-      query, but no generic test expresses it without a new file).
+      Grain: (tenant_id, agent, app_id, project_id), built per model call
+      (agent from int_event_agent, app from the call's cwd), so
+      SUM(total_cost) = SUM(fact_model_calls.calculated_cost)
+      (tests/cost_reconciliation.sql). app_id/project_id are NULL for calls
+      with no known cwd, so they are not asserted not_null.
     columns:
       - name: agent
         tests:
@@ -317,12 +308,12 @@ models:
 
   - name: fact_errors
     description: >
-      Union of tool errors and assistant-side error stop_reasons. NOTE:
-      this model has no tenant_id column at all (flagged for dbt-expert) —
-      the relationships test below is therefore not tenant-scoped, unlike
-      every other fact->dim relationship test in this file. Safe on the
-      current single-tenant ('local') dataset; verified 2026-07-16.
+      Union of tool errors and assistant-side error stop_reasons, mapped to
+      turns by (tenant_id, message_id).
     columns:
+      - name: tenant_id
+        tests:
+          - not_null
       - name: session_id
         tests:
           - not_null

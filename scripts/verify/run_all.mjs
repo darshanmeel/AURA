@@ -1,24 +1,34 @@
 // run_all.mjs — headless number-map integrity runner.
 //
-// Checks number-map invariants against the READ DuckDB (opened READ-ONLY) and
-// writes a JSON report to <AURA_ARTIFACTS_DIR>/number_verify.json. This file is
-// the contract the /observability frontend reads — DO NOT rename its fields.
+// Checks number-map invariants against the published read DB
+// (<AURA_READ_DIR>/<CURRENT>/aura.duckdb, opened READ-ONLY) and writes a JSON
+// report to <AURA_ARTIFACTS_DIR>/number_verify.json. This file is the contract
+// the /observability frontend reads — DO NOT rename its fields.
 //
-// Invoked by the watcher's dbt cycle (dbt_worker) right after `dbt test`. The
-// frontend/API is NOT running during that cycle, so every check is DB-only
-// (no HTTP fetch). Each check is wrapped in its own try/catch: a query error
-// (e.g. a column missing on an old snapshot before the dbt drift fix lands)
-// records pass:false with actual="error: <msg>" instead of crashing the run.
+// Invoked by the watcher's dbt cycle after publish and `dbt test`. Every check
+// is DB-only (no HTTP fetch) and reads only read-DB tables. Each check is
+// wrapped in its own try/catch: a query error records pass:false with
+// actual="error: <msg>" instead of crashing the run.
 //
 // Uses the same @duckdb/node-api client + version (1.5.3-r.1) as the frontend
 // (frontend/lib/db.ts), proven against the 1.5.x read DB.
 
 import { DuckDBInstance } from '@duckdb/node-api';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
-const DB_PATH = process.env.AURA_READ_DB_PATH || '/data/read/aura.duckdb';
-const ARTIFACTS_DIR = process.env.AURA_ARTIFACTS_DIR || '/data/artifacts';
+const DATA_DIR = process.env.AURA_DATA_DIR || '/data';
+const READ_DIR = process.env.AURA_READ_DIR || join(DATA_DIR, 'read');
+const ARTIFACTS_DIR = process.env.AURA_ARTIFACTS_DIR || join(DATA_DIR, 'artifacts');
+// Own spill dir, never shared with the frontend's.
+const TEMP_DIR = join(tmpdir(), `aura-verify-${process.pid}`);
+
+// Throws when nothing is published yet; main() turns that into error checks.
+function readDbPath() {
+  const ver = readFileSync(join(READ_DIR, 'CURRENT'), 'utf8').trim();
+  return join(READ_DIR, ver, 'aura.duckdb');
+}
 
 // Reconciliation tolerance: pass if abs(Δ) < 0.01 OR relΔ < 0.005.
 const ABS_TOL = 0.01;
@@ -99,17 +109,24 @@ const CHECKS = [
     },
   },
   {
-    check: 'agent_entity_spend_reconciles',
-    page: 'agents',
+    check: 'entity_spend_reconciles',
+    page: 'dashboard',
     expected_source: 'int_entity_spend.total_cost',
+    // Dashboard all-range total == app sum == agent sum == person sum (incl.
+    // unknown) == model calls, each within ABS_TOL.
     run: async (conn) => {
-      const a = num((await runOne(conn,
-        "SELECT SUM(total_cost) AS v FROM int_entity_spend WHERE entity_type = 'agent'"))?.v) ?? 0;
-      const b = num((await runOne(conn,
-        'SELECT SUM(daily_cost) AS v FROM fact_daily_spend'))?.v) ?? 0;
+      const r = await runOne(conn, `
+        SELECT
+          (SELECT SUM(daily_cost) FROM fact_daily_spend) AS dashboard,
+          (SELECT SUM(total_cost) FROM int_entity_spend WHERE entity_type = 'app') AS app,
+          (SELECT SUM(total_cost) FROM int_entity_spend WHERE entity_type = 'agent') AS agent,
+          (SELECT SUM(total_cost) FROM int_entity_spend WHERE entity_type = 'person') AS person,
+          (SELECT SUM(calculated_cost) FROM fact_model_calls) AS model_calls`);
+      const v = Object.fromEntries(Object.entries(r ?? {}).map(([k, x]) => [k, num(x) ?? 0]));
+      const parts = ['dashboard', 'app', 'agent', 'person'];
       return {
-        actual: `agent_entity=$${fmt(a)} daily_spend=$${fmt(b)} Δ=$${fmt(Math.abs(a - b))}`,
-        pass: reconciles(a, b),
+        actual: parts.map((k) => `${k}=$${fmt(v[k])}`).join(' ') + ` model_calls=$${fmt(v.model_calls)}`,
+        pass: parts.every((k) => Math.abs((v[k] ?? 0) - (v.model_calls ?? 0)) < ABS_TOL),
       };
     },
   },
@@ -202,7 +219,11 @@ async function main() {
   let instance;
   let conn;
   try {
-    instance = await DuckDBInstance.create(DB_PATH, { access_mode: 'READ_ONLY' });
+    instance = await DuckDBInstance.create(readDbPath(), {
+      access_mode: 'READ_ONLY',
+      TimeZone: 'UTC',
+      temp_directory: TEMP_DIR,
+    });
     conn = await instance.connect();
   } catch (err) {
     // The DB itself could not be opened. Record every check as an error so the
@@ -247,6 +268,7 @@ async function main() {
 
   try { conn?.closeSync?.(); } catch { /* best-effort */ }
   try { instance?.closeSync?.(); } catch { /* best-effort */ }
+  rmSync(TEMP_DIR, { recursive: true, force: true });
 
   const failCount = writeReport(checks);
   process.exit(failCount > 0 ? 1 : 0);

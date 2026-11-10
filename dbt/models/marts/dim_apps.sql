@@ -52,23 +52,28 @@ naming AS (
         END                              AS project_id
     FROM classify
 ),
--- Collapse to one row per (tenant_id, app_id, project_id) — pick an arbitrary cwd
--- as the canonical cwd (used downstream for dim_sessions join).
+-- Collapse to one row per (tenant_id, app_id, project_id); cwd is a display
+-- value (MIN for determinism); joins use all_cwds via int_app_cwd_lookup.
 app_cwd AS (
     SELECT
         tenant_id,
         app_id,
         project_id,
-        ANY_VALUE(cwd)           AS cwd,
+        MIN(cwd)                 AS cwd,
         array_agg(DISTINCT cwd)  AS all_cwds
     FROM naming
     GROUP BY tenant_id, app_id, project_id
 ),
 -- Stats from fact_turns so we avoid circular dependency with dim_sessions.
-session_list AS (
-    -- distinct sessions per (tenant_id, cwd)
-    SELECT DISTINCT n.tenant_id, n.app_id, n.project_id, n.session_id
+-- session_cwds keeps cwd so turns and commits join on (session, cwd): a
+-- session that moves between apps puts each turn under the app it ran in.
+session_cwds AS (
+    SELECT DISTINCT n.tenant_id, n.app_id, n.project_id, n.session_id, n.cwd
     FROM naming n
+),
+session_list AS (
+    SELECT DISTINCT tenant_id, app_id, project_id, session_id
+    FROM session_cwds
 ),
 turn_stats AS (
     SELECT
@@ -81,9 +86,9 @@ turn_stats AS (
         COUNT(*)                                   AS total_turns,
         MIN(ft.assistant_ts)                       AS first_seen,
         MAX(ft.assistant_ts)                       AS last_seen
-    FROM session_list sl
+    FROM session_cwds sl
     JOIN {{ ref('fact_turns') }} ft
-        ON ft.session_id = sl.session_id AND ft.tenant_id = sl.tenant_id
+        ON ft.session_id = sl.session_id AND ft.tenant_id = sl.tenant_id AND ft.cwd = sl.cwd
     GROUP BY sl.tenant_id, sl.app_id, sl.project_id
 ),
 -- Commits per app, derived from fact_git_commands (successful `git commit`
@@ -101,9 +106,9 @@ commit_stats AS (
         sl.app_id,
         sl.project_id,
         COUNT(*)                                   AS commits
-    FROM session_list sl
+    FROM session_cwds sl
     JOIN {{ ref('fact_git_commands') }} gc
-        ON gc.session_id = sl.session_id AND gc.tenant_id = sl.tenant_id
+        ON gc.session_id = sl.session_id AND gc.tenant_id = sl.tenant_id AND gc.cwd = sl.cwd
     WHERE gc.git_op = 'commit'
       AND NOT gc.is_error
       AND gc.raw_command NOT LIKE '%--help%'
@@ -142,7 +147,7 @@ error_stats AS (
         COUNT(fe.session_id)                       AS errors
     FROM session_list sl
     LEFT JOIN {{ ref('fact_errors') }} fe
-        ON fe.session_id = sl.session_id
+        ON fe.session_id = sl.session_id AND fe.tenant_id = sl.tenant_id
     GROUP BY sl.tenant_id, sl.app_id, sl.project_id
 )
 SELECT

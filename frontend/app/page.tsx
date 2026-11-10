@@ -42,10 +42,12 @@ export default async function DashboardPage({
 
   // Hourly bucket only when looking at today; everything else bucket by day.
   const hourly = range === 'today'
+  // Chart rows follow the range; all = every day (M8).
+  const dailySpendDays = range === 'all' ? null : range === '30d' ? 30 : 14
 
   const [kpisArr, ds, ta, tproj, tag, tm, prov, mod, re, tf, tp, lp, sp, ha, ts, tsk, tmcp] = await Promise.all([
     safe('kpis',            () => getDashboardKPIs(since),  null),
-    safe('dailySpend',      () => getDailySpend(since),     [] as any[]),
+    safe('dailySpend',      () => getDailySpend(since, dailySpendDays), [] as any[]),
     safe('topApps',         () => getTopApps(since),        [] as any[]),
     safe('topProjects',     () => getTopProjects(since),    [] as any[]),
     safe('topAgents',       () => getTopAgents(since),      [] as any[]),
@@ -73,7 +75,6 @@ export default async function DashboardPage({
   const topSkills = (tsk as any[]) ?? []
   const topMcps   = (tmcp as any[]) ?? []
 
-  const totalDays = dailySpend.length
   const maxCost = Math.max(...topApps.map((a: any) => a.total_cost ?? 0), 0.001)
   const maxToolCalls = Math.max(...toolMix.map((t: any) => t.call_count ?? 0), 1)
 
@@ -89,8 +90,12 @@ export default async function DashboardPage({
 
   const rangeLabelUp = rangeLabel(range).toUpperCase()
 
-  // Projected 30d: when range is 'all', fall back to totalDays from dailySpend
-  const effectiveDays = range === 'all' ? Math.max(1, totalDays || 1)
+  // Projected 30d: for 'all', divide by the days between the first and last
+  // session (M8); the chart's row count is not a day span.
+  const spanDays = kpis.first_session && kpis.last_session
+    ? Math.floor((Date.parse(kpis.last_session) - Date.parse(kpis.first_session)) / 86_400_000) + 1
+    : 1
+  const effectiveDays = range === 'all' ? Math.max(1, spanDays || 1)
     : range === '30d' ? 30
     : range === '7d' ? 7
     : 1
@@ -527,7 +532,7 @@ export default async function DashboardPage({
 
       {/* Skills & MCPs — lives at the bottom; useful context but not headline.
           Empty state is normal until the first dbt cycle after a fresh parser
-          deployment populates raw_session_skills / raw_session_mcps. */}
+          deployment populates stg_session_skills / stg_session_mcps. */}
       <section style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
           <h2 className="h-section">Skills &amp; MCPs</h2>

@@ -16,6 +16,11 @@ macro-paths: ["macros"]
 snapshot-paths: ["snapshots"]
 
 target-path: "target"
+
+# Event timestamps are naive UTC; this makes CURRENT_DATE / now() UTC too,
+# whatever the host time zone (tests/timezone_utc.sql checks it).
+on-run-start:
+  - "SET GLOBAL TimeZone = 'UTC'"
 clean-targets:
   - "target"
   - "dbt_modules"

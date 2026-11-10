@@ -1,12 +1,15 @@
 {{ config(materialized='table') }}
 
+-- tool_count: one assistant message is streamed as several events, each with its
+-- own uuid, and a tool_use block can repeat across them. Count distinct
+-- tool_use_id per message_id (= turn_id) so no block is missed or double counted.
 WITH tool_counts AS (
     SELECT
         tenant_id,
-        event_uuid,
-        COUNT(*) as tool_count
+        message_id,
+        COUNT(DISTINCT tool_use_id) as tool_count
     FROM {{ ref('stg_tool_calls') }}
-    GROUP BY tenant_id, event_uuid
+    GROUP BY tenant_id, message_id
 )
 SELECT
     t.tenant_id,
@@ -31,9 +34,11 @@ SELECT
     t.context_pct,
     t.is_sidechain,
     COALESCE(tc.tool_count, 0) as tool_count,
-    COALESCE(mc.calculated_cost, 0.0) as calculated_cost
+    -- NULL when the model has no pricing row (fail loud, same as fact_model_calls).
+    mc.calculated_cost,
+    mc.stop_reason
 FROM {{ ref('int_turns') }} t
 LEFT JOIN tool_counts tc
-    ON t.assistant_event_uuid = tc.event_uuid AND t.tenant_id = tc.tenant_id
+    ON t.turn_id = tc.message_id AND t.tenant_id = tc.tenant_id
 LEFT JOIN {{ ref('fact_model_calls') }} mc
     ON t.turn_id = mc.model_call_id AND t.tenant_id = mc.tenant_id

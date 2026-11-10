@@ -56,8 +56,9 @@ WITH fmc_base AS (
     FROM {{ ref('fact_model_calls') }} fmc
     LEFT JOIN {{ ref('dim_sessions') }} ds
         ON ds.session_id = fmc.session_id AND ds.tenant_id = fmc.tenant_id
+    -- App by the call's own cwd, so a session that spans apps splits its cost.
     LEFT JOIN {{ ref('int_app_cwd_lookup') }} al
-        ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
+        ON al.cwd = fmc.cwd AND al.tenant_id = fmc.tenant_id
 ),
 
 -- Per-session commits attributed to start_ts date. Joined to entity by id.
@@ -68,6 +69,7 @@ session_commits AS (
         ds.person_id,
         COALESCE(ds.agent, 'main')          AS agent,
         al.app_id,
+        al.project_id,
         CAST(ds.start_ts AS DATE)           AS date,
         COALESCE(ds.commits, 0)             AS commits
     FROM {{ ref('dim_sessions') }} ds
@@ -84,12 +86,13 @@ tool_base AS (
         fte.session_id,
         ds.person_id,
         COALESCE(ds.agent, 'main')          AS agent,
-        al.app_id
+        al.app_id,
+        al.project_id
     FROM {{ ref('fact_tool_executions') }} fte
     LEFT JOIN {{ ref('dim_sessions') }} ds
         ON ds.session_id = fte.session_id AND ds.tenant_id = fte.tenant_id
     LEFT JOIN {{ ref('int_app_cwd_lookup') }} al
-        ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
+        ON al.cwd = fte.cwd AND al.tenant_id = fte.tenant_id
 ),
 
 -- ── App grain: aggregate-then-join, no multiplication ──────────────────────
@@ -105,14 +108,14 @@ app_spend AS (
     GROUP BY tenant_id, app_id, project_id, date
 ),
 app_tools AS (
-    SELECT tenant_id, app_id AS entity_id, date, COUNT(*) AS total_tool_calls
+    SELECT tenant_id, app_id AS entity_id, project_id, date, COUNT(*) AS total_tool_calls
     FROM tool_base WHERE app_id IS NOT NULL
-    GROUP BY tenant_id, app_id, date
+    GROUP BY tenant_id, app_id, project_id, date
 ),
 app_commits AS (
-    SELECT tenant_id, app_id AS entity_id, date, SUM(commits) AS commits
+    SELECT tenant_id, app_id AS entity_id, project_id, date, SUM(commits) AS commits
     FROM session_commits WHERE app_id IS NOT NULL
-    GROUP BY tenant_id, app_id, date
+    GROUP BY tenant_id, app_id, project_id, date
 ),
 app_daily AS (
     SELECT
@@ -128,8 +131,8 @@ app_daily AS (
         COALESCE(t.total_tool_calls, 0)     AS total_tool_calls,
         COALESCE(c.commits, 0)              AS commits
     FROM app_spend s
-    LEFT JOIN app_tools   t USING (tenant_id, entity_id, date)
-    LEFT JOIN app_commits c USING (tenant_id, entity_id, date)
+    LEFT JOIN app_tools   t USING (tenant_id, entity_id, project_id, date)
+    LEFT JOIN app_commits c USING (tenant_id, entity_id, project_id, date)
 ),
 
 -- ── Agent grain ────────────────────────────────────────────────────────────

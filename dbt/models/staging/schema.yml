@@ -3,9 +3,13 @@ version: 2
 models:
   - name: stg_events
     description: >
-      Thin pass-through view over raw_events. One row per raw JSONL event.
-      No deduplication is applied here; dedup happens in downstream staging
-      models keyed on their respective identifiers (message_id, tool_use_id).
+      View over the lake raw_events minus stg_lake_event_dups: one row per
+      (tenant_id, uuid). Further dedup (message_id, tool_use_id) happens in
+      downstream staging models.
+    tests:
+      - unique:
+          arguments:
+            column_name: "(tenant_id || '|' || uuid)"
     columns:
       - name: uuid
         description: >
@@ -89,3 +93,35 @@ models:
           stg_events.uuid which is not_null.
         tests:
           - not_null
+
+  - name: stg_lake_event_dups
+    description: >
+      Losing copies of raw_events rows delivered more than once (key
+      (tenant_id, uuid); newest ingested_at wins). Normally 0 rows.
+
+  - name: stg_session_meta
+    description: One row per (tenant_id, session_id); latest non-null value of each attribute.
+    tests:
+      - unique:
+          arguments:
+            column_name: "(tenant_id || '|' || session_id)"
+
+  - name: stg_session_verdicts
+    description: >
+      Latest verdict per (tenant_id, session_id) from the verdicts inbox
+      JSONL ($AURA_VERDICTS_INBOX). Torn lines and unknown verdicts are dropped;
+      note is capped at 500 chars (tests/verdict_note_len.sql).
+    tests:
+      - unique:
+          arguments:
+            column_name: "(tenant_id || '|' || session_id)"
+    columns:
+      - name: verdict
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['accepted', 'wrong', 'needs_review']
+
+  - name: stg_watcher_errors
+    description: Watcher errors from the lake, passthrough.

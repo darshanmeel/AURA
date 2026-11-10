@@ -3,7 +3,22 @@ import fs from 'fs'
 import path from 'path'
 
 const VALID_VERDICTS = new Set(['accepted', 'wrong', 'needs_review'])
-const INBOX_PATH = process.env.AURA_VERDICTS_INBOX ?? '/data/verdicts-inbox.jsonl'
+const INBOX_PATH = process.env.AURA_VERDICTS_INBOX
+  ?? `${process.env.AURA_DATA_DIR ?? '/data'}/inbox/verdicts-inbox.jsonl`
+
+// On Windows dbt may hold the inbox open while it reads it; retry briefly.
+async function appendWithRetry(file: string, text: string) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.appendFileSync(file, text, 'utf8')
+      return
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (attempt >= 3 || (code !== 'EBUSY' && code !== 'EPERM')) throw e
+      await new Promise(r => setTimeout(r, 100))
+    }
+  }
+}
 
 export async function POST(
   req: NextRequest,
@@ -35,24 +50,23 @@ export async function POST(
       )
     }
 
-    const noteStr = typeof note === 'string' ? note.slice(0, 500) : null
-
-    const line: Record<string, unknown> = {
-      session_id: sessionId,
+    const line = {
       tenant_id: 'local',
+      session_id: sessionId,
       verdict,
+      note: typeof note === 'string' ? note.slice(0, 500) : null,
+      created_at: new Date().toISOString(),
     }
-    if (noteStr !== null) line.note = noteStr
 
     fs.mkdirSync(path.dirname(INBOX_PATH), { recursive: true })
 
-    // Append one newline-terminated JSON line. POSIX O_APPEND is atomic for
+    // Append one newline-terminated JSON line. O_APPEND is atomic for
     // single-line writes; no lock needed — Next.js is the only inbox writer.
-    fs.appendFileSync(INBOX_PATH, JSON.stringify(line) + '\n', 'utf8')
+    await appendWithRetry(INBOX_PATH, JSON.stringify(line) + '\n')
 
     return NextResponse.json({ ok: true, session_id: sessionId, verdict })
   } catch (e) {
     console.error('[verdict] POST failed:', e)
-    return NextResponse.json({ error: String(e) }, { status: 500 })
+    return NextResponse.json({ error: 'Could not record verdict' }, { status: 500 })
   }
 }

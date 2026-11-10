@@ -3,13 +3,8 @@
 Covers:
   - ClaudeAdapter.parse_session_attributes for all 3 record types
   - Returns None for a normal event and for non-dict input
-  - DuckDBWriter.upsert_session_attributes: insert then update (COALESCE invariants)
 """
-import os
-import pytest
 from aura_watcher.adapters.claude import ClaudeAdapter
-from aura_watcher.duckdb_writer import DuckDBWriter
-
 
 # ---------------------------------------------------------------------------
 # parse_session_attributes — adapter unit tests
@@ -19,7 +14,7 @@ class TestParseSessionAttributes:
     def setup_method(self):
         self.adapter = ClaudeAdapter()
         # Real layout: <project_dir>/<session_id>.jsonl — session_id is the stem.
-        self.file_path = os.path.join("logs", "claude", "my-project", "session-abc.jsonl")
+        self.file_path = "claude/my-project/session-abc.jsonl"
 
     def test_ai_title_returns_title(self):
         raw = {"type": "ai-title", "aiTitle": "Refactor auth module", "sessionId": "sess-1"}
@@ -108,117 +103,8 @@ class TestParseSessionAttributes:
         assert result["session_id"] == "session-abc"
 
 
-# ---------------------------------------------------------------------------
-# upsert_session_attributes — DuckDB writer tests
-# ---------------------------------------------------------------------------
-
-class TestUpsertSessionAttributes:
-    def setup_method(self, tmp_path_factory):
-        # Each test gets its own DuckDB so tests don't interfere.
-        pass
-
-    def _make_writer(self, tmp_path):
-        return DuckDBWriter(str(tmp_path / "aura.duckdb"))
-
-    def test_insert_new_session(self, tmp_path):
-        writer = self._make_writer(tmp_path)
-        writer.upsert_session_attributes(
-            "sess-new",
-            title="My Session",
-            permission_mode="normal",
-            mode="plan",
-        )
-        with writer.get_connection() as conn:
-            row = conn.execute(
-                "SELECT session_title, permission_mode, mode FROM session_meta WHERE session_id = ?",
-                ["sess-new"],
-            ).fetchone()
-        assert row is not None
-        assert row[0] == "My Session"
-        assert row[1] == "normal"
-        assert row[2] == "plan"
-
-    def test_update_does_not_wipe_existing_values_with_none(self, tmp_path):
-        """COALESCE(excluded, existing): a NULL incoming value must NOT wipe a stored value."""
-        writer = self._make_writer(tmp_path)
-        # First upsert sets all three.
-        writer.upsert_session_attributes(
-            "sess-coalesce",
-            title="Original Title",
-            permission_mode="normal",
-            mode="plan",
-        )
-        # Second upsert provides only a new mode; title and permission_mode are None.
-        writer.upsert_session_attributes(
-            "sess-coalesce",
-            title=None,
-            permission_mode=None,
-            mode="acceptEdits",
-        )
-        with writer.get_connection() as conn:
-            row = conn.execute(
-                "SELECT session_title, permission_mode, mode FROM session_meta WHERE session_id = ?",
-                ["sess-coalesce"],
-            ).fetchone()
-        assert row[0] == "Original Title"      # not wiped
-        assert row[1] == "normal"              # not wiped
-        assert row[2] == "acceptEdits"         # updated
-
-    def test_ai_title_overrides_stored_title(self, tmp_path):
-        """A new non-NULL title from ai-title must override the old value."""
-        writer = self._make_writer(tmp_path)
-        writer.upsert_session_attributes("sess-title", title="Prompt-derived title")
-        writer.upsert_session_attributes("sess-title", title="AI-derived title")
-        with writer.get_connection() as conn:
-            row = conn.execute(
-                "SELECT session_title FROM session_meta WHERE session_id = ?",
-                ["sess-title"],
-            ).fetchone()
-        assert row[0] == "AI-derived title"
-
-    def test_last_permission_mode_wins(self, tmp_path):
-        """Multiple permission-mode records: the last upsert value is stored."""
-        writer = self._make_writer(tmp_path)
-        writer.upsert_session_attributes("sess-pm", permission_mode="normal")
-        writer.upsert_session_attributes("sess-pm", permission_mode="bypassPermissions")
-        with writer.get_connection() as conn:
-            row = conn.execute(
-                "SELECT permission_mode FROM session_meta WHERE session_id = ?",
-                ["sess-pm"],
-            ).fetchone()
-        assert row[0] == "bypassPermissions"
-
-    def test_all_none_skips_write(self, tmp_path):
-        """When title/permission_mode/mode are all None, no row must be written."""
-        writer = self._make_writer(tmp_path)
-        writer.upsert_session_attributes("sess-skip", title=None, permission_mode=None, mode=None)
-        with writer.get_connection() as conn:
-            row = conn.execute(
-                "SELECT session_id FROM session_meta WHERE session_id = ?",
-                ["sess-skip"],
-            ).fetchone()
-        assert row is None, "No row should have been inserted when all values are None"
-
-    def test_partial_upsert_title_only(self, tmp_path):
-        """Upserting only a title must leave permission_mode and mode NULL for a new session."""
-        writer = self._make_writer(tmp_path)
-        writer.upsert_session_attributes("sess-title-only", title="Just the title")
-        with writer.get_connection() as conn:
-            row = conn.execute(
-                "SELECT session_title, permission_mode, mode FROM session_meta WHERE session_id = ?",
-                ["sess-title-only"],
-            ).fetchone()
-        assert row[0] == "Just the title"
-        assert row[1] is None
-        assert row[2] is None
-
-    def test_migration_columns_exist(self, tmp_path):
-        """After DuckDBWriter init, session_meta must have permission_mode and mode columns."""
-        writer = self._make_writer(tmp_path)
-        with writer.get_connection() as conn:
-            cols = [row[0] for row in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'session_meta'"
-            ).fetchall()]
-        assert "permission_mode" in cols, "permission_mode column must exist in session_meta"
-        assert "mode" in cols, "mode column must exist in session_meta"
+def test_ai_title_is_redacted():
+    """S4: a secret pasted into the first prompt must not survive in the title."""
+    raw = {"type": "ai-title", "aiTitle": "rotate api_key=abcdefghijklmnop now", "sessionId": "s"}
+    title = ClaudeAdapter().parse_session_attributes(raw, "claude/p/s.jsonl")["title"]
+    assert "abcdefghijklmnop" not in title

@@ -24,6 +24,8 @@ SELECT
     c.is_sidechain,
     c.source,
     c.reported_cost_usd,
+    c.cwd,
+    c.stop_reason,
 
     -- Pricing calculations
     mp.cost_input_per_mtok,
@@ -36,8 +38,9 @@ SELECT
     --
     -- Cache-write split: when ephemeral_5m/1h are present each slice is priced at its
     -- own rate; the residual term handles older logs where the breakdown is absent
-    -- (ephemeral_5m/1h NULL => residual = full cache_creation_input_tokens, priced at
-    -- the 1h rate — identical to previous behaviour and therefore backward-compatible).
+    -- (ephemeral_5m/1h NULL => residual = full cache_creation_input_tokens). The
+    -- residual is priced at the 5m rate (Claude Code's default cache TTL) and floored
+    -- at 0 so a breakdown that exceeds the total can never subtract cost.
     CASE
         -- sdk_trace: bypass token pricing entirely and use the verbatim run cost
         -- (result.total_cost_usd) the watcher recorded in reported_cost_usd. Only the
@@ -54,7 +57,8 @@ SELECT
             -- 1-hour cache-write slice
             COALESCE(c.ephemeral_1h_input_tokens, 0) * COALESCE(mp.cost_cache_write_1h_per_mtok, 0.0) +
             -- Residual: zero when breakdown is present; equals total when breakdown is absent
-            (COALESCE(c.cache_creation_input_tokens, 0) - COALESCE(c.ephemeral_5m_input_tokens, 0) - COALESCE(c.ephemeral_1h_input_tokens, 0)) * COALESCE(mp.cost_cache_write_1h_per_mtok, 0.0) +
+            GREATEST(COALESCE(c.cache_creation_input_tokens, 0) - COALESCE(c.ephemeral_5m_input_tokens, 0) - COALESCE(c.ephemeral_1h_input_tokens, 0), 0)
+                * COALESCE(mp.cost_cache_write_5m_per_mtok, 0.0) +
             COALESCE(c.cache_read_input_tokens, 0) * COALESCE(mp.cost_cache_read_per_mtok, 0.0)
         ) / 1000000.0
     END AS calculated_cost

@@ -20,11 +20,10 @@ adapter synthesises both:
     ``ON CONFLICT DO NOTHING``).
 
 ``ts``
-    File mtime + ``t`` seconds. The tracer records only relative offsets, so we
-    anchor on the file's modification time as a best-effort wall-clock. This is
-    approximate — mtime advances as the file is appended — but monotonic within
-    a single settled file and good enough for ordering/rollups. If ``os.stat``
-    fails we fall back to ``datetime.now(timezone.utc)``.
+    ``anchor_ts`` + ``t`` seconds. The trace has no wall-clock field, so ingest
+    computes the anchor once per file (``mtime_at_first_read - t_of_last_line``,
+    S3), persists it in the checkpoint and sets ``adapter.anchor_ts`` before
+    parsing. Re-reads and later appends therefore keep the same ts per line.
 
 ``event_type`` / ``message_id``
     Mapped onto the shape downstream dbt expects rather than left faithful to
@@ -39,11 +38,9 @@ State
 -----
 The adapter is **stateful per file**: it remembers ``self._model``,
 ``self._max_turns`` and ``self._label`` from the ``run_start`` line so later
-events can be attributed to the run's model. ``main.py`` constructs a fresh
-``SdkTraceAdapter`` per file so per-run state never leaks between files. On an
-incremental read that begins past offset 0 the ``run_start`` line may never be
-seen this pass — the adapter degrades to ``model=None`` / ``project_id='unknown'``
-rather than crashing.
+events can be attributed to the run's model. Ingest caches one instance per
+file and, on a fresh instance with offset > 0, primes it by replaying the
+lines before the offset (S2).
 
 The Claude path is unaffected: it relies on the ``source`` column default
 ('claude') and a NULL ``reported_cost_usd``; only this adapter sets
@@ -55,30 +52,29 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
-from aura_watcher.redact import redact_content
+from aura_watcher.redact import redact_enabled, redact_obj
 
-from .base import Adapter
+from .base import Adapter, session_id_from_path
 
 _log = logging.getLogger(__name__)
 
 # Mirror claude.py's redaction toggle exactly so behaviour is consistent across
-# adapters. Default is redact-on; set AURA_REDACT_PAYLOAD=false/0/no to disable.
-_REDACT_ENABLED = os.getenv("AURA_REDACT_PAYLOAD", "true").lower() in ("1", "true", "yes")
+# adapters. Default is redact-on; set AURA_REDACT_PAYLOAD=false/0/no/off to disable.
+_REDACT_ENABLED = redact_enabled()
 
 
 class SdkTraceAdapter(Adapter):
     """Parse external SDK trace JSONL into ``raw_events`` rows.
 
     Returns a FIXED-SHAPE dict on every call (identical key set, ``None`` where
-    a value is absent) so ``DuckDBWriter.insert_events`` — which anchors its
-    column list on the first event and skips any event whose key set differs —
-    accepts every kind in a single batch.
+    a value is absent); ``lake.coerce_row`` fills the remaining columns.
     """
 
     def __init__(self) -> None:
+        # Set by ingest before parsing (S3); None only outside ingest (tests).
+        self.anchor_ts: datetime | None = None
         # Per-file run state, populated from the run_start line.
         self._model: str | None = None
         self._max_turns: int | None = None
@@ -109,16 +105,14 @@ class SdkTraceAdapter(Adapter):
             self._label = raw.get("label")
             self._cwd = raw.get("cwd")
 
-        session_id = os.path.splitext(os.path.basename(file_path))[0]
+        session_id = session_id_from_path(file_path)
         uuid = f"{session_id}:{byte_offset}"
 
-        # ts = file mtime + t seconds. Anchor on mtime (the tracer only records
-        # relative offsets); fall back to now() if the stat fails.
+        anchor = self.anchor_ts or datetime.now(timezone.utc)
         try:
-            mtime = datetime.fromtimestamp(os.path.getmtime(file_path), tz=timezone.utc)
-            ts = mtime + timedelta(seconds=float(raw.get("t") or 0))
-        except Exception:
-            ts = datetime.now(timezone.utc)
+            ts = anchor + timedelta(seconds=float(raw.get("t") or 0))
+        except (TypeError, ValueError):
+            ts = anchor
 
         # event_type mapping. Downstream, stg_assistant_messages gates on
         # `event_type='assistant' AND message_id IS NOT NULL` — that gate is the
@@ -174,8 +168,8 @@ class SdkTraceAdapter(Adapter):
                     ephemeral_5m_input_tokens = usage.get("ephemeral_5m_input_tokens")
                     ephemeral_1h_input_tokens = usage.get("ephemeral_1h_input_tokens")
 
-        payload_json = json.dumps(raw)
-        payload = redact_content(payload_json) if _REDACT_ENABLED else payload_json
+        # M2: redact the object, then serialise (same transform as redact.redact_payload).
+        payload = json.dumps(redact_obj(raw) if _REDACT_ENABLED else raw)
 
         # FIXED-SHAPE dict — identical key set on every call (None where N/A).
         # Every key is a real raw_events column (the INSERT uses dict keys as
@@ -202,10 +196,3 @@ class SdkTraceAdapter(Adapter):
             "payload": payload,
         }
 
-    # SDK traces don't carry Claude-style skill / MCP attachment events.
-    # main.py calls these on every adapter, so provide no-op implementations.
-    def parse_skills(self, raw: dict, file_path: str) -> list[dict]:
-        return []
-
-    def parse_mcp_servers(self, raw: dict, file_path: str) -> list[dict]:
-        return []

@@ -259,3 +259,6 @@ scripts/verify/node_modules/
 # LinkedIn carousel source + export are personal collateral — local only
 docs/blog/linkedin-carousel.html
 docs/blog/linkedin-carousel.pdf
+
+# Local knowledge graph (darshan-singh-meel-knowledge-graph) — not committed
+/AURA-knowledge-graph/

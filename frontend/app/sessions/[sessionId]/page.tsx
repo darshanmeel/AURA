@@ -37,7 +37,7 @@ export default async function SessionDetailPage({
   try {
     // NOTE: getSessionThinkingBlocks is excluded — it is a guaranteed-empty stub
     // (returns [] unconditionally, no DB I/O). Re-add to Promise.all once thinking
-    // blocks start appearing in raw_events. See lib/queries/sessions.ts F-L7.
+    // blocks start appearing in the data. See lib/queries/sessions.ts F-L7.
     const [sess, t, e, f, tm, gc, te, pr, fa, hp, er, su] = await Promise.all([
       getSession(id),
       getSessionTurns(id, { all: allTurns }),
@@ -182,7 +182,8 @@ export default async function SessionDetailPage({
         <div className="session-head-right">
           <div className="hero-stat hero-stat-detail">
             <div className="hero-stat-eyebrow">SESSION COST</div>
-            <div className="hero-stat-value">{fmt.usd(s.total_cost)}</div>
+            {/* NULL cost = live fallback session not yet built by dbt */}
+            <div className="hero-stat-value">{s.total_cost == null ? 'pending' : fmt.usd(s.total_cost)}</div>
             <div className="hero-stat-foot">
               <em>across</em>{' '}
               {fmt.n(prompts.length)} prompt{prompts.length !== 1 ? 's' : ''} ·{' '}
@@ -220,7 +221,7 @@ export default async function SessionDetailPage({
         <StatBlock label="Cache 1h" value={fmt.k(s.ephemeral_1h_total)} footnote="paid 2.5× input" accent />
         <StatBlock label="Cache 5m" value={fmt.k(s.ephemeral_5m_total)} footnote="paid 1.25× input" />
         <StatBlock label="Cache hit" value={fmt.pct(cacheHitRate)} footnote="read / (read + write)" />
-        <StatBlock label="$ / turn" value={fmt.usd(s.turn_count > 0 ? s.total_cost / s.turn_count : null)} footnote="amortized" />
+        <StatBlock label="$ / turn" value={s.total_cost == null ? 'pending' : fmt.usd(s.turn_count > 0 ? s.total_cost / s.turn_count : null)} footnote="amortized" />
       </section>
 
       <Rule weight="thick" />

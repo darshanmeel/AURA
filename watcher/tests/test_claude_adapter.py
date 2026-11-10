@@ -1,8 +1,9 @@
 import json
 import logging
-import os
+
 import pytest
-from aura_watcher.adapters.claude import ClaudeAdapter, KNOWN_NON_EVENT_TYPES
+
+from aura_watcher.adapters.claude import KNOWN_NON_EVENT_TYPES, ClaudeAdapter
 
 
 def test_parse_assistant_message():
@@ -23,8 +24,8 @@ def test_parse_assistant_message():
             }
         }
     }
-    # Path with session_abc
-    file_path = os.path.join("logs", "claude", "session_abc", "log.jsonl")
+    # No sessionId in the line: the fallback is the file stem (S8)
+    file_path = "claude/-home-dev-proj/session_abc.jsonl"
     event = adapter.parse_line(raw_line, file_path=file_path, byte_offset=0)
     assert event["uuid"] == "uuid-1"
     assert event["session_id"] == "session_abc"
@@ -160,7 +161,7 @@ def test_unknown_missing_uuid_type_emits_debug_not_warning(caplog):
     observably dropped, but at DEBUG (not WARNING) — updated 2026-07-13 to
     stop flooding synchronous log I/O during backfill (e.g. workflow-journal
     files where every line is missing uuid/ts). The drop is still surfaced
-    via ingest_file_stats.dropped_unknown, so nothing is silently lost."""
+    via file_stats.dropped_unknown, so nothing is silently lost."""
     adapter = ClaudeAdapter()
     raw = {"type": "some_future_type_without_uuid", "data": "x"}
     with caplog.at_level(logging.DEBUG, logger="aura_watcher.adapters.claude"):
@@ -228,3 +229,42 @@ def test_parse_line_non_dict_json_handled_gracefully():
                 f"parse_line raised {type(exc).__name__} for non-dict input "
                 f"{value!r}: {exc}"
             )
+
+
+def test_project_id_decoded_from_logical_path():
+    raw = {"type": "user", "uuid": "u1", "timestamp": "2026-11-01T10:00:00Z", "message": {"content": "hi"}}
+    ev = ClaudeAdapter().parse_line(raw, file_path="claude/-home-dev-my--app/s1.jsonl", byte_offset=0)
+    assert ev["project_id"] == "/home/dev/my-app"
+    assert ev["session_id"] == "s1"
+
+
+def test_is_sidechain_null_becomes_false():
+    """S1: isSidechain: null must not produce a NULL in a required column."""
+    raw = {"type": "user", "uuid": "u1", "timestamp": "2026-11-01T10:00:00Z", "isSidechain": None}
+    assert ClaudeAdapter().parse_line(raw, file_path="claude/p/s.jsonl", byte_offset=0)["is_sidechain"] is False
+
+
+# ---------------------------------------------------------------------------
+# S14: skills and MCP servers from attachment events
+# ---------------------------------------------------------------------------
+
+def test_parse_skills_invoked_skills_and_listing():
+    a = ClaudeAdapter()
+    invoked = {"type": "attachment", "sessionId": "s1", "attachment": {
+        "type": "invoked_skills", "skills": [{"name": "docs"}, {"name": "docs"}, {"name": " review "}, "bad"]}}
+    assert [(r["session_id"], r["skill_name"], r["is_initial"]) for r in a.parse_skills(invoked, "claude/p/s1.jsonl")] \
+        == [("s1", "docs", True), ("s1", "review", True)]
+    listing = {"type": "attachment", "attachment": {
+        "type": "skill_listing", "content": "- plugin:alpha: does a\n- beta: does b\nnot a bullet"}}
+    rows = a.parse_skills(listing, "claude/p/s2.jsonl")
+    assert [r["skill_name"] for r in rows] == ["plugin:alpha", "beta"]
+    assert rows[0]["session_id"] == "s2"  # stem fallback (S8)
+    assert a.parse_skills({"type": "user"}, "claude/p/s.jsonl") == []
+
+
+def test_parse_mcp_servers():
+    a = ClaudeAdapter()
+    raw = {"type": "attachment", "sessionId": "s1", "attachment": {
+        "type": "mcp_instructions_delta", "addedNames": ["plugin:ctx:ctx", "plugin:ctx:ctx", "", 5]}}
+    assert [r["mcp_server"] for r in a.parse_mcp_servers(raw, "claude/p/s1.jsonl")] == ["plugin:ctx:ctx"]
+    assert a.parse_mcp_servers({"type": "attachment", "attachment": {"type": "skills"}}, "claude/p/s.jsonl") == []

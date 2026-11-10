@@ -1,4 +1,6 @@
 import hashlib
+import json
+import os
 import re
 
 # T8 (2026-07-16): IMPLEMENTED. Column-level masking for message/prompt content, gated
@@ -23,10 +25,15 @@ import re
 # hash_message_content() targets only text-typed conversational content, never tool_use
 # input, tool_result blocks, or thinking blocks.
 
-# W-H1: separator/quote handling now uses \s* so whitespace-padded secrets are caught,
-# e.g.  api_key = "somevalue"  or  token : value  are both matched.
-# W-H2: substitution replaces the ENTIRE match with «REDACTED» (spec §7).
-REDACT_REGEX = re.compile(r'(?i)(api[_-]?key|secret|token|password)["\']?\s*[:=]\s*["\']?[A-Za-z0-9_\-]{16,}')
+# S5: the keyword may sit inside a longer name (aws_secret_access_key, AccountKey,
+# GITHUB_TOKEN); the value is any run of 8+ non-space, non-quote characters.
+# The whole match is replaced with «REDACTED» (W-H2). No leading [A-Za-z0-9_-]*
+# before the keyword: on a long alphanumeric blob it backtracks quadratically.
+_KEYWORD = r'(?:api[_-]?key|secret|token|password|passwd|access[_-]?key|account[_-]?key|private[_-]?key)'
+REDACT_REGEX = re.compile(r'(?i)' + _KEYWORD + r'[A-Za-z0-9_-]*["\']?\s*[:=]\s*["\']?[^\s"\']{8,}')
+KEY_REGEX = re.compile(r'(?i)[A-Za-z0-9_-]*' + _KEYWORD + r'[A-Za-z0-9_-]*')
+BEARER_REGEX = re.compile(r'Bearer\s+[A-Za-z0-9._~+/=-]{16,}')
+URL_CREDS_REGEX = re.compile(r'\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@]+@')
 
 # W-L2: matches any long alphanumeric+base64-alphabet run (≥200 chars), not strictly
 # valid base64; catches both padded base64 and unpadded hex/random blobs.
@@ -59,6 +66,8 @@ def redact_content(content: str) -> str:
     """Redact secrets and truncate long base64/alphanumeric blobs."""
     # Replace the entire key=value match with the redaction marker (spec §7).
     content = REDACT_REGEX.sub('«REDACTED»', content)
+    content = BEARER_REGEX.sub('«REDACTED»', content)
+    content = URL_CREDS_REGEX.sub('«REDACTED»', content)
 
     # Replace known credential-format tokens (whole match, consistent with W-H2).
     content = CREDENTIAL_REGEX.sub('«REDACTED»', content)
@@ -75,6 +84,13 @@ def redact_content(content: str) -> str:
     return content
 
 
+_REDACTED = '«REDACTED»'
+
+
+def _secret_key(k, v) -> bool:
+    return isinstance(v, str) and bool(v) and isinstance(k, str) and KEY_REGEX.fullmatch(k) is not None
+
+
 def redact_obj(o):
     """Recursively apply redact_content() to every string in a nested
     dict/list/scalar structure and return the same structure.
@@ -87,9 +103,12 @@ def redact_obj(o):
     with '<base64:N bytes>', leaving a dangling backslash that is an invalid
     JSON escape.  Redacting the Python object avoids this class of corruption
     entirely because json.dumps produces clean output after the fact.
+
+    S5: a string value whose dict key names a secret (``{"password": "..."}``)
+    is replaced whole, whatever its shape.
     """
     if isinstance(o, dict):
-        return {k: redact_obj(v) for k, v in o.items()}
+        return {k: _REDACTED if _secret_key(k, v) else redact_obj(v) for k, v in o.items()}
     if isinstance(o, list):
         return [redact_obj(item) for item in o]
     if isinstance(o, str):
@@ -154,3 +173,30 @@ def hash_message_content(raw: dict) -> dict:
         return raw
 
     return {**raw, "message": {**message, "content": new_content}}
+
+
+def redact_enabled() -> bool:
+    return os.getenv("AURA_REDACT_PAYLOAD", "true").lower() not in ("0", "false", "no", "off")
+
+
+def hash_enabled() -> bool:
+    return os.getenv("AURA_HASH_CONTENT", "false").lower() in ("1", "true")
+
+
+def redact_payload(text: str) -> str:
+    """Value-level redaction of a JSON payload string. ``text`` comes back
+    unchanged when it is not valid JSON (no regex ever runs over JSON text, M2)."""
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return text
+    return json.dumps(redact_obj(obj))
+
+
+def redact_title(title: str | None) -> str | None:
+    """S4: session titles get the same treatment as message text."""
+    if not title:
+        return title
+    if redact_enabled():
+        title = redact_content(title)
+    return hash_text(title) if hash_enabled() else title

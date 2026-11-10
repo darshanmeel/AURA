@@ -11,31 +11,13 @@
 -- rebuilt every dbt cycle by re-joining ALL of stg_tool_calls against ALL of
 -- stg_tool_results — the "stalled at ~1.8/2.0 GiB, ~10% CPU" OOM symptom
 -- documented in profiles.yml's memory_limit comment. Converted to the same
--- delete+insert incremental pattern as fact_prompts.sql (see that model's
--- header for the full story): raw_events.ts is frozen at first insert and
--- unsafe as a cursor; ingest_checkpoints.last_seen_at is the per-file
--- wall-clock cursor that actually moves on every touch (live append,
--- backfill, or resumed/rewritten session).
-{% set lookback_hours = var('fact_tool_executions_lookback_hours', 24) %}
+-- delete+insert incremental pattern as fact_prompts.sql. Cursor: the
+-- recent_sessions() macro (lake ingested_at since the last build); every
+-- tool execution of a recent session is replaced.
 
 WITH
 {% if is_incremental() %}
--- Files touched (grown or re-read) within the lookback window, per tenant.
-recent_files AS (
-    SELECT tenant_id, file_path
-    FROM {{ source('aura', 'ingest_checkpoints') }}
-    WHERE last_seen_at >= now() - INTERVAL '{{ lookback_hours }} hours'
-),
--- Sessions with at least one recently-touched file. delete+insert on
--- (tenant_id, tool_use_id) then replaces every tool execution of that
--- session.
-recent_sessions AS (
-    SELECT DISTINCT re.tenant_id, re.session_id
-    FROM {{ source('aura', 'raw_events') }} re
-    JOIN recent_files rf
-        ON  rf.tenant_id = re.tenant_id
-        AND rf.file_path = re.file_path
-),
+recent_sessions AS ({{ recent_sessions() }}),
 {% endif %}
 -- Narrowed to recently-touched sessions on an incremental run, same as
 -- fact_prompts' joined_fact_turns/joined_fact_tool_executions CTEs — this is
@@ -65,6 +47,8 @@ SELECT
     tc.tenant_id,
     tc.session_id,
     tc.event_uuid as assistant_event_uuid,
+    tc.message_id,
+    tc.cwd,
     tc.tool_use_id,
     tc.ts as tool_call_ts,
     tr.ts as tool_result_ts,
@@ -73,7 +57,8 @@ SELECT
     tc.input_payload,
     tr.output_text,
     COALESCE(tr.is_error, FALSE) as is_error,
-    date_diff('millisecond', tc.ts, tr.ts) / 1000.0 as execution_duration_seconds
+    date_diff('millisecond', tc.ts, tr.ts) / 1000.0 as execution_duration_seconds,
+    {{ built_at() }} AS _built_at
 FROM tool_calls tc
 LEFT JOIN tool_results tr
     ON tc.tool_use_id = tr.tool_use_id AND tc.tenant_id = tr.tenant_id

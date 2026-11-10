@@ -5,8 +5,8 @@ Produces per-UTC-day JSON files and a rolling latest.json under
 has been ingested.
 
 CONTRACT (frontend reads these files):
-  /data/artifacts/ingest_coverage/<YYYY-MM-DD>.json  — one per day, kept 30 days
-  /data/artifacts/ingest_coverage/latest.json        — always the most recent snapshot
+  $AURA_ARTIFACTS_DIR/ingest_coverage/<YYYY-MM-DD>.json  — one per day, kept 30 days
+  $AURA_ARTIFACTS_DIR/ingest_coverage/latest.json        — always the most recent snapshot
 
 JSON shape:
 {
@@ -32,8 +32,8 @@ Status rules:
   0 < offset < size -> "partial"
   no checkpoint row -> "unprocessed" (offset = 0)
 
-Caller is responsible for holding _snapshot_lock around this call so the
-DB reads are safe from concurrent dbt subprocess access.
+Paths are logical (spec §2.6); the caller passes the in-memory checkpoint and
+file-stat dicts, so no database is touched here.
 """
 
 import json
@@ -42,64 +42,19 @@ from datetime import datetime, timezone
 
 
 def write_coverage(
-    writer,
-    all_files: list[str],
+    files: list[tuple[str, int]],
+    checkpoints: dict[str, dict],
+    stats: dict[str, dict],
     artifacts_dir: str,
     scan_dirs: list[str] | None = None,
 ) -> None:
     """Compute and persist the ingest coverage snapshot.
 
-    Parameters
-    ----------
-    writer:
-        DuckDBWriter instance (already initialised). Used for its
-        get_connection() context manager to read checkpoint and stats tables.
-    all_files:
-        Deduplicated list of absolute .jsonl paths from all scan dirs.
-        Caller performs the glob OUTSIDE the lock; this function only reads DB.
-    artifacts_dir:
-        Root artifacts directory (e.g. /data/artifacts). The subdirectory
-        ingest_coverage/ is created if absent.
-    scan_dirs:
-        The directories that were globbed to produce all_files. Echoed into
-        the artifact's top-level ``scan_dirs`` field (part of the contract the
-        frontend reads); defaults to an empty list when not supplied.
+    ``files`` is the last sweep list as ``(logical_path, size)`` pairs (Q3, S7:
+    the same list the sweep uses, so journals are excluded here too).
     """
     now_utc = datetime.now(timezone.utc)
-
-    # ------------------------------------------------------------------ #
-    # 1. Read checkpoints (file_path -> {last_offset, last_seen_at})      #
-    # ------------------------------------------------------------------ #
-    checkpoints: dict[str, dict] = {}
-    with writer.get_connection() as conn:
-        rows = conn.execute(
-            "SELECT file_path, last_offset, last_seen_at FROM ingest_checkpoints"
-        ).fetchall()
-    for file_path, last_offset, last_seen_at in rows:
-        checkpoints[file_path] = {
-            "last_offset": last_offset,
-            "last_seen_at": last_seen_at,
-        }
-
-    # ------------------------------------------------------------------ #
-    # 2. Read per-file stats (file_path -> stats dict)                    #
-    # ------------------------------------------------------------------ #
-    file_stats: dict[str, dict] = {}
-    with writer.get_connection() as conn:
-        stat_rows = conn.execute(
-            """SELECT file_path, lines_total, events_kept,
-                      dropped_known, dropped_unknown, parse_errors, last_error
-               FROM ingest_file_stats"""
-        ).fetchall()
-    for (fp, lt, ek, dk, du, pe, le) in stat_rows:
-        file_stats[fp] = {
-            "lines_total": lt,
-            "events_kept": ek,
-            "dropped_known": dk,
-            "dropped_unknown": du,
-            "parse_errors": pe,
-            "last_error": le,
-        }
+    file_stats = stats
 
     # ------------------------------------------------------------------ #
     # 3. Per-file classification                                          #
@@ -119,13 +74,7 @@ def write_coverage(
     }
     remaining_files: list[dict] = []
 
-    for fp in all_files:
-        try:
-            size = os.path.getsize(fp)
-        except OSError:
-            # File disappeared between glob and now — skip silently.
-            continue
-
+    for fp, size in files:
         summary["files_total"] += 1
         summary["bytes_total"] += size
 
@@ -152,7 +101,7 @@ def write_coverage(
             status = "partial"
             summary["files_partial"] += 1
 
-        # Aggregate stats from ingest_file_stats (may be absent for files
+        # Aggregate stats from file_stats (may be absent for files
         # not yet processed at all).
         st = file_stats.get(fp)
         if st:
@@ -163,22 +112,13 @@ def write_coverage(
 
         # Only partial + unprocessed go into the files[] array.
         if status in ("partial", "unprocessed"):
-            # Serialise last_seen_at to ISO8601 string (it may be a datetime
-            # object from DuckDB or already a string, depending on the driver).
-            if last_seen_at is not None and hasattr(last_seen_at, "isoformat"):
-                last_seen_at_str: str | None = last_seen_at.isoformat()
-            elif last_seen_at is not None:
-                last_seen_at_str = str(last_seen_at)
-            else:
-                last_seen_at_str = None
-
             entry: dict = {
                 "path": fp,
                 "size": size,
                 "offset": offset,
                 "status": status,
                 "bytes_remaining": remaining,
-                "last_seen_at": last_seen_at_str,
+                "last_seen_at": last_seen_at,
                 "lines_total": st["lines_total"] if st else None,
                 "events_kept": st["events_kept"] if st else None,
                 "dropped_known": st["dropped_known"] if st else None,

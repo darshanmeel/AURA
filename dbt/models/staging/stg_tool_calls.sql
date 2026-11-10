@@ -11,6 +11,8 @@ WITH exploded AS (
         tenant_id,
         uuid as event_uuid,
         session_id,
+        message_id,
+        cwd,
         ts,
         model,
         UNNEST(CAST(json_extract(payload, '$.message.content') AS JSON[])) as content_item
@@ -21,6 +23,10 @@ SELECT
     tenant_id,
     event_uuid,
     session_id,
+    -- message_id: one assistant message is streamed as several events; joins
+    -- to fact_turns go through message_id, not the (non-winning) event uuid.
+    message_id,
+    cwd,
     ts,
     model,
     json_extract_string(content_item, '$.id') as tool_use_id,

@@ -7,16 +7,16 @@ export function parseRange(raw: string | string[] | undefined): RangeKey {
 }
 
 /** ISO string for the start of the range, or null for 'all' (no filter) */
-export function rangeSince(key: RangeKey): string | null {
-  const now = new Date()
+export function rangeSince(key: RangeKey, now: Date = new Date()): string | null {
   if (key === 'all') return null
+  // UTC boundaries: the data is UTC and native mode may run on a non-UTC host.
   const d = new Date(now)
   if (key === 'today') {
-    d.setHours(0, 0, 0, 0)
+    d.setUTCHours(0, 0, 0, 0)
   } else if (key === '7d') {
-    d.setDate(d.getDate() - 7)
+    d.setUTCDate(d.getUTCDate() - 7)
   } else if (key === '30d') {
-    d.setDate(d.getDate() - 30)
+    d.setUTCDate(d.getUTCDate() - 30)
   }
   return d.toISOString()
 }

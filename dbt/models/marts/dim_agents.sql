@@ -1,54 +1,74 @@
 {{ config(materialized='table') }}
 
--- One row per (tenant_id, agent, app_id, project_id).
--- The same agent in two apps = two rows. Keyed by the resolved agent name
--- from dim_sessions (which in turn reads int_event_agent).
---
--- app_id/project_id resolution uses int_app_cwd_lookup, which unnests
--- dim_apps.all_cwds so every cwd variant (trailing-slash, alternate checkout
--- path, etc.) resolves to an app_id rather than silently returning NULL.
--- Previously this joined dim_apps.cwd directly; dim_apps.cwd is an
--- ANY_VALUE (arbitrarily chosen canonical path) so non-canonical cwds
--- would produce NULL app_id/project_id. (D-H2 fix)
+-- One row per (tenant_id, agent, app_id, project_id), lifetime.
+-- Built per model call: agent = fact_model_calls.agent (resolved per event in
+-- int_event_agent) and app = the call's own cwd via int_app_cwd_lookup, the
+-- same attribution as int_entity_spend. So SUM(total_cost) equals
+-- SUM(fact_model_calls.calculated_cost), and subagent spend is not folded into
+-- the session's majority agent. app_id/project_id are NULL for calls without a
+-- known cwd.
 
-WITH app_lookup AS (
-    SELECT tenant_id, cwd, app_id, project_id
-    FROM {{ ref('int_app_cwd_lookup') }}
-),
-
-base AS (
+WITH calls AS (
     SELECT
-        ds.tenant_id,
-        COALESCE(ds.agent, 'main')      AS agent,
+        fmc.tenant_id,
+        fmc.agent,
         al.app_id,
         al.project_id,
-        ds.session_id,
-        ds.turn_count,
-        ds.total_cost,
-        ds.tools_used,
-        ds.files_touched,
-        ds.total_output_tokens,
-        ds.total_input_tokens,
-        ds.start_ts,
-        ds.end_ts
-    FROM {{ ref('dim_sessions') }} ds
-    LEFT JOIN app_lookup al
-        ON al.cwd       = ds.cwd
-       AND al.tenant_id = ds.tenant_id
+        fmc.session_id,
+        fmc.ts,
+        fmc.calculated_cost,
+        fmc.input_tokens,
+        fmc.output_tokens
+    FROM {{ ref('fact_model_calls') }} fmc
+    LEFT JOIN {{ ref('int_app_cwd_lookup') }} al
+        ON al.cwd = fmc.cwd AND al.tenant_id = fmc.tenant_id
+),
+tools AS (
+    SELECT
+        fte.tenant_id,
+        COALESCE(ea.agent_resolved, 'main') AS agent,
+        al.app_id,
+        al.project_id,
+        COUNT(*)                            AS total_tool_calls
+    FROM {{ ref('fact_tool_executions') }} fte
+    LEFT JOIN {{ ref('int_event_agent') }} ea
+        ON ea.tenant_id = fte.tenant_id AND ea.event_uuid = fte.assistant_event_uuid
+    LEFT JOIN {{ ref('int_app_cwd_lookup') }} al
+        ON al.cwd = fte.cwd AND al.tenant_id = fte.tenant_id
+    GROUP BY ALL
+),
+spend AS (
+    SELECT
+        tenant_id,
+        agent,
+        app_id,
+        project_id,
+        COUNT(DISTINCT session_id)          AS session_count,
+        COUNT(*)                            AS total_turns,
+        SUM(calculated_cost)                AS total_cost,
+        SUM(output_tokens)                  AS total_output_tokens,
+        SUM(input_tokens)                   AS total_input_tokens,
+        MIN(ts)                             AS first_seen,
+        MAX(ts)                             AS last_seen
+    FROM calls
+    GROUP BY tenant_id, agent, app_id, project_id
 )
 SELECT
-    tenant_id,
-    agent,
-    app_id,
-    project_id,
-    COUNT(DISTINCT session_id)                  AS session_count,
-    SUM(turn_count)                             AS total_turns,
-    SUM(tools_used)                             AS total_tool_calls,
-    SUM(total_cost)                             AS total_cost,
-    SUM(total_output_tokens)                    AS total_output_tokens,
-    SUM(total_input_tokens)                     AS total_input_tokens,
-    SUM(files_touched)                          AS total_files,
-    MIN(start_ts)                               AS first_seen,
-    MAX(COALESCE(end_ts, start_ts))             AS last_seen
-FROM base
-GROUP BY tenant_id, agent, app_id, project_id
+    s.tenant_id,
+    s.agent,
+    s.app_id,
+    s.project_id,
+    s.session_count,
+    s.total_turns,
+    COALESCE(t.total_tool_calls, 0)         AS total_tool_calls,
+    s.total_cost,
+    s.total_output_tokens,
+    s.total_input_tokens,
+    s.first_seen,
+    s.last_seen
+FROM spend s
+LEFT JOIN tools t
+    ON  t.tenant_id = s.tenant_id
+    AND t.agent     = s.agent
+    AND t.app_id     IS NOT DISTINCT FROM s.app_id
+    AND t.project_id IS NOT DISTINCT FROM s.project_id

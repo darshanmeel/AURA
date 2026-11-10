@@ -30,15 +30,14 @@ aggregated_sessions AS (
         session_id,
         MIN(start_ts)                            AS start_ts,
         MAX(end_ts)                              AS end_ts,
-        -- Pick the model responsible for the most cost in the session.
-        -- model is no longer in the GROUP BY of session_stats, so each row
-        -- carries its own model; ordering by total_cost DESC selects the
-        -- dominant model deterministically.
-        FIRST(model ORDER BY total_cost DESC)    AS model,
-        ANY_VALUE(cwd)                           AS cwd,
-        ANY_VALUE(project_id)                    AS project_id,
-        ANY_VALUE(git_branch)                    AS git_branch,
-        ANY_VALUE(claude_version)                AS claude_version,
+        -- Attributes of the (model, cwd, ...) group with the most cost, with a
+        -- value tiebreak so reruns pick the same row (cwd drives app attribution);
+        -- non-NULL values first, as ANY_VALUE did.
+        FIRST(model          ORDER BY model IS NULL, total_cost DESC NULLS LAST, model)          AS model,
+        FIRST(cwd            ORDER BY cwd IS NULL, total_cost DESC NULLS LAST, cwd)            AS cwd,
+        FIRST(project_id     ORDER BY project_id IS NULL, total_cost DESC NULLS LAST, project_id)     AS project_id,
+        FIRST(git_branch     ORDER BY git_branch IS NULL, total_cost DESC NULLS LAST, git_branch)     AS git_branch,
+        FIRST(claude_version ORDER BY claude_version IS NULL, total_cost DESC NULLS LAST, claude_version) AS claude_version,
         SUM(turn_count)                          AS turn_count,
         SUM(total_cost)                          AS total_cost,
         SUM(total_input_tokens)                  AS total_input_tokens,
@@ -191,10 +190,8 @@ mcps_per_session AS (
     FROM {{ ref('stg_session_mcps') }}
     GROUP BY tenant_id, session_id
 ),
--- Staged session_meta (person, title). The `commits` column on session_meta
--- exists with DEFAULT 0 but the watcher never updates it; commits are derived
--- below from fact_git_commands instead, which already parses every `git commit`
--- Bash invocation out of fact_tool_executions.
+-- Staged session_meta (person, modes). Commits are derived below from
+-- fact_git_commands, which parses every `git commit` Bash invocation.
 session_meta_lookup AS (
     -- D-C3/D-M3: tenant_id added to prevent cross-tenant bleed on person attribution
     SELECT tenant_id, session_id, person_id, person_name, permission_mode, mode
@@ -251,7 +248,8 @@ SELECT
     sm.permission_mode                              AS permission_mode,
     sm.mode                                         AS mode,
     COALESCE(sc.commits, 0)                         AS commits,
-    CASE WHEN s.end_ts IS NULL THEN 'active' ELSE 'completed' END AS status,
+    CASE WHEN s.end_ts >= CAST(current_timestamp AT TIME ZONE 'UTC' AS TIMESTAMP) - INTERVAL 10 MINUTE
+         THEN 'active' ELSE 'completed' END AS status,
     CASE
         WHEN s.model LIKE 'claude%'  THEN 'Anthropic'
         WHEN s.model LIKE 'gemini%'  THEN 'Google'

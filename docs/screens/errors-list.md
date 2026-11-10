@@ -20,9 +20,9 @@ The complete error log across all agent sessions. Captures tool failures (Read, 
 
 | Component | Query | Mart |
 |---|---|---|
-| Errors feed (500 cap) | `getErrors` or `getErrorsFiltered` | `fact_errors` |
-| KPI strip | `getErrorsSummary` | `fact_errors` |
-| Kind histogram | `getErrorsByKind` | `fact_errors` |
+| Errors feed (500 cap) | `getErrors` | `fact_errors` |
+| KPI strip | `getErrors` | `fact_errors` |
+| Kind histogram | `getErrors` | `fact_errors` |
 
 ## How to read it
 

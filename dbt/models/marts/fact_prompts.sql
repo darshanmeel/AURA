@@ -18,56 +18,18 @@
 -- (with JSON extraction over every tool execution ever recorded) is what
 -- exhausted the 4GB DuckDB pool.
 --
--- Incremental cursor: raw_events has NO wall-clock ingest column — its
--- schema is tenant_id/uuid/session_id/.../ts/file_path/byte_offset/payload,
--- PK (tenant_id, uuid), written via `INSERT ... ON CONFLICT DO NOTHING`
--- (see watcher/src/aura_watcher/duckdb_writer.py). `ts` is the JSONL event
--- timestamp and is frozen at first insert — it never moves if a uuid is
--- re-ingested (the conflict clause just skips it), and historical backfill
--- can insert very old `ts` values at an arbitrary wall-clock moment. Neither
--- property makes `ts` a safe incremental cursor: a plain "ts >= max(ts) -
--- window" filter would silently and permanently drop backfilled history
--- older than the window.
--- The column that DOES move on every touch (live append OR batched
--- backfill OR a resumed/rewritten session) is
--- ingest_checkpoints.last_seen_at — a per-file wall-clock timestamp set by
--- CheckpointManager.update_checkpoint() every time that file grows or is
--- re-read (watcher/src/aura_watcher/checkpoint.py). Joining
--- raw_events.file_path -> ingest_checkpoints.file_path recovers, per
--- session, "was this session's file touched recently" — the real ingest
--- cursor.
---
--- Trade-off: a session whose file is not touched again within the lookback
--- window below will not be recomputed by an incremental run even if some
--- upstream mart changed for an unrelated reason. A dormant session that
--- resumes/rewrites after months of inactivity IS still caught on the very
--- next incremental run, because the resume touch sets last_seen_at = now()
--- at that moment — always inside the window relative to the run that
--- observes it. The window's real job is to absorb missed/late dbt cycles
--- (watcher paused, backfill lag), not to bridge arbitrarily old resumes.
+-- Incremental cursor: the recent_sessions() macro, i.e. sessions with lake
+-- rows whose ingested_at (flush time) is newer than this model's last build
+-- (_built_at, the cycle's cutoff) minus 1 h. ts is never used as a cursor:
+-- backfill writes old ts values at any wall-clock moment. A session
+-- recomputed here has ALL of its prompts re-derived, so the previously-last
+-- prompt's next_prompt_ts/span aggregates update when a new prompt arrives;
+-- delete+insert on (tenant_id, prompt_id) replaces every prompt of it.
 -- Run `dbt run --full-refresh -s fact_prompts` to force a full recompute.
-{% set lookback_hours = var('fact_prompts_lookback_hours', 24) %}
 
 WITH
 {% if is_incremental() %}
--- Files touched (grown or re-read) within the lookback window, per tenant.
-recent_files AS (
-    SELECT tenant_id, file_path
-    FROM {{ source('aura', 'ingest_checkpoints') }}
-    WHERE last_seen_at >= now() - INTERVAL '{{ lookback_hours }} hours'
-),
--- Sessions with at least one recently-touched file. A session recomputed
--- here has ALL of its prompts re-derived (not just new ones), so that the
--- previously-last prompt's next_prompt_ts/span aggregates correctly update
--- when a new prompt is appended after it. delete+insert on
--- (tenant_id, prompt_id) then replaces every prompt of that session.
-recent_sessions AS (
-    SELECT DISTINCT re.tenant_id, re.session_id
-    FROM {{ source('aura', 'raw_events') }} re
-    JOIN recent_files rf
-        ON  rf.tenant_id = re.tenant_id
-        AND rf.file_path = re.file_path
-),
+recent_sessions AS ({{ recent_sessions() }}),
 {% endif %}
 -- Scoped views of the large upstream marts consumed by the range-joins
 -- below. On an incremental run these are pre-filtered to recent_sessions
@@ -131,6 +93,9 @@ external_user_events AS (
     WHERE e.event_type = 'user'
       AND json_extract_string(e.payload, '$.userType') = 'external'
       AND COALESCE(json_extract_string(e.payload, '$.isMeta'), 'false') != 'true'
+      -- Sidechain user events are subagent dispatch payloads, not human prompts;
+      -- counting them would split the parent prompt's span (and its cost).
+      AND e.is_sidechain = FALSE
 ),
 real_prompts AS (
     SELECT * FROM external_user_events WHERE prompt_text IS NOT NULL
@@ -157,9 +122,7 @@ span_turn_agg AS (
         COALESCE(SUM(ft.calculated_cost), 0)                         AS cost_total,
         -- First model in span
         FIRST(ft.model ORDER BY ft.assistant_ts)                     AS model_primary,
-        -- Last turn in span (its text is fetched separately from
-        -- dim_turn_messages — fact_turns no longer carries assistant_response,
-        -- see dim_turn_messages.sql for why)
+        -- Last turn in span (its text is fetched in span_last_text)
         LAST(ft.turn_id ORDER BY ft.assistant_ts)                    AS last_turn_id,
         -- First assistant ts in span — TTFT anchor
         MIN(ft.assistant_ts)                                         AS first_assistant_ts,
@@ -174,19 +137,17 @@ span_turn_agg AS (
         AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
     GROUP BY w.tenant_id, w.prompt_id
 ),
--- Text for the span's last turn only (narrow, per-prompt-scoped lookup).
--- dim_turn_messages is a view over int_turns; joining here — instead of on
--- fact_turns directly — is what keeps fact_prompts off the OOM path, since
--- we only ever fetch one turn's text per prompt instead of aggregating text
--- across the whole span.
+-- Text for the span's last turn only, extracted from the session-scoped
+-- assistant messages by message_id (turn_id), so an incremental run never
+-- reads text outside its recent sessions.
 span_last_text AS (
     SELECT
         sta.prompt_id,
-        dtm.assistant_response AS last_assistant_response
+        {{ assistant_text('am.payload') }} AS last_assistant_response
     FROM span_turn_agg sta
-    JOIN {{ ref('dim_turn_messages') }} dtm
-        ON  dtm.tenant_id = sta.tenant_id
-        AND dtm.turn_id   = sta.last_turn_id
+    JOIN joined_stg_assistant_messages am
+        ON  am.tenant_id  = sta.tenant_id
+        AND am.message_id = sta.last_turn_id
 ),
 -- Cache-token aggregation per span (from raw assistant messages: fact_turns
 -- collapses to one row per turn but token columns flow through).
@@ -252,7 +213,7 @@ span_fte_scalar_agg AS (
     SELECT
         prompt_id,
         array_agg(DISTINCT subagent_type_val)
-            FILTER (WHERE tool_name IN ('TaskCreate', 'Agent') AND subagent_type_val IS NOT NULL)
+            FILTER (WHERE tool_name IN ('Task', 'Agent') AND subagent_type_val IS NOT NULL)
                                                                        AS sub_agents_dispatched,
         COUNT(DISTINCT file_path)
             FILTER (WHERE tool_name IN ('Edit', 'Write') AND file_path IS NOT NULL)
@@ -389,16 +350,13 @@ with_agent_and_app AS (
     SELECT
         s.*,
         COALESCE(saa.agent_resolved, 'main')                                AS agent,
-        da.app_id,
-        da.project_id,
+        ds.app_id,
+        ds.project_id,
         EXTRACT(EPOCH FROM (COALESCE(s.next_prompt_ts, NOW()) - s.prompt_ts)) AS duration_seconds
     FROM spans s
     LEFT JOIN span_agent_agg saa ON saa.prompt_id = s.prompt_id
     LEFT JOIN {{ ref('dim_sessions') }} ds
         USING (tenant_id, session_id)
-    LEFT JOIN {{ ref('dim_apps') }} da
-        ON da.cwd = ds.cwd
-       AND da.tenant_id = s.tenant_id
 ),
 -- Overkill heuristic scoring.
 scored AS (
@@ -425,8 +383,10 @@ scored AS (
                 ELSE 3
             END
         )                                                                    AS complexity_tier,
-        -- actual_model_tier: 0=haiku, 1=sonnet/flash, 2=pro, 3=opus
+        -- actual_model_tier: 0=haiku, 1=sonnet/flash, 2=pro, 3=opus;
+        -- NULL when the span has no assistant turn (no model to judge).
         CASE
+            WHEN model_primary IS NULL                   THEN NULL
             WHEN model_primary LIKE '%haiku%'            THEN 0
             WHEN model_primary LIKE '%gemini-2.5-flash%' THEN 1
             WHEN model_primary LIKE '%sonnet%'           THEN 1
@@ -468,16 +428,11 @@ SELECT
     sub_agents_dispatched,
     complexity_tier,
     actual_model_tier,
-    CASE complexity_tier
-        WHEN 0 THEN 0
-        WHEN 1 THEN 1
-        WHEN 2 THEN 2
-        ELSE 3
-    END                         AS expected_model_tier,
-    (actual_model_tier > CASE complexity_tier WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE 3 END)
+    complexity_tier             AS expected_model_tier,
+    (actual_model_tier > complexity_tier)
                                 AS is_overkill,
     CASE
-        WHEN actual_model_tier > CASE complexity_tier WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE 3 END
+        WHEN actual_model_tier > complexity_tier
         THEN model_primary
              || ' on T' || complexity_tier::VARCHAR
              || ' task: ' || prompt_chars::VARCHAR || ' chars, '
@@ -486,5 +441,6 @@ SELECT
         ELSE NULL
     END                         AS overkill_reason,
     is_sidechain,
-    CASE WHEN is_sidechain THEN 'agent' ELSE 'human' END AS prompt_origin
+    CASE WHEN is_sidechain THEN 'agent' ELSE 'human' END AS prompt_origin,
+    {{ built_at() }}            AS _built_at
 FROM scored

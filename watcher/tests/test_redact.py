@@ -1,6 +1,8 @@
 import json
+
 import pytest
-from aura_watcher.redact import redact_content, redact_obj
+
+from aura_watcher.redact import redact_content, redact_obj, redact_payload
 
 
 def test_redact_secret_no_whitespace():
@@ -39,8 +41,8 @@ def test_redact_secret_quoted_value():
 
 
 def test_redact_does_not_touch_short_values():
-    # Values shorter than 16 chars must not be redacted.
-    content = 'token=shortval'
+    # Values shorter than 8 chars must not be redacted (S5).
+    content = 'token=short77'
     redacted = redact_content(content)
     assert redacted == content
 
@@ -83,36 +85,11 @@ def test_redact_obj_newline_before_blob_produces_valid_json():
     blob = "A" * 300
     raw = {"key": "x\n" + blob}
 
-    # Document the regression: the OLD approach produces invalid JSON.
-    old_approach = redact_content(json.dumps(raw))
-    try:
-        json.loads(old_approach)
-        # If this didn't raise it means the regex didn't match in this
-        # environment (edge case) — the test is still meaningful below.
-        old_was_valid = True
-    except (json.JSONDecodeError, ValueError):
-        old_was_valid = False
-    # Either the old approach is invalid (demonstrates the bug) OR the blob
-    # was not long enough in this edge case — the new approach must be valid
-    # regardless.
-
-    # New approach: redact_obj on the Python object first, then json.dumps.
     payload = json.dumps(redact_obj(raw))
     parsed = json.loads(payload)  # must not raise
 
-    assert "<base64:" in parsed["key"], (
-        "Expected base64 truncation marker in redacted value"
-    )
+    assert "<base64:" in parsed["key"], "Expected base64 truncation marker in redacted value"
     assert blob not in parsed["key"], "Original blob must be truncated"
-
-    # If the old approach was valid it means the regex didn't trigger on this
-    # input (edge case in Python JSON escaping) — skip the regression assert.
-    if not old_was_valid:
-        # Confirm the old approach was indeed invalid (documents the bug).
-        assert not old_was_valid, (
-            "Old approach (redact_content(json.dumps(raw))) produced invalid JSON — "
-            "this is the regression RC2 fixes."
-        )
 
 
 def test_redact_obj_unicode_escape_before_blob_produces_valid_json():
@@ -253,7 +230,7 @@ CREDENTIAL_NEGATIVE_CASES = [
     ("short_github_value", "ghp_tooshort"),
     ("code_identifier_sk", "sk_learn_model.fit(X_train, y_train)"),
     ("code_identifier_risk", "risk-adjusted-return and desk-jockey are normal words"),
-    ("code_identifier_ghp", "ghpToken = client.load_token()"),
+    ("code_identifier_ghp", "ghpToken.refresh(client)"),  # an assignment would now match S5
     ("alnum_run_199_chars", "C" * 199),
     (
         "aws_like_substring_no_boundary",
@@ -269,3 +246,41 @@ def test_redact_credential_formats_negative(label, content):
     redacted = redact_content(content)
     assert redacted == content, f"{label}: unexpected redaction of non-credential content"
     assert '«REDACTED»' not in redacted
+
+
+# ---------------------------------------------------------------------------
+# S5: common secret shapes the old regex missed
+# ---------------------------------------------------------------------------
+
+S5_CASES = [
+    ("aws_secret_access_key", "aws_secret_access_key=" + _fake("wJalrXUt", "nFEMI/K7MDENG"), _fake("wJalrXUt", "nFEMI")),
+    ("azure_account_key", "DefaultEndpointsProtocol=https;AccountKey=" + _fake("abcd1234", "efgh5678==;"),
+     _fake("abcd1234", "efgh")),
+    ("bearer", "Authorization: Bearer " + _fake("abcdefgh", "ijklmnopqrstuvwxyz"), _fake("abcdefgh", "ijklmnop")),
+    ("url_credentials", "postgres://admin:" + _fake("s3cr3t", "pass") + "@db.local:5432/x", _fake("s3cr3t", "pass")),
+    ("passwd", "passwd: " + _fake("hunter2", "hunter2"), _fake("hunter2", "hunter2")),
+]
+
+
+@pytest.mark.parametrize("label,content,secret", S5_CASES, ids=[c[0] for c in S5_CASES])
+def test_redact_s5_patterns(label, content, secret):
+    out = redact_content(content)
+    assert secret not in out, label
+    assert "«REDACTED»" in out
+
+
+def test_redact_obj_redacts_value_by_secret_key():
+    out = redact_obj({"password": "hunter2hunter2", "db": {"ApiKey": "x1"}, "input_tokens": 12, "note": "fine"})
+    assert out == {"password": "«REDACTED»", "db": {"ApiKey": "«REDACTED»"}, "input_tokens": 12, "note": "fine"}
+
+
+def test_redact_payload_valid_json_in_valid_json_out():
+    text = json.dumps({"message": {"content": "Authorization: Bearer " + "a" * 30}, "password": "hunter2hunter2"})
+    out = redact_payload(text)
+    parsed = json.loads(out)
+    assert parsed["password"] == "«REDACTED»"
+    assert "a" * 30 not in parsed["message"]["content"]
+
+
+def test_redact_payload_invalid_json_unchanged():
+    assert redact_payload("{bad") == "{bad"

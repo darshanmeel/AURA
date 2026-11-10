@@ -1,6 +1,6 @@
 # Aura — project memory
 
-Aura is a local-first analytics tool for AI-coding-agent transcripts (Claude Code today, Gemini/Codex later). It ingests `~/.claude/projects/**/*.jsonl` in real-time via a `watchdog` process into DuckDB, and performs hourly dbt rollups. We will use Next.js for the dashboard UI rather than Streamlit.
+Aura is a local-first analytics tool for AI-coding-agent transcripts (Claude Code today, Gemini/Codex later). It ingests `~/.claude/projects/**/*.jsonl` in real time via a `watchdog` process into a Parquet lake (`data/lake/`, flushed every 30 s), runs dbt every `AURA_DBT_RUN_INTERVAL_MINUTES` (5) into a DuckDB work DB, and publishes a dashboard-only read DB (`data/read/<CURRENT>/aura.duckdb`) for the Next.js dashboard.
 
 ---
 
@@ -40,7 +40,7 @@ return.
 Before any change that:
 
 - touches more than one file, **or**
-- alters the DuckDB schema (`raw_events`, `ingest_checkpoints`, marts), **or**
+- alters a schema (lake tables in `lake.py`, SQLite state, marts, `read_tables.sql`), **or**
 - modifies a dbt model or `model_pricing.csv`, **or**
 - deletes data or rewrites history
 
@@ -65,17 +65,19 @@ examples (JSONL adapter pitfalls, SCD on pricing, etc.).
   into a macro library because two models share three lines.
 
 - **Surgical Changes.** A watcher checkpoint change does not touch
-  the snapshot worker. A Streamlit page change does not touch dbt.
+  the dbt cycle. A frontend page change does not touch dbt.
   Different surfaces, different files.
 
 - **Goal-Driven Execution.** Success is verified against the schema
   and the dashboard, not against "the script returned exit 0." A
-  watcher change is verified by `SELECT count(*) FROM raw_events
-  WHERE ts > now() - INTERVAL 5 minutes`, not by stdout.
+  watcher change is verified by `SELECT count(*) FROM
+  read_parquet('data/lake/raw_events/*/*.parquet') WHERE ingested_at >
+  (now() AT TIME ZONE 'UTC') - INTERVAL 5 minutes` (naive UTC) (or `last_flush_at` in
+  `data/artifacts/watcher_status.json`), not by stdout.
 
 - **Don't Assume — Ask.** When a JSONL event type is unfamiliar or a
   cost number looks off, read the actual `.jsonl` file before
-  patching. The schema has surprises (see spec §4 ground-truth notes).
+  patching. The schema has surprises (see the ground-truth notes in `.claude/agents/data-engineer.md`).
 
 ## Runner return contract (every runner reply ends with this)
 
@@ -111,7 +113,7 @@ done == pushed.
 
 | Path | Agent | Owns |
 | --- | --- | --- |
-| `watcher/` | data-engineer | JSONL adapters, DuckDB writer, checkpoint, snapshot, redaction |
+| `watcher/` | data-engineer | JSONL adapters, Parquet lake writer, SQLite checkpoints, compaction, dbt cycle + publish, redaction |
 | `dbt/` | dbt-expert | models, seeds, pricing SCD, tests |
 | `frontend/` | frontend-engineer | Next.js dashboard, UI components |
 | (all diffs) | code-reviewer | general code review |

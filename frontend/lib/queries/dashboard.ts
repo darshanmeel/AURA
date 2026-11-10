@@ -2,7 +2,6 @@ import { query, queryOne } from '../db'
 import { assertTs, tsFilter, andTsFilter } from './_helpers'
 
 const TOP_N = 10
-const DAILY_SPEND_DAYS = 14
 
 // COST-ANCHORING CONTRACT (F-H2/F-H3):
 // total_cost is intentionally anchored to EVENT DATE via fact_daily_spend.date,
@@ -54,8 +53,10 @@ export async function getDashboardKPIs(since: string | null = null) {
   `)
 }
 
-export async function getDailySpend(since: string | null = null) {
+// days = how many most-recent days to return; null = all (M8).
+export async function getDailySpend(since: string | null = null, days: number | null = 14) {
   const wh = since ? `WHERE date >= '${assertTs(since)}'::DATE` : ''
+  const limit = days === null ? '' : `LIMIT ${Math.max(1, Math.floor(days))}`
   return query(`
     SELECT
       date,
@@ -65,7 +66,7 @@ export async function getDailySpend(since: string | null = null) {
     ${wh}
     GROUP BY date
     ORDER BY date DESC
-    LIMIT ${DAILY_SPEND_DAYS}
+    ${limit}
   `)
 }
 
@@ -232,7 +233,7 @@ export async function getTopProjects(since: string | null = null) {
         al.project_id
       FROM dim_sessions ds
       LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
-      LEFT JOIN dim_apps da ON da.app_id = al.app_id
+      LEFT JOIN dim_apps da ON da.app_id = al.app_id AND da.project_id = al.project_id
       ${wh}
       GROUP BY 1, 2, al.project_id
       ORDER BY total_cost DESC NULLS LAST
@@ -407,7 +408,7 @@ export async function getSpendPace() {
 }
 
 // Top skills loaded across sessions in the range. Counts distinct sessions per
-// skill and surfaces the most recent session end as "last used". raw_session_skills
+// skill and surfaces the most recent session end as "last used". stg_session_skills
 // has no per-row timestamp, so we anchor recency to dim_sessions.end_ts via the
 // session join. Returns at most 10 rows for the dashboard mini-table.
 export async function getTopSkills(since: string | null = null, limit = 10) {
@@ -417,7 +418,7 @@ export async function getTopSkills(since: string | null = null, limit = 10) {
       rs.skill_name                   AS skill,
       COUNT(DISTINCT rs.session_id)   AS session_count,
       MAX(s.end_ts)                   AS last_used
-    FROM raw_session_skills rs
+    FROM stg_session_skills rs
     JOIN dim_sessions s ON s.session_id = rs.session_id
     ${wh}
     GROUP BY rs.skill_name
@@ -434,7 +435,7 @@ export async function getTopMcps(since: string | null = null, limit = 10) {
       rm.mcp_server                   AS mcp_server,
       COUNT(DISTINCT rm.session_id)   AS session_count,
       MAX(s.end_ts)                   AS last_used
-    FROM raw_session_mcps rm
+    FROM stg_session_mcps rm
     JOIN dim_sessions s ON s.session_id = rm.session_id
     ${wh}
     GROUP BY rm.mcp_server

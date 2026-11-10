@@ -712,7 +712,9 @@ export function SessionTabs({
   const [enrichedFetched, setEnrichedFetched] = useState(promptsWithTools.length > 0)
 
   React.useEffect(() => {
-    if (activeTab !== 'prompts' || enrichedFetched || enrichedLoading) return
+    // enrichedLoading must not be a dependency: setting it would run the
+    // cleanup, cancel this fetch and leave the tab loading forever (M6).
+    if (activeTab !== 'prompts' || enrichedFetched) return
     let cancelled = false
     setEnrichedLoading(true)
     fetch(`/api/sessions/${encodeURIComponent(s.session_id)}/prompts-enriched`, { cache: 'no-store' })
@@ -721,7 +723,7 @@ export function SessionTabs({
       .catch(() => { if (!cancelled) setEnrichedFetched(true) })
       .finally(() => { if (!cancelled) setEnrichedLoading(false) })
     return () => { cancelled = true }
-  }, [activeTab, enrichedFetched, enrichedLoading, s.session_id])
+  }, [activeTab, enrichedFetched, s.session_id])
 
   // Prefer the enriched prompts (with tool_calls + prompt_origin); fall back to
   // the simpler prompts list while the enriched fetch is pending or empty.

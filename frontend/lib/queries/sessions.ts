@@ -43,10 +43,10 @@ export async function getSessions(filters: SessionFilters = {}, since: string | 
            ds.commits, ds.tools_used, ds.files_touched,
            ds.skill_count, ds.skills_loaded,
            ds.mcp_count,   ds.mcp_servers,
-           da.app_id,
+           al.app_id,
            ds.session_title AS prompt_preview
     FROM dim_sessions ds
-    LEFT JOIN dim_apps da ON da.cwd = ds.cwd
+    LEFT JOIN int_app_cwd_lookup al ON al.cwd = ds.cwd AND al.tenant_id = ds.tenant_id
     ${where}
     ORDER BY ${orderBy}
     LIMIT ${SESSIONS_STATS_CAP}
@@ -85,32 +85,48 @@ export async function getSession(id: string) {
   
   if (session) return session
 
-  // Fallback: construct from raw events for real-time active sessions
+  // Fallback for a live session dbt has not built yet: recent_events (last 8
+  // UTC days, no payload), bounded to 2 days. A streamed assistant message is
+  // written as several events sharing a message_id; keep the last one.
   const raw = await queryOne(`
-    SELECT 
-      session_id,
-      MIN(ts) as start_ts,
-      MAX(ts) as end_ts,
-      ANY_VALUE(model) as model,
-      ANY_VALUE(cwd) as cwd,
-      ANY_VALUE(git_branch) as git_branch,
-      ANY_VALUE(claude_version) as claude_version,
-      COUNT(DISTINCT CASE WHEN event_type = 'assistant' THEN message_id END) as turn_count,
-      SUM(CASE WHEN event_type = 'assistant' THEN COALESCE(input_tokens, 0) ELSE 0 END) as total_input_tokens,
-      SUM(CASE WHEN event_type = 'assistant' THEN COALESCE(output_tokens, 0) ELSE 0 END) as total_output_tokens,
-      'active' as status,
-      'Anthropic' as provider,
-      ANY_VALUE(agent) as agent
-    FROM raw_events
-    WHERE session_id = ?
-    GROUP BY session_id
+    WITH ev AS (
+      SELECT *
+      FROM recent_events
+      WHERE session_id = ?
+        AND "date" >= current_date - 2 AND ts >= NOW() - INTERVAL 2 DAY
+    ),
+    asst AS (
+      SELECT *
+      FROM ev
+      WHERE event_type = 'assistant'
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(message_id, uuid) ORDER BY ts DESC, byte_offset DESC) = 1
+    )
+    SELECT
+      ANY_VALUE(session_id) AS session_id,
+      MIN(ts) AS start_ts,
+      MAX(ts) AS end_ts,
+      ANY_VALUE(model) AS model,
+      ANY_VALUE(cwd) AS cwd,
+      ANY_VALUE(git_branch) AS git_branch,
+      ANY_VALUE(claude_version) AS claude_version,
+      (SELECT COUNT(*) FROM asst) AS turn_count,
+      (SELECT COALESCE(SUM(input_tokens), 0) FROM asst) AS total_input_tokens,
+      (SELECT COALESCE(SUM(output_tokens), 0) FROM asst) AS total_output_tokens,
+      (SELECT COALESCE(SUM(cache_read_input_tokens), 0) FROM asst) AS cache_read_total,
+      (SELECT COALESCE(SUM(ephemeral_5m_input_tokens), 0) FROM asst) AS ephemeral_5m_total,
+      (SELECT COALESCE(SUM(ephemeral_1h_input_tokens), 0) FROM asst) AS ephemeral_1h_total,
+      'active' AS status,
+      'Anthropic' AS provider,
+      ANY_VALUE(agent) AS agent
+    FROM ev
+    HAVING COUNT(*) > 0
   `, [id])
 
   if (!raw) return null
 
   const meta = await queryOne(`
-    SELECT person_id, person_name, commits, session_title, permission_mode, mode
-    FROM session_meta
+    SELECT person_id, person_name, session_title, permission_mode, mode
+    FROM stg_session_meta
     WHERE session_id = ?
   `, [id])
 
@@ -119,19 +135,18 @@ export async function getSession(id: string) {
     project: raw.cwd,
     person_id: meta?.person_id ?? 'local',
     person_name: meta?.person_name ?? 'local',
-    commits: meta?.commits ?? 0,
+    // Commits come from dim_sessions (fact_git_commands); none until it is built.
+    commits: 0,
     session_title: meta?.session_title ?? 'Active Session',
     source: 'claude',
     session_status: 'unknown',
     turns_used: null,
     max_turns: null,
     budget_utilization: null,
-    total_cost: 0.0,
+    // NULL = not priced yet; the page shows "pending".
+    total_cost: null,
     tools_used: 0,
     files_touched: 0,
-    ephemeral_5m_total: 0,
-    ephemeral_1h_total: 0,
-    cache_read_total: 0,
     verdict: null,
     verdict_note: null,
     permission_mode: (meta as any)?.permission_mode ?? null,
@@ -147,13 +162,10 @@ export async function getSessionTurns(id: string, opts: { all?: boolean; limit?:
   // opts.all removes the caller-imposed limit but never bypasses the hard cap.
   const limit = opts.all ? TURNS_HARD_CAP : Math.min(opts.limit ?? 500, TURNS_HARD_CAP)
   const limitClause = `LIMIT ${limit}`
-  // dim_turn_messages is a thin VIEW over int_turns carrying only the large
-  // text columns (user_prompt, assistant_response) split out of fact_turns to
-  // avoid the ASOF-join OOM (see dbt/models/intermediate/dim_turn_messages.sql).
-  // It must always be scoped — the dtm.session_id = ? predicate here (in
-  // addition to the ft.session_id = ? WHERE clause) ensures the join never
-  // evaluates int_turns unscoped, regardless of how the optimizer plans the
-  // LEFT JOIN.
+  // dim_turn_messages carries the large text columns (user_prompt,
+  // assistant_response, capped at 20,000 chars) split out of fact_turns. In the
+  // read DB it is a plain table sorted by session; the dtm.session_id = ?
+  // predicate lets its zone maps skip other sessions.
   const turns = await query(`
     SELECT ft.turn_number, ft.user_ts, ft.assistant_ts, ft.assistant_event_uuid, ft.model,
            ft.input_tokens, ft.output_tokens, ft.calculated_cost,
@@ -172,8 +184,10 @@ export async function getSessionTurns(id: string, opts: { all?: boolean; limit?:
 
   if (turns.length) return turns
 
-  // Fallback: construct turns directly from raw events for real-time responsiveness
-  // Reuses limitClause so the same TURNS_HARD_CAP is enforced on raw_events too.
+  // Fallback only when getSession used its fallback too, i.e. the session is
+  // not in dim_sessions yet. Same 2-day bound and message_id dedup.
+  const built = await queryOne(`SELECT 1 AS x FROM dim_sessions WHERE session_id = ?`, [id])
+  if (built) return []
   return query(`
     SELECT
       ROW_NUMBER() OVER (ORDER BY ts) as turn_number,
@@ -183,15 +197,17 @@ export async function getSessionTurns(id: string, opts: { all?: boolean; limit?:
       model,
       COALESCE(input_tokens, 0) as input_tokens,
       COALESCE(output_tokens, 0) as output_tokens,
-      0.0 as calculated_cost,
+      NULL::DOUBLE as calculated_cost,
       COALESCE(cache_read_input_tokens, 0) as cache_read_input_tokens,
       COALESCE(ephemeral_5m_input_tokens, 0) as ephemeral_5m_input_tokens,
       COALESCE(ephemeral_1h_input_tokens, 0) as ephemeral_1h_input_tokens,
       COALESCE(context_pct, 0.0) as context_pct,
       NULL as user_prompt,
       NULL as assistant_response
-    FROM raw_events
+    FROM recent_events
     WHERE session_id = ? AND event_type = 'assistant'
+      AND "date" >= current_date - 2 AND ts >= NOW() - INTERVAL 2 DAY
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY COALESCE(message_id, uuid) ORDER BY ts DESC, byte_offset DESC) = 1
     ORDER BY ts
     ${limitClause}
   `, [id])
@@ -243,7 +259,7 @@ export async function getSessionToolExecutions(id: string) {
       execution_duration_seconds,
       is_error,
       assistant_event_uuid,
-      json_extract_string(CAST(input_payload AS VARCHAR), '$.file_path') AS file_path
+      target_file AS file_path
     FROM fact_tool_executions
     WHERE session_id = ?
     ORDER BY tool_call_ts
@@ -263,8 +279,8 @@ export async function getSessionToolExecutions(id: string) {
  *   - cost_by_model      STRUCT[]{model, cost}         per-model rollup in window
  *   - final_stop_reason  (VARCHAR) last stop_reason in the window
  *
- * Defensive: any insight that can't be computed (e.g. no turn rows, missing
- * raw_events.uuid join) falls back to NULL — the UI tolerates nulls. Whole
+ * Defensive: any insight that can't be computed (e.g. no turn rows, no
+ * stop_reason) falls back to NULL — the UI tolerates nulls. Whole
  * query is wrapped in try/catch; on failure the page renders the simpler
  * prompts list instead of crashing.
  */
@@ -278,8 +294,8 @@ export async function getSessionPrompts(id: string): Promise<any[]> {
                fte.tool_name,
                fte.tool_call_ts,
                fte.is_error,
-               json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path')     AS target_file,
-               json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.subagent_type') AS subagent_type
+               fte.target_file,
+               fte.subagent_type
         FROM fact_prompts fp
         JOIN fact_tool_executions fte
           ON fte.session_id = fp.session_id
@@ -299,14 +315,12 @@ export async function getSessionPrompts(id: string): Promise<any[]> {
                ft.ephemeral_1h_input_tokens,
                ft.assistant_ts,
                ft.assistant_event_uuid,
-               re.stop_reason
+               ft.stop_reason
         FROM fact_prompts fp
         JOIN fact_turns ft
           ON ft.session_id = fp.session_id
           AND ft.assistant_ts >= fp.prompt_ts
           AND (fp.next_prompt_ts IS NULL OR ft.assistant_ts < fp.next_prompt_ts)
-        LEFT JOIN raw_events re
-          ON re.uuid = ft.assistant_event_uuid
         WHERE fp.session_id = ?
       ),
       -- Per-prompt tool signature (top tools by count, full list — UI slices)
@@ -413,7 +427,7 @@ export async function getSessionPrompts(id: string): Promise<any[]> {
             tool_name    := fte.tool_name,
             tool_call_ts := fte.tool_call_ts,
             is_error     := fte.is_error,
-            file_path    := json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path')
+            file_path    := fte.target_file
           ) ORDER BY fte.tool_call_ts) FILTER (WHERE fte.tool_name IS NOT NULL),
           []
         ) AS tool_calls,
@@ -537,7 +551,7 @@ export async function getSessionPromptHeroes(id: string): Promise<{
  * Robust to malformed JSON via a try-LIKE pre-filter; extraction proceeds in
  * SQL via json_extract on the content array.
  *
- * Note: as of 2026-05-25 the source raw_events for the bundled DB contain no
+ * Note: as of 2026-05-25 the ingested transcripts contain no
  * thinking blocks at all — this query returns [] and the UI hides the
  * disclosure gracefully. Light up when the data starts flowing.
  */
@@ -547,26 +561,18 @@ export async function getSessionThinkingBlocks(_id: string): Promise<Array<{
 }>> {
   // Short-circuit: ingested JSONL transcripts do not currently carry
   // type='thinking' content blocks (verified 2026-05-25). The previous
-  // implementation did `ILIKE '%"type":"thinking"%'` on the raw_events.payload
-  // VARCHAR column — a leading-wildcard full-payload scan that cost 500ms–2s
-  // per session detail page load while always returning [].
-  // Re-enable when thinking blocks start appearing in raw_events. The
-  // implementation is preserved in git history (before this commit).
+  // implementation did `ILIKE '%"type":"thinking"%'` on the raw payload — a
+  // leading-wildcard full-payload scan that cost 500ms–2s per session detail
+  // page load while always returning []. Payloads are not in the read DB any
+  // more; re-enabling needs a thinking table in read_tables.sql.
   return []
 }
 
 /**
- * Skills actually invoked (used) in a session.
- *
- * "Skills used" = invocations of the `Skill` tool. The invoked skill's name is
- * carried in the tool input, not the tool_name (which is literally "Skill"), so
- * we extract it from input_payload JSON: {"skill":"<name>", ...}.
- *
- * This is intentionally different from dim_sessions.skills_loaded, which
- * reflects the full catalog loaded at session start (raw_session_skills, all
- * is_initial=TRUE). Here we want only the subset the agent actually called.
- *
- * No dbt change required: reads fact_tool_executions in the read DB directly.
+ * Skills actually invoked (used) in a session = calls of the `Skill` tool;
+ * the skill name is `input_payload.skill`, extracted at publish as
+ * `skill_name` (read_tables.sql). Different from dim_sessions.skills_loaded
+ * (the catalog loaded at session start).
  */
 export async function getSessionSkillsUsed(id: string): Promise<Array<{
   skill_name: string
@@ -574,13 +580,9 @@ export async function getSessionSkillsUsed(id: string): Promise<Array<{
 }>> {
   try {
     const rows = await query(`
-      SELECT
-        json_extract_string(input_payload, '$.skill') AS skill_name,
-        COUNT(*)                                       AS call_count
+      SELECT skill_name, COUNT(*) AS call_count
       FROM fact_tool_executions
-      WHERE session_id = ?
-        AND tool_name = 'Skill'
-        AND json_extract_string(input_payload, '$.skill') IS NOT NULL
+      WHERE session_id = ? AND tool_name = 'Skill' AND skill_name IS NOT NULL
       GROUP BY 1
       ORDER BY call_count DESC, skill_name
     `, [id])

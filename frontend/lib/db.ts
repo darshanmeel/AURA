@@ -8,66 +8,88 @@ import {
   DuckDBTimestampNanosecondsValue,
   DuckDBDateValue,
 } from '@duckdb/node-api'
-import { statSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-const DB_PATH = process.env.AURA_READ_DB_PATH ?? '/data/read/aura.duckdb'
+const DATA_DIR = process.env.AURA_DATA_DIR ?? '/data'
+const READ_DIR = process.env.AURA_READ_DIR ?? `${DATA_DIR}/read`
 const QUERY_TIMEOUT_MS = Number(process.env.AURA_QUERY_TIMEOUT_MS ?? 15000)
+const SPILL_ROOT = join(tmpdir(), 'aura-duckdb')
 
-// The watcher's snapshot worker rewrites the read DB via os.replace, which
-// gives the file a new inode. A cached DuckDBInstance pins the OLD inode and
-// silently serves stale data forever. We track the inode and recreate when
-// it changes.
-let instance: DuckDBInstance | null = null
-let cachedIno: number | bigint | null = null
+// A crashed process can leave spill files whose size accounting underflows
+// ("16383.9 PiB" temp-dir error) on the next open, so start clean.
+try { rmSync(SPILL_ROOT, { recursive: true, force: true }) } catch { /* best effort */ }
 
-// Serializes concurrent getInstance() calls that both see instance==null.
-// Without this guard, two concurrent requests during a snapshot rotation
-// could each call DuckDBInstance.create(), leaking one of the two handles.
-// When a (re)open is already in progress, subsequent callers await the same
-// promise instead of starting a second create().
-let creating: Promise<DuckDBInstance> | null = null
+// The watcher publishes each read DB into a fresh dir read/<ver>/aura.duckdb
+// and then points read/CURRENT at it (spec §2.2). Files are never replaced
+// in place, so a version change is the only signal we need.
+export function readCurrentVersion(readDir: string): string {
+  let ver = ''
+  try { ver = readFileSync(join(readDir, 'CURRENT'), 'utf8').trim() } catch { /* missing */ }
+  if (!ver) throw new Error('read DB not published yet')
+  return ver
+}
+
+export function dbPathFor(readDir: string, ver: string): string {
+  return join(readDir, ver, 'aura.duckdb')
+}
+
+// One spill dir per version: the old and new instances are open together.
+export function spillDirFor(ver: string, root: string = SPILL_ROOT): string {
+  return join(root, ver)
+}
+
+let pointer: { ver: string; at: number } | null = null
+
+function currentVersion(): string {
+  const now = Date.now()
+  if (pointer && now - pointer.at < 1000) return pointer.ver
+  const ver = readCurrentVersion(READ_DIR)
+  pointer = { ver, at: now }
+  return ver
+}
+
+let live: { ver: string; db: DuckDBInstance } | null = null
+// Concurrent callers that see a new version await the same open instead of
+// each creating (and leaking) an instance.
+let creating: { ver: string; p: Promise<DuckDBInstance> } | null = null
 
 async function getInstance(): Promise<DuckDBInstance> {
-  let currentIno: number | bigint | null = null
+  const ver = currentVersion()
+  if (live && live.ver === ver) return live.db
+  if (creating && creating.ver === ver) return creating.p
+
+  const p = DuckDBInstance.create(dbPathFor(READ_DIR, ver), {
+    access_mode: 'READ_ONLY',
+    TimeZone: 'UTC',
+    threads: process.env.AURA_DUCKDB_THREADS ?? '4',
+    memory_limit: process.env.AURA_DUCKDB_MEMORY_LIMIT ?? '1GB',
+    temp_directory: spillDirFor(ver),
+  })
+  creating = { ver, p }
   try {
-    currentIno = statSync(DB_PATH).ino
-  } catch {
-    currentIno = null
-  }
-  if (instance && cachedIno !== null && currentIno === cachedIno) {
-    return instance
-  }
-  // A concurrent caller may already be opening a new instance for this inode.
-  // Await that in-flight promise so we don't create a second handle.
-  if (creating) {
-    return creating
-  }
-  // File was replaced (or first call). Capture old instance for deferred close,
-  // then open a new one before closing the old. The deferred close (via
-  // setTimeout) avoids invalidating connections that in-flight queries derived
-  // from the old handle and may still be executing at the moment of rotation.
-  const oldInstance = instance
-  instance = null
-  creating = DuckDBInstance.create(DB_PATH, { access_mode: 'READ_ONLY' })
-  try {
-    const newInstance = await creating
-    instance = newInstance
-    cachedIno = currentIno
-    if (oldInstance) {
-      // Grace delay: give any in-flight queries on the old handle time to finish
-      // before the handle is closed. 3 s is well above p99 query latency.
-      setTimeout(() => { try { oldInstance.closeSync?.() } catch {} }, 3000)
+    const db = await p
+    // The old instance stays live until the new one is open; close it only
+    // after any query already running on it has hit its timeout.
+    const old = live
+    live = { ver, db }
+    if (old) {
+      setTimeout(() => {
+        try { old.db.closeSync() } catch { /* ignore */ }
+        try { rmSync(spillDirFor(old.ver), { recursive: true, force: true }) } catch { /* ignore */ }
+      }, QUERY_TIMEOUT_MS + 1000)
     }
-    return instance
+    return db
   } finally {
-    creating = null
+    if (creating?.p === p) creating = null
   }
 }
 
 // Recursive BigInt → Number/string normalization. BigInt within JS safe-integer
 // range becomes Number; anything outside stays as string so token IDs and
 // rare overflow values don't silently lose precision.
-function normalizeBigInts(v: unknown): unknown {
+export function normalizeBigInts(v: unknown): unknown {
   if (typeof v === 'bigint') {
     return v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER)
       ? Number(v)
@@ -144,7 +166,7 @@ export async function query<T = Record<string, unknown>>(sql: string, params: un
   // rejection and moved on.
   queryPromise.finally(() => {
     try { conn.closeSync() } catch { /* ignore errors on deferred close */ }
-  })
+  }).catch(() => { /* the rejection is handled by the race below */ })
 
   let timer: NodeJS.Timeout | undefined
   let timedOut = false

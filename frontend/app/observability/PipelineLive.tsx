@@ -278,6 +278,10 @@ interface Verdict {
   issues: VerdictIssue[]
 }
 
+// dbt skips a cycle when nothing changed (up to 60 min), so marts that depend
+// on the clock rather than on new data can lag that long.
+const TIME_MARTS_NOTE = 'Time-dependent marts (today\'s spend pace, "active" sessions) can lag up to 60 min while idle cycles are skipped.'
+
 function deriveVerdict(d: Snapshot): Verdict {
   const issues: VerdictIssue[] = []
 
@@ -289,6 +293,7 @@ function deriveVerdict(d: Snapshot): Verdict {
   const modelsFail = d.dbt?.models_fail ?? 0
   const sourceErrors = (d.dbt?.source_freshness ?? []).filter(s => s.status === 'error')
   const sourceWarns  = (d.dbt?.source_freshness ?? []).filter(s => s.status === 'warn')
+  const dbtStatus = overall?.dbt_status ?? 'unknown'
 
   sourceErrors.forEach(s => {
     const ageMin = s.age_seconds != null ? Math.floor(s.age_seconds / 60) : null
@@ -306,6 +311,17 @@ function deriveVerdict(d: Snapshot): Verdict {
       label: 'watcher · raw_events',
       body: 'no rows written in the last hour — ingestion halted',
       jump: 'ingestion',
+    })
+  }
+
+  if (dbtStatus === 'red' || dbtStatus === 'yellow') {
+    issues.push({
+      kind: dbtStatus === 'red' ? 'bad' : 'warn',
+      label: 'dbt cycle',
+      body: dbtStatus === 'red'
+        ? 'no successful dbt run in the last 60 min, or no run artifacts'
+        : 'last dbt run failed or is more than 10 min old',
+      jump: 'tests',
     })
   }
 
@@ -377,7 +393,7 @@ function deriveVerdict(d: Snapshot): Verdict {
       state: 'warn',
       headline: 'Drifting from',
       accent: 'nominal.',
-      summary: 'One or more signals are degraded but the pipeline is still flowing. See diagnostics below.',
+      summary: `One or more signals are degraded but the pipeline is still flowing. See diagnostics below. ${TIME_MARTS_NOTE}`,
       issues,
     }
   }
@@ -395,7 +411,7 @@ function deriveVerdict(d: Snapshot): Verdict {
     state: 'good',
     headline: 'All systems',
     accent: 'nominal.',
-    summary: `Bronze ingestion is keeping pace, dbt tests are clean${(d.dbt?.tests_total ?? 0) > 0 ? ` (${d.dbt?.tests_pass}/${d.dbt?.tests_total})` : ''}, and no watcher errors recorded in the last hour.`,
+    summary: `Bronze ingestion is keeping pace, dbt tests are clean${(d.dbt?.tests_total ?? 0) > 0 ? ` (${d.dbt?.tests_pass}/${d.dbt?.tests_total})` : ''}, and no watcher errors recorded in the last hour. ${TIME_MARTS_NOTE}`,
     issues: [],
   }
 }
@@ -768,8 +784,8 @@ function KpiGrid({ snapshot, verdict }: { snapshot: Snapshot; verdict: Verdict }
   const dbt = snapshot.dbt
   const overall = snapshot.overall
   // Bronze freshness must always come from overall.bronze_age_seconds — the
-  // single canonical `NOW() - MAX(ts)` scan over raw_events computed in
-  // getOverallHealth(). dbt's source_freshness entries are a *frozen*
+  // single canonical value getOverallHealth() derives from
+  // watcher_status.json max_event_ts. dbt's source_freshness entries are a *frozen*
   // snapshot recorded at the last `dbt source freshness` invocation and can
   // be stale by however long it's been since dbt last ran; using it here
   // previously caused this card to disagree with the Flow strip and the
@@ -1388,9 +1404,13 @@ export function PipelineLive({ initialData }: { initialData: Snapshot | null }) 
   const [isError, setIsError] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const inFlight = useRef(false)
 
   useEffect(() => {
     function poll() {
+      // Skip when hidden or when the previous poll has not returned yet (S41).
+      if (document.hidden || inFlight.current) return
+      inFlight.current = true
       fetch('/api/observability', { cache: 'no-store' })
         .then(r => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`)
@@ -1406,6 +1426,7 @@ export function PipelineLive({ initialData }: { initialData: Snapshot | null }) 
           // keep stale data — flag the error so the Crumb shows a degraded indicator
           setIsError(true)
         })
+        .finally(() => { inFlight.current = false })
     }
     if (!initialData) poll()
     pollRef.current = setInterval(poll, REFRESH_SEC * 1000)

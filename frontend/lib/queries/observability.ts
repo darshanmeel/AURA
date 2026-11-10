@@ -2,11 +2,12 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { query, queryOne } from '../db'
 
-const ARTIFACTS_DIR = process.env.AURA_ARTIFACTS_DIR ?? '/data/artifacts'
+const ARTIFACTS_DIR = process.env.AURA_ARTIFACTS_DIR ?? `${process.env.AURA_DATA_DIR ?? '/data'}/artifacts`
 const RUN_RESULTS_PATH = `${ARTIFACTS_DIR}/run_results.json`
 const SOURCES_PATH = `${ARTIFACTS_DIR}/sources.json`
 const HISTORY_DIR = `${ARTIFACTS_DIR}/history`
 const NUMBER_VERIFY_PATH = `${ARTIFACTS_DIR}/number_verify.json`
+const WATCHER_STATUS_PATH = `${ARTIFACTS_DIR}/watcher_status.json`
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -54,29 +55,47 @@ function errorBasedHealth(errorsLastHour: number): HealthLevel {
 }
 
 function worstOf(...levels: HealthLevel[]): HealthLevel {
-  const rank: Record<HealthLevel, number> = { unknown: 0, green: 1, yellow: 2, red: 3 }
+  // unknown outranks green: a missing signal must not read as healthy (S37).
+  const rank: Record<HealthLevel, number> = { green: 0, unknown: 1, yellow: 2, red: 3 }
   return levels.reduce((worst, l) => rank[l] > rank[worst] ? l : worst, 'green' as HealthLevel)
 }
 
-export async function getOverallHealth(): Promise<OverallHealth> {
-  // 1. Bronze freshness — always read directly from raw_events
-  let bronzeLatestEvent: string | null = null
-  let bronzeAgeSeconds: number | null = null
+// watcher_status.json (spec §2.5): written by the watcher after every flush.
+// The lake is not in the read DB, so bronze freshness and file/byte totals
+// come from this file, never from a query.
+export interface WatcherStatus {
+  written_at?: string
+  mode?: string
+  last_flush_at?: string | null
+  max_event_ts?: string | null
+  files_tracked?: number
+  bytes_tracked?: number
+  errors_since_start?: number
+  dbt?: { status?: string; published?: string | null; error?: string | null } | null
+}
 
+export async function readWatcherStatus(): Promise<WatcherStatus | null> {
   try {
-    const row = await queryOne<{ latest_ts: string | null; age_seconds: number | null }>(
-      `SELECT
-         MAX(ts)::VARCHAR                                          AS latest_ts,
-         EXTRACT(EPOCH FROM (NOW() - MAX(ts)))::DOUBLE            AS age_seconds
-       FROM raw_events`
-    )
-    if (row?.latest_ts) {
-      bronzeLatestEvent = row.latest_ts
-      bronzeAgeSeconds = row.age_seconds ?? null
-    }
+    return JSON.parse(await fs.readFile(WATCHER_STATUS_PATH, 'utf8')) as WatcherStatus
   } catch (_e) {
-    // raw_events missing — treat as unknown
+    return null
   }
+}
+
+// The watcher writes naive UTC timestamps; without a zone suffix JS would
+// parse them as local time.
+function utcMs(ts: string | null | undefined): number | null {
+  if (!ts) return null
+  const iso = ts.replace(' ', 'T')
+  const ms = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`)
+  return Number.isNaN(ms) ? null : ms
+}
+
+export async function getOverallHealth(status: WatcherStatus | null = null): Promise<OverallHealth> {
+  // 1. Bronze freshness from watcher_status.json
+  const bronzeLatestEvent = status?.max_event_ts ?? null
+  const latestMs = utcMs(bronzeLatestEvent)
+  const bronzeAgeSeconds = latestMs === null ? null : (Date.now() - latestMs) / 1000
 
   // 2. dbt artifact
   let lastDbtRunTs: string | null = null
@@ -99,7 +118,7 @@ export async function getOverallHealth(): Promise<OverallHealth> {
     // file absent or unparseable — leave dbtFileFound = false
   }
 
-  // 3. Watcher errors
+  // 3. Watcher errors (as of the last publish)
   let errorsLastHour = 0
   let errorsLastDay = 0
 
@@ -108,12 +127,12 @@ export async function getOverallHealth(): Promise<OverallHealth> {
       `SELECT
          COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 HOUR)  AS last_hour,
          COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 DAY)   AS last_day
-       FROM watcher_errors`
+       FROM stg_watcher_errors`
     )
     errorsLastHour = Number(row?.last_hour ?? 0)
     errorsLastDay = Number(row?.last_day ?? 0)
-  } catch (_e) {
-    // watcher_errors table may not exist yet
+  } catch (e) {
+    console.error('[observability] watcher error counts failed:', e instanceof Error ? e.message : e)
   }
 
   const bs = bronzeStatus(bronzeAgeSeconds)
@@ -145,25 +164,15 @@ export interface IngestionStats {
   files_seen: number
 }
 
-function windowClause(window: '1h' | '1d' | '7d'): string {
-  switch (window) {
-    case '1h': return `ts >= NOW() - INTERVAL 1 HOUR`
-    case '1d': return `ts >= NOW() - INTERVAL 1 DAY`
-    case '7d': return `ts >= NOW() - INTERVAL 7 DAYS`
-  }
-}
-
-// Single-query variant: fetch 1h, 1d, 7d in one raw_events scan + one
-// ingest_checkpoints query. Replaces 3 separate getIngestionStats() calls
-// (each of which scanned raw_events independently). Used by the API route's
-// composite handler. Falls back to per-window calls only on error.
-export async function getIngestionStatsAll(): Promise<{
+// recent_events holds the last 8 UTC days; the "date" predicate prunes by
+// zone map before the ts bound is applied.
+export async function getIngestionStatsAll(status: WatcherStatus | null = null): Promise<{
   s1h: IngestionStats
   s1d: IngestionStats
   s7d: IngestionStats
 }> {
   let c1h = 0, s1h = 0, c1d = 0, s1d = 0, c7d = 0, s7d = 0
-  let filesSeen = 0
+  const filesSeen = Number(status?.files_tracked ?? 0)
 
   try {
     const row = await queryOne<{
@@ -176,68 +185,22 @@ export async function getIngestionStatsAll(): Promise<{
          COUNT(DISTINCT session_id) FILTER (WHERE ts >= NOW() - INTERVAL 1 HOUR) AS s1h,
          COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 DAY)                   AS c1d,
          COUNT(DISTINCT session_id) FILTER (WHERE ts >= NOW() - INTERVAL 1 DAY)  AS s1d,
-         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 7 DAYS)                  AS c7d,
-         COUNT(DISTINCT session_id) FILTER (WHERE ts >= NOW() - INTERVAL 7 DAYS) AS s7d
-       FROM raw_events`
+         COUNT(*)                                                               AS c7d,
+         COUNT(DISTINCT session_id)                                             AS s7d
+       FROM recent_events
+       WHERE "date" >= current_date - 7 AND ts >= NOW() - INTERVAL 7 DAY`
     )
     c1h = Number(row?.c1h ?? 0); s1h = Number(row?.s1h ?? 0)
     c1d = Number(row?.c1d ?? 0); s1d = Number(row?.s1d ?? 0)
     c7d = Number(row?.c7d ?? 0); s7d = Number(row?.s7d ?? 0)
-  } catch (_e) {
-    // raw_events absent — all zeros
-  }
-
-  try {
-    const row = await queryOne<{ files_seen: number }>(
-      `SELECT COUNT(*) AS files_seen FROM ingest_checkpoints`
-    )
-    filesSeen = Number(row?.files_seen ?? 0)
-  } catch (_e) {
-    // ingest_checkpoints absent
+  } catch (e) {
+    console.error('[observability] ingestion counts failed:', e instanceof Error ? e.message : e)
   }
 
   return {
     s1h: { window: '1h', rows_ingested: c1h, sessions_ingested: s1h, files_seen: filesSeen },
     s1d: { window: '1d', rows_ingested: c1d, sessions_ingested: s1d, files_seen: filesSeen },
     s7d: { window: '7d', rows_ingested: c7d, sessions_ingested: s7d, files_seen: filesSeen },
-  }
-}
-
-export async function getIngestionStats(window: '1h' | '1d' | '7d'): Promise<IngestionStats> {
-  const wc = windowClause(window)
-
-  let rowsIngested = 0
-  let sessionsIngested = 0
-  let filesSeen = 0
-
-  try {
-    const row = await queryOne<{ rows_ingested: number; sessions_ingested: number }>(
-      `SELECT
-         COUNT(*)                    AS rows_ingested,
-         COUNT(DISTINCT session_id)  AS sessions_ingested
-       FROM raw_events
-       WHERE ${wc}`
-    )
-    rowsIngested = Number(row?.rows_ingested ?? 0)
-    sessionsIngested = Number(row?.sessions_ingested ?? 0)
-  } catch (_e) {
-    // raw_events absent
-  }
-
-  try {
-    const row = await queryOne<{ files_seen: number }>(
-      `SELECT COUNT(*) AS files_seen FROM ingest_checkpoints`
-    )
-    filesSeen = Number(row?.files_seen ?? 0)
-  } catch (_e) {
-    // ingest_checkpoints absent
-  }
-
-  return {
-    window,
-    rows_ingested: rowsIngested,
-    sessions_ingested: sessionsIngested,
-    files_seen: filesSeen,
   }
 }
 
@@ -258,79 +221,23 @@ export interface WatcherHealth {
   errors_last_day: number
 }
 
-export async function getWatcherHealth(): Promise<WatcherHealth> {
-  // NOTE: bronze freshness fields (bronze_latest_event, bronze_age_seconds,
-  // bronze_status) are intentionally returned as null/'unknown' here — the
-  // API route merges them in from getOverallHealth's result so the same
-  // MAX(ts) scan over raw_events doesn't run twice per poll.
-  const bronzeLatestEvent: string | null = null
-  const bronzeAgeSeconds: number | null = null
-
-  // Checkpoint stats
-  let filesTotal = 0
-  let totalBytesIngested = 0
-
-  try {
-    const row = await queryOne<{ files_total: number; total_bytes: number }>(
-      `SELECT
-         COUNT(*)           AS files_total,
-         SUM(last_offset)   AS total_bytes
-       FROM ingest_checkpoints`
-    )
-    filesTotal = Number(row?.files_total ?? 0)
-    totalBytesIngested = Number(row?.total_bytes ?? 0)
-  } catch (_e) {
-    // ingest_checkpoints absent
-  }
-
-  // Ingestion counts per window
-  let ingestion1h = 0
-  let ingestion1d = 0
-  let ingestion7d = 0
-
-  try {
-    const row = await queryOne<{ c1h: number; c1d: number; c7d: number }>(
-      `SELECT
-         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 HOUR)   AS c1h,
-         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 DAY)    AS c1d,
-         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 7 DAYS)   AS c7d
-       FROM raw_events`
-    )
-    ingestion1h = Number(row?.c1h ?? 0)
-    ingestion1d = Number(row?.c1d ?? 0)
-    ingestion7d = Number(row?.c7d ?? 0)
-  } catch (_e) {
-    // raw_events absent
-  }
-
-  // Error counts
-  let errorsLastHour = 0
-  let errorsLastDay = 0
-
-  try {
-    const row = await queryOne<{ last_hour: number; last_day: number }>(
-      `SELECT
-         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 HOUR)  AS last_hour,
-         COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL 1 DAY)   AS last_day
-       FROM watcher_errors`
-    )
-    errorsLastHour = Number(row?.last_hour ?? 0)
-    errorsLastDay = Number(row?.last_day ?? 0)
-  } catch (_e) {
-    // watcher_errors absent
-  }
-
+// No queries: built from the status file and the counts the snapshot already has.
+export function getWatcherHealth(
+  status: WatcherStatus | null,
+  overall: OverallHealth | null,
+  ingestion: { s1h: IngestionStats; s1d: IngestionStats; s7d: IngestionStats } | null,
+): WatcherHealth {
   return {
-    bronze_latest_event: bronzeLatestEvent,
-    bronze_age_seconds: bronzeAgeSeconds,
-    bronze_status: bronzeStatus(bronzeAgeSeconds),
-    files_total: filesTotal,
-    total_bytes_ingested: totalBytesIngested,
-    ingestion_1h: ingestion1h,
-    ingestion_1d: ingestion1d,
-    ingestion_7d: ingestion7d,
-    errors_last_hour: errorsLastHour,
-    errors_last_day: errorsLastDay,
+    bronze_latest_event: overall?.bronze_latest_event ?? null,
+    bronze_age_seconds: overall?.bronze_age_seconds ?? null,
+    bronze_status: overall?.bronze_status ?? 'unknown',
+    files_total: Number(status?.files_tracked ?? 0),
+    total_bytes_ingested: Number(status?.bytes_tracked ?? 0),
+    ingestion_1h: ingestion?.s1h.rows_ingested ?? 0,
+    ingestion_1d: ingestion?.s1d.rows_ingested ?? 0,
+    ingestion_7d: ingestion?.s7d.rows_ingested ?? 0,
+    errors_last_hour: overall?.errors_last_hour ?? 0,
+    errors_last_day: overall?.errors_last_day ?? 0,
   }
 }
 
@@ -357,12 +264,12 @@ export async function getRecentWatcherErrors(limit?: number): Promise<WatcherErr
          file_path,
          error_message,
          stack_trace
-       FROM watcher_errors
+       FROM stg_watcher_errors
        ORDER BY ts DESC
        LIMIT ${safeLimit}`
     )
-  } catch (_e) {
-    // watcher_errors table may not exist yet
+  } catch (e) {
+    console.error('[observability] watcher errors failed:', e instanceof Error ? e.message : e)
     return []
   }
 }
@@ -440,7 +347,7 @@ interface SourcesJson {
 // unique_id correctly even when the table name itself has underscores
 // (e.g. fact_hourly_activity). Kept in sync with LAYER_TABLES below.
 const KNOWN_RELATIONS: readonly string[] = [
-  // gold
+  // gold (longer names first where one is a prefix of another)
   'fact_hourly_activity',
   'fact_model_calls',
   'fact_tool_executions',
@@ -451,21 +358,33 @@ const KNOWN_RELATIONS: readonly string[] = [
   'fact_prompts',
   'fact_turns',
   'fact_errors',
+  'dim_turn_messages',
   'dim_sessions',
   'dim_projects',
   'dim_agents',
   'dim_people',
   'dim_apps',
+  'int_app_cwd_lookup',
+  'int_entity_spend',
+  'int_event_agent',
   // silver
   'stg_assistant_messages',
+  'stg_lake_event_dups',
+  'stg_session_verdicts',
   'stg_session_skills',
-  'stg_thinking_blocks',
+  'stg_session_mcps',
   'stg_session_meta',
+  'stg_thinking_blocks',
   'stg_tool_results',
   'stg_tool_calls',
+  'stg_watcher_errors',
   'stg_events',
-  // bronze
+  // bronze (lake)
+  'raw_session_skills',
+  'raw_session_mcps',
   'raw_events',
+  'session_meta',
+  'watcher_errors',
 ]
 
 // Parses a dbt test unique_id like
@@ -774,7 +693,8 @@ export interface HourlyIngestion {
 
 export async function getHourlyIngestion(hours: number = 24): Promise<HourlyIngestion[]> {
   // F-H4: coerce to a safe integer before inlining into SQL INTERVAL / generate_series.
-  const safeHours = Math.floor(Number(hours)) || 24
+  // recent_events holds 8 days, so more than 168 hours would read as zeros.
+  const safeHours = Math.min(168, Math.max(1, Math.floor(Number(hours)) || 24))
 
   // We pre-build all N buckets and LEFT JOIN so quiet hours show up as zero
   // instead of dropping out — the sparkline needs a complete time axis.
@@ -793,8 +713,8 @@ export async function getHourlyIngestion(hours: number = 24): Promise<HourlyInge
          SELECT
            date_trunc('hour', ts) AS hour,
            COUNT(*)               AS rows
-         FROM raw_events
-         WHERE ts >= NOW() - INTERVAL ${safeHours} HOUR
+         FROM recent_events
+         WHERE "date" >= current_date - 7 AND ts >= NOW() - INTERVAL ${safeHours} HOUR
          GROUP BY 1
        )
        SELECT
@@ -804,7 +724,8 @@ export async function getHourlyIngestion(hours: number = 24): Promise<HourlyInge
        LEFT JOIN counts c USING (hour)
        ORDER BY a.hour`
     )
-  } catch (_e) {
+  } catch (e) {
+    console.error('[observability] hourly ingestion failed:', e instanceof Error ? e.message : e)
     return []
   }
 }
@@ -878,10 +799,10 @@ export async function getDbtRunHistory(limit: number = 6): Promise<DbtHistoryEnt
 
 export interface MedallionTable {
   name: string
-  rows: number | null               // null for views (counting re-evaluates the view; not worth ~10s/poll)
+  rows: number | null               // null when not in the read DB (bronze, silver)
   bytes: number | null              // approximate, from duckdb_tables() (null = unknown / view)
   age_seconds: number | null        // freshness signal; null for static dims and uncounted views
-  materialization: string           // table | view | incremental | external
+  materialization: string           // lake | table | view | incremental
 }
 
 export interface MedallionLayer {
@@ -899,46 +820,58 @@ export interface MedallionLayer {
 
 // Static layer membership — keeps the page deterministic. We don't auto-derive
 // from manifest.json because that requires another file read and the set is
-// stable.
+// stable. Only gold is probed: bronze is the Parquet lake (age from
+// watcher_status.json) and silver lives only in the dbt work DB; neither is
+// in the read DB, so their rows/ages show '—' and only their test results count.
 const LAYER_TABLES: Record<'bronze' | 'silver' | 'gold', { table: string; materialization: string; ts_column: string | null }[]> = {
   bronze: [
-    { table: 'raw_events', materialization: 'external', ts_column: 'ts' },
+    { table: 'raw_events',         materialization: 'lake', ts_column: null },
+    { table: 'raw_session_skills', materialization: 'lake', ts_column: null },
+    { table: 'raw_session_mcps',   materialization: 'lake', ts_column: null },
+    { table: 'session_meta',       materialization: 'lake', ts_column: null },
+    { table: 'watcher_errors',     materialization: 'lake', ts_column: null },
   ],
   silver: [
-    { table: 'stg_events',              materialization: 'view', ts_column: 'ts' },
-    { table: 'stg_assistant_messages',  materialization: 'view', ts_column: 'ts' },
-    { table: 'stg_tool_calls',          materialization: 'view', ts_column: 'ts' },
-    { table: 'stg_tool_results',        materialization: 'view', ts_column: 'ts' },
-    { table: 'stg_thinking_blocks',     materialization: 'view', ts_column: 'ts' },
-    { table: 'stg_session_meta',        materialization: 'view', ts_column: null },
-    { table: 'stg_session_skills',      materialization: 'view', ts_column: null },
+    { table: 'stg_events',              materialization: 'view',        ts_column: null },
+    { table: 'stg_lake_event_dups',     materialization: 'table',       ts_column: null },
+    { table: 'stg_assistant_messages',  materialization: 'view',        ts_column: null },
+    { table: 'stg_tool_calls',          materialization: 'table',       ts_column: null },
+    { table: 'stg_tool_results',        materialization: 'incremental', ts_column: null },
+    { table: 'stg_thinking_blocks',     materialization: 'view',        ts_column: null },
+    { table: 'stg_session_meta',        materialization: 'table',       ts_column: null },
+    { table: 'stg_session_skills',      materialization: 'table',       ts_column: null },
+    { table: 'stg_session_mcps',        materialization: 'table',       ts_column: null },
+    { table: 'stg_session_verdicts',    materialization: 'table',       ts_column: null },
+    { table: 'stg_watcher_errors',      materialization: 'table',       ts_column: null },
   ],
   gold: [
     { table: 'dim_agents',           materialization: 'table',       ts_column: null },
     { table: 'dim_apps',             materialization: 'table',       ts_column: null },
     { table: 'dim_people',           materialization: 'table',       ts_column: null },
     { table: 'dim_projects',         materialization: 'table',       ts_column: null },
-    { table: 'dim_sessions',         materialization: 'table',       ts_column: 'session_start' },
+    { table: 'dim_sessions',         materialization: 'table',       ts_column: 'start_ts' },
+    { table: 'dim_turn_messages',    materialization: 'incremental', ts_column: null },
+    { table: 'int_app_cwd_lookup',   materialization: 'table',       ts_column: null },
+    { table: 'int_entity_spend',     materialization: 'table',       ts_column: null },
+    { table: 'int_event_agent',      materialization: 'table',       ts_column: null },
     { table: 'fact_hourly_activity', materialization: 'table',       ts_column: null },
     { table: 'fact_model_calls',     materialization: 'table',       ts_column: 'ts' },
-    { table: 'fact_prompts',         materialization: 'table',       ts_column: 'ts' },
-    { table: 'fact_turns',           materialization: 'table',       ts_column: 'ts' },
-    { table: 'fact_tool_executions', materialization: 'table',       ts_column: 'ts' },
+    { table: 'fact_prompts',         materialization: 'incremental', ts_column: 'prompt_ts' },
+    { table: 'fact_turns',           materialization: 'table',       ts_column: 'assistant_ts' },
+    { table: 'fact_tool_executions', materialization: 'incremental', ts_column: 'tool_call_ts' },
     { table: 'fact_spend_pace',      materialization: 'table',       ts_column: null },
     { table: 'fact_daily_spend',     materialization: 'table',       ts_column: null },
     { table: 'fact_errors',          materialization: 'table',       ts_column: 'ts' },
     { table: 'fact_session_files',   materialization: 'table',       ts_column: null },
-    { table: 'fact_git_commands',    materialization: 'table',       ts_column: null },
+    { table: 'fact_git_commands',    materialization: 'table',       ts_column: 'ts' },
   ],
 }
 
 export async function getMedallionLayers(
   perTestResults: DbtTestResult[] = [],
-  // Canonical bronze (raw_events) age in seconds, computed once by
-  // getOverallHealth()'s `NOW() - MAX(ts)` scan. Passed in so the medallion
-  // Bronze layer's "age" card always agrees with the "At a glance" BRONZE
-  // card and the Flow strip's "02 BRONZE" stage — three render sites, one
-  // source of truth, zero duplicate raw_events scans.
+  // Canonical bronze age in seconds (watcher_status.json max_event_ts, via
+  // getOverallHealth). Passed in so the medallion Bronze card, the "At a
+  // glance" BRONZE card and the Flow strip's "02 BRONZE" stage agree.
   canonicalBronzeAgeSeconds: number | null = null
 ): Promise<MedallionLayer[]> {
   // Per-relation test pass/fail attribution.
@@ -956,53 +889,40 @@ export async function getMedallionLayers(
     ...LAYER_TABLES.gold.map(t => ({ layer: 'gold' as const, ...t })),
   ]
 
-  // Two cheap metadata-only fetches in parallel.
-  // (1) duckdb_tables() gives row counts for BASE TABLES via `estimated_size`
-  //     (despite the misleading name, this is the row count, not bytes —
-  //     verified empirically against COUNT(*)). Returns nothing for VIEWS, so
-  //     silver-layer view counts end up null and the UI renders '—'.
-  //     This replaces a 15-second UNION of per-table COUNT(*) scalar subqueries.
-  // (2) UNION ALL of MAX(ts) for tables that have a ts_column. ~10ms because
-  //     MAX uses DuckDB's zone maps. Views are excluded — running MAX(ts) on a
-  //     view re-evaluates the view (silver views read raw_events with filters,
-  //     which means a full raw_events scan each). raw_events itself is also
-  //     excluded here — its age is the canonical bronze age supplied by the
-  //     caller (getOverallHealth's scan), not a second independent scan.
-  const tablesWithTs = allTables.filter(t => t.ts_column !== null && t.materialization !== 'view' && t.table !== 'raw_events')
+  // Gold only (see LAYER_TABLES). duckdb_tables().estimated_size is the row
+  // count of a base table (despite the name). MAX(ts) per table is cheap via
+  // zone maps.
+  const goldTables = LAYER_TABLES.gold.map(t => t.table)
+  const tablesWithTs = LAYER_TABLES.gold.filter(t => t.ts_column !== null)
 
   let countsByTable = new Map<string, number>()
-  let agesByTable = new Map<string, number | null>()
+  const agesByTable = new Map<string, number | null>()
   try {
-    const [tablesMeta, ageRows] = await Promise.all([
-      query<{ table_name: string; estimated_size: number | string | null }>(
-        `SELECT table_name, estimated_size FROM duckdb_tables()`
-      ),
-      tablesWithTs.length === 0
-        ? Promise.resolve([] as Array<{ table_name: string; age: number | null }>)
-        : query<{ table_name: string; age: number | null }>(
-            // F-L3: table names and column names are spliced from LAYER_TABLES,
-            // a static constant defined in this file. This is safe because no
-            // user-supplied input reaches this join — do NOT make these dynamic.
-            tablesWithTs.map(t => `
-              SELECT '${t.table}'::VARCHAR AS table_name,
-                     EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE AS age
-              FROM ${t.table}
-            `).join(' UNION ALL ')
-          ),
-    ])
+    const tablesMeta = await query<{ table_name: string; estimated_size: number | string | null }>(
+      `SELECT table_name, estimated_size FROM duckdb_tables()`
+    )
     countsByTable = new Map(
-      tablesMeta.map(r => [r.table_name, Number(r.estimated_size ?? 0)])
+      tablesMeta
+        .filter(r => goldTables.includes(r.table_name))
+        .map(r => [r.table_name, Number(r.estimated_size ?? 0)])
     )
-    agesByTable = new Map(
-      ageRows.map(r => [r.table_name, r.age != null ? Number(r.age) : null])
-    )
-  } catch (_e) {
-    // Bulk fetch failed — fall back to empty maps so the page still renders.
-    // The UI shows '—' everywhere the count/age is missing.
+  } catch (e) {
+    console.error('[observability] layer row counts failed:', e instanceof Error ? e.message : e)
   }
-  // Seed raw_events with the canonical bronze age regardless of whether the
-  // bulk fetch above succeeded — it never queries raw_events itself, so it
-  // has no bearing on this value.
+  try {
+    // F-L3: table and column names come from LAYER_TABLES, a static constant
+    // in this file. No user input reaches this SQL — do NOT make it dynamic.
+    const ageRows = await query<{ table_name: string; age: number | null }>(
+      tablesWithTs.map(t => `
+        SELECT '${t.table}'::VARCHAR AS table_name,
+               EXTRACT(EPOCH FROM (NOW() - MAX(${t.ts_column})))::DOUBLE AS age
+        FROM ${t.table}
+      `).join(' UNION ALL ')
+    )
+    for (const r of ageRows) agesByTable.set(r.table_name, r.age != null ? Number(r.age) : null)
+  } catch (e) {
+    console.error('[observability] layer ages failed:', e instanceof Error ? e.message : e)
+  }
   agesByTable.set('raw_events', canonicalBronzeAgeSeconds)
 
   const probeRows: Map<string, { rows: number | null; age: number | null }> = new Map()
@@ -1059,7 +979,7 @@ export async function getMedallionLayers(
     results.push({
       layer: layerName,
       role: ({ bronze: 'raw · append-only', silver: 'cleaned · conformed', gold: 'business · marts' } as const)[layerName],
-      materialization: ({ bronze: 'external table', silver: 'view', gold: 'table' } as const)[layerName],
+      materialization: ({ bronze: 'parquet lake', silver: 'dbt work DB', gold: 'read DB table' } as const)[layerName],
       status,
       tables,
       total_rows: totalRows,
@@ -1103,32 +1023,36 @@ async function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promis
   }
 }
 
-export async function getPipelineSnapshot(): Promise<PipelineSnapshot> {
-  const [overall, watcher, ingestion, hourly, dbt, dbtHistory, artifacts, errors, integrity, coverage] = await Promise.all([
-    safe('overall',        () => getOverallHealth(),          null),
-    safe('watcher',        () => getWatcherHealth(),          null),
-    safe('ingestion-all',  () => getIngestionStatsAll(),      null),
-    safe('hourly-24',      () => getHourlyIngestion(24),      [] as HourlyIngestion[]),
-    safe('dbt',            () => getDbtHealth(),              null),
-    safe('dbt-history',    () => getDbtRunHistory(6),         [] as DbtHistoryEntry[]),
-    safe('dbt-artifacts',  () => getDbtArtifacts(),           null),
-    safe('watcher-errors', () => getRecentWatcherErrors(50),  [] as WatcherError[]),
-    safe('integrity',      () => getNumberIntegrity(),        null),
-    safe('coverage',       () => getIngestCoverage(),         null),
-  ])
+// 5 s memo: every open /observability tab polls this, and the numbers only
+// change when the watcher flushes or publishes.
+const SNAPSHOT_TTL_MS = 5000
+let snapshotMemo: { at: number; value: Promise<PipelineSnapshot> } | null = null
 
-  // Merge bronze freshness from overall into watcher — avoids a duplicate
-  // MAX(ts) scan over raw_events (getWatcherHealth no longer runs its own).
-  const watcherMerged = watcher && overall ? {
-    ...watcher,
-    bronze_latest_event: overall.bronze_latest_event,
-    bronze_age_seconds: overall.bronze_age_seconds,
-    bronze_status: overall.bronze_status,
-  } : watcher
+export function getPipelineSnapshot(): Promise<PipelineSnapshot> {
+  const now = Date.now()
+  if (snapshotMemo && now - snapshotMemo.at < SNAPSHOT_TTL_MS) return snapshotMemo.value
+  const value = buildPipelineSnapshot()
+  snapshotMemo = { at: now, value }
+  value.catch(() => { snapshotMemo = null })
+  return value
+}
+
+async function buildPipelineSnapshot(): Promise<PipelineSnapshot> {
+  const status = await readWatcherStatus()
+  const [overall, ingestion, hourly, dbt, dbtHistory, artifacts, errors, integrity, coverage] = await Promise.all([
+    safe('overall',        () => getOverallHealth(status),     null),
+    safe('ingestion-all',  () => getIngestionStatsAll(status), null),
+    safe('hourly-24',      () => getHourlyIngestion(24),       [] as HourlyIngestion[]),
+    safe('dbt',            () => getDbtHealth(),               null),
+    safe('dbt-history',    () => getDbtRunHistory(6),          [] as DbtHistoryEntry[]),
+    safe('dbt-artifacts',  () => getDbtArtifacts(),            null),
+    safe('watcher-errors', () => getRecentWatcherErrors(50),   [] as WatcherError[]),
+    safe('integrity',      () => getNumberIntegrity(),         null),
+    safe('coverage',       () => getIngestCoverage(),          null),
+  ])
+  const watcher = getWatcherHealth(status, overall, ingestion)
 
   // Medallion layers needs dbt.per_test for test attribution — runs after dbt.
-  // Also pass the canonical bronze age so the layer card, the Flow strip, and
-  // the At-a-glance card all agree (see getMedallionLayers doc comment).
   const layers = await safe(
     'medallion',
     () => getMedallionLayers(dbt?.per_test ?? [], overall?.bronze_age_seconds ?? null),
@@ -1137,7 +1061,7 @@ export async function getPipelineSnapshot(): Promise<PipelineSnapshot> {
 
   return {
     overall,
-    watcher: watcherMerged,
+    watcher,
     ingestion_1h: ingestion?.s1h ?? null,
     ingestion_1d: ingestion?.s1d ?? null,
     ingestion_7d: ingestion?.s7d ?? null,
@@ -1151,4 +1075,3 @@ export async function getPipelineSnapshot(): Promise<PipelineSnapshot> {
     coverage,
   }
 }
-

@@ -2,19 +2,19 @@ import json
 import logging
 import os
 
-from aura_watcher.redact import hash_message_content, redact_obj
+from aura_watcher.redact import hash_enabled, hash_message_content, redact_enabled, redact_obj, redact_title
 
-from .base import Adapter
+from .base import Adapter, session_id_from_path
 
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Redaction toggle
-# Set AURA_REDACT_PAYLOAD=false (or 0 / no) to pass raw payloads through
+# Set AURA_REDACT_PAYLOAD=false (or 0 / no / off) to pass raw payloads through
 # unchanged.  Useful when you trust your environment and want to preserve
 # legitimate base64 content (screenshots, attachments).  Default is true.
 # ---------------------------------------------------------------------------
-_REDACT_ENABLED = os.getenv("AURA_REDACT_PAYLOAD", "true").lower() in ("1", "true", "yes")
+_REDACT_ENABLED = redact_enabled()
 
 # ---------------------------------------------------------------------------
 # T8: content-hash toggle (default OFF).
@@ -29,7 +29,7 @@ _REDACT_ENABLED = os.getenv("AURA_REDACT_PAYLOAD", "true").lower() in ("1", "tru
 # ingested while it is on, since the underlying text is gone, not just masked
 # in the UI.
 # ---------------------------------------------------------------------------
-_HASH_CONTENT_ENABLED = os.getenv("AURA_HASH_CONTENT", "false").lower() in ("1", "true")
+_HASH_CONTENT_ENABLED = hash_enabled()
 
 # ---------------------------------------------------------------------------
 # Model context windows
@@ -114,7 +114,7 @@ class ClaudeAdapter(Adapter):
                 # a workflow journal file) and flooding synchronous Docker log
                 # I/O during backfill. DEBUG keeps the drop observable without
                 # the flood; still classified as dropped_unknown in the
-                # per-file counters (ingest_file_stats) for real visibility.
+                # per-file counters (state file_stats) for real visibility.
                 _log.debug(
                     "[adapter] dropping line from %s: missing required field(s) %s",
                     file_path,
@@ -127,42 +127,18 @@ class ClaudeAdapter(Adapter):
         usage = message.get("usage", {}) or {}
         model = message.get("model") or raw.get("model")
 
-        # Extract session_id from sessionId or fallback to file_path
-        session_id = raw.get("sessionId")
-        if not session_id:
-            parts = file_path.split(os.sep)
-            session_id = parts[-2] if len(parts) >= 2 else "unknown"
+        session_id = raw.get("sessionId") or session_id_from_path(file_path)
 
-        project_id = "unknown"
-        parts = file_path.replace('/', os.sep).split(os.sep)
-        try:
-            if "projects" in parts:
-                idx = parts.index("projects")
-                if len(parts) > idx + 1:
-                    encoded_proj = parts[idx + 1]
-                    # ASSUMPTION: only the first path segment after "projects/" is
-                    # decoded.  Claude Code encodes the project path as a single
-                    # directory name using "--" as a dash literal and "-" as a
-                    # separator.  Multi-segment paths (e.g. "a/b/c") are collapsed
-                    # into one directory entry; this decoder recovers only that one
-                    # entry and is therefore lossy for nested paths.
-                    decoded_proj = encoded_proj.replace("--", "\x00").replace("-", "/").replace("\x00", "-")
-                    project_id = decoded_proj
-                    # Warn once when the decoded value doesn't look like a path
-                    # (no slash and longer than a bare directory name hint that
-                    # the encoding convention may have changed).
-                    if "/" not in decoded_proj and len(decoded_proj) > 80:
-                        _log.warning(
-                            "[adapter] project_id decode looks unexpected (no '/' in '%s'); "
-                            "encoding convention may have changed for file %s",
-                            decoded_proj[:40],
-                            file_path,
-                        )
-            elif len(parts) >= 2:
-                # Fallback: not inside a "projects" folder; use parent directory.
-                project_id = parts[-2]
-        except Exception:
-            pass
+        # project_id is written as before but dbt ignores it (spec B2). The
+        # logical path is claude/<encoded project dir>/...; Claude Code encodes
+        # the project path in that one directory name ("-" = separator, "--" =
+        # literal dash), so decoding is lossy. Other roots fall back to the
+        # parent directory.
+        parts = file_path.split("/")
+        if parts[0] == "claude" and len(parts) >= 3:
+            project_id = parts[1].replace("--", "\x00").replace("-", "/").replace("\x00", "-")
+        else:
+            project_id = parts[-2] if len(parts) >= 2 else "unknown"
 
         context_pct = None
         if usage and model:
@@ -205,7 +181,7 @@ class ClaudeAdapter(Adapter):
             "parent_uuid": raw.get("parentUuid"),
             "request_id": raw.get("requestId"),
             "message_id": message.get("id"),
-            "is_sidechain": raw.get("isSidechain", False),
+            "is_sidechain": bool(raw.get("isSidechain")),
             "stop_reason": message.get("stop_reason"),
             "cwd": raw.get("cwd"),
             "git_branch": raw.get("gitBranch"),
@@ -248,18 +224,13 @@ class ClaudeAdapter(Adapter):
         if event_type not in ("ai-title", "permission-mode", "mode"):
             return None
 
-        # Resolve session_id. Real JSONL layout is <project_dir>/<session_id>.jsonl,
-        # so the fallback is the filename stem (matching on_created and
-        # backfill_session_attributes), NOT the parent dir.
-        session_id = raw.get("sessionId")
-        if not session_id:
-            session_id = os.path.splitext(os.path.basename(file_path))[0] or "unknown"
+        session_id = raw.get("sessionId") or session_id_from_path(file_path)
 
         if event_type == "ai-title":
             title = raw.get("aiTitle")
             if not isinstance(title, str) or not title:
                 return None
-            return {"session_id": session_id, "title": title}
+            return {"session_id": session_id, "title": redact_title(title)}
 
         if event_type == "permission-mode":
             perm = raw.get("permissionMode")
@@ -302,10 +273,7 @@ class ClaudeAdapter(Adapter):
             return []
         att_type = attachment.get("type")
 
-        session_id = raw.get("sessionId")
-        if not session_id:
-            parts = file_path.split(os.sep)
-            session_id = parts[-2] if len(parts) >= 2 else "unknown"
+        session_id = raw.get("sessionId") or session_id_from_path(file_path)
 
         names: list[str] = []
         is_initial = False
@@ -384,10 +352,7 @@ class ClaudeAdapter(Adapter):
         if not names:
             return []
 
-        session_id = raw.get("sessionId")
-        if not session_id:
-            parts = file_path.split(os.sep)
-            session_id = parts[-2] if len(parts) >= 2 else "unknown"
+        session_id = raw.get("sessionId") or session_id_from_path(file_path)
 
         seen: set = set()
         out: list[dict] = []

@@ -1,6 +1,6 @@
 # AURA — Agent Usage & Resource Analytics
 
-A local-first, Dockerized analytics platform for AI coding agent sessions (Claude Code today; Gemini, Codex, and friends on the roadmap). Aura watches your agent transcripts, transforms them through dbt, and surfaces cost, productivity, behavioural and pipeline-health signals through a Next.js dashboard. All data stays on your machine.
+A local-first analytics platform (Docker or native) for AI coding agent sessions (Claude Code today; Gemini, Codex, and friends on the roadmap). Aura watches your agent transcripts, transforms them through dbt, and surfaces cost, productivity, behavioural and pipeline-health signals through a Next.js dashboard. All data stays on your machine.
 
 > *Spend, with receipts.*
 
@@ -29,55 +29,45 @@ Designed for individuals who want introspection on their own AI usage, and for t
 
 ## Architecture
 
-Two truly independent stages: JSON → bronze (the watcher's job) and bronze → marts (dbt's job). dbt runs on a fixed interval (`AURA_DBT_RUN_INTERVAL_MINUTES`; the shipped compose file uses 25 min) against whatever lives in `raw_events` at that moment — it does not wait for backfill to finish, and an in-progress backfill does not block dbt cycles. A periodic `sweep_worker` re-scans for any JSONL bytes the live observer missed, so ingestion self-heals even if the filesystem observer stalls.
+Three stages that never block each other: JSONL → Parquet lake (the watcher, every 30 s), lake → marts (dbt, every `AURA_DBT_RUN_INTERVAL_MINUTES`, default 5), marts → read DB (publish, right after each successful `dbt run`). The dashboard only ever opens a finished read DB.
 
 ```
-┌────────────────────┐    ┌─────────────────────────┐    ┌──────────────────────┐
-│  ~/.claude/        │───▶│  watcher (Py)           │───▶│  /data/aura.duckdb   │
-│  projects/*.jsonl  │    │  PollingObserver +      │    │  ── WRITE DB ──      │
-│                    │    │  adapter +              │    │  raw_events          │
-│                    │    │  ingest_checkpoints +   │    │  session_meta        │
-│                    │    │  log_error()            │    │  watcher_errors      │
-└────────────────────┘    └─────────────────────────┘    │  ingest_checkpoints  │
-                                     │                   └──────────┬───────────┘
-                                     │ dbt subprocess               │
-                                     │ (freshness → seed →          │ snapshot_worker
-                                     │  run → test,                 │ (atomic os.replace
-                                     │  every 25 min)               │  every 10 min)
-                                     ▼                              ▼
-              ┌───────────────────────────┐         ┌──────────────────────────┐
-              │  dbt models (in place)    │         │  /data/read/aura.duckdb  │
-              │  ── BRONZE: raw_events    │         │  ── READ DB (snapshot) ──│
-              │  ── STAGING: stg_*        │         └────────────┬─────────────┘
-              │  ── INTERMEDIATE:         │                      │
-              │     int_turns,            │                      │ stat()-aware
-              │     int_entity_spend, …   │                      │ DuckDB connection
-              │  ── MARTS: dim_sessions,  │                      │ (reopens on new
-              │     fact_model_calls,     │                      │  inode)
-              │     fact_turns,           │                      ▼
-              │     fact_prompts,         │         ┌──────────────────────────┐
-              │     fact_daily_spend,     │         │  Next.js 14 (App Router) │
-              │     fact_spend_pace,      │         │  localhost:3000          │
-              │     dim_apps, dim_people, │         │                          │
-              │     dim_agents, …         │         │  /                       │
-              └───────────┬───────────────┘         │  /apps, /agents, /people │
-                          │                         │  /sessions, /errors      │
-                          │ writes                  │  /observability ←────────┼─┐
-                          │ target/                 └──────────────────────────┘ │
-                          ▼                                                      │
-              ┌───────────────────────────┐                                      │
-              │  /data/artifacts/         │                                      │
-              │  run_results.json         │──────────────────────────────────────┘
-              │  sources.json             │  (read by /api/observability)
-              │  manifest.json            │
-              └───────────────────────────┘
+┌────────────────────┐   ┌──────────────────────────┐   ┌────────────────────────────────┐
+│  ~/.claude/        │──▶│  watcher (Python)        │──▶│  data/lake/  (Parquet, bronze) │
+│  projects/*.jsonl  │   │  observer + sweep,       │   │  raw_events/date=…/part-*.parq │
+│                    │   │  adapters, redaction,    │   │  raw_session_skills, …mcps,    │
+│                    │   │  flush every 30 s,       │   │  session_meta, watcher_errors  │
+│                    │   │  compaction              │   └───────────────┬────────────────┘
+└────────────────────┘   │  checkpoints → SQLite    │                   │ read_parquet,
+                         └────────────┬─────────────┘                   │ ingested_at <= cutoff
+                                      │ dbt thread: cutoff → seed → run │
+                                      ▼                                 ▼
+                         ┌──────────────────────────────────────────────────────┐
+                         │  data/work/aura.duckdb   (dbt work DB)               │
+                         │  stg_* → int_* → dim_* / fact_*                      │
+                         └────────────┬─────────────────────────────────────────┘
+                                      │ publish: CREATE TABLE … AS SELECT
+                                      │ (dashboard tables only, text capped)
+                                      ▼
+                         ┌──────────────────────────────────────────────────────┐
+                         │  data/read/v<stamp>/aura.duckdb  + data/read/CURRENT │
+                         └────────────┬─────────────────────────────────────────┘
+                                      │ read-only, reopened when CURRENT changes
+                                      ▼
+                         ┌──────────────────────────────────────────────────────┐
+                         │  Next.js 14 (App Router) — http://127.0.0.1:3000     │
+                         │  also reads data/artifacts/ (dbt results, watcher    │
+                         │  status, number checks) for /observability           │
+                         └──────────────────────────────────────────────────────┘
 ```
 
 | Surface | Language | Purpose |
 |---|---|---|
-| `watcher/` | Python 3.11 + `watchdog.PollingObserver` + DuckDB | Tail JSONL logs (works on Windows bind-mounts via polling), redact secrets, write `raw_events`, persist `watcher_errors` on every caught exception |
-| `dbt/` | SQL + dbt-duckdb 1.11 | Staging → intermediate → marts. Includes `sources.yml` with freshness rules for `raw_events` (warn 5 min / error 30 min) and the `int_entity_spend` model that pre-joins event-timestamped cost to (app, agent, person) keys |
-| `frontend/` | Next.js 14 (App Router) + TypeScript + DuckDB node-api | Dashboard, per-entity profile pages, and live-polling Observability tab. Connection layer checks the read DB's inode on every query so it never serves stale data after a snapshot |
+| `watcher/` | Python 3.12, `watchdog`, DuckDB (for Parquet I/O) | Tail JSONL, redact secrets, flush rows to the Parquet lake, keep byte-offset checkpoints in SQLite, compact small files, run the dbt cycle and publish the read DB |
+| `dbt/` | SQL, dbt-core 1.11 + dbt-duckdb 1.10 | Lake sources → staging → intermediate → marts in the work DB. Source freshness on `raw_events.ingested_at` (warn 5 min / error 30 min) |
+| `frontend/` | Next.js 14 (App Router), TypeScript, `@duckdb/node-api` | Dashboard, per-entity pages and the live Observability tab, reading the published read DB |
+
+See [docs/screens/HOW-IT-WORKS.md](docs/screens/HOW-IT-WORKS.md) for the details: flush and checkpoint order, compaction, the dbt cutoff, and the publish steps.
 
 ---
 
@@ -103,10 +93,12 @@ Two truly independent stages: JSON → bronze (the watcher's job) and bronze →
 
 ```
 AURA/
-├── watcher/        Python package — JSONL adapter, DuckDB writer, snapshot + dbt workers
+├── watcher/        Python package — JSONL adapters, Parquet lake writer, checkpoints, compaction, dbt cycle + publish
 ├── dbt/            dbt project — staging → intermediate → marts, model_pricing seed
 ├── frontend/       Next.js 14 app — dashboard, per-entity pages, Observability tab
-├── docs/           Architecture notes, screenshots, code-review audit
+├── docs/           Architecture deep-dive, per-screen docs, number map, blog
+├── scripts/verify/ Number checks run after every dbt cycle (run_all.mjs)
+├── docker-compose.yml, start.ps1, start.sh   Run modes
 └── .claude/        Agent definitions (runner, data-engineer, dbt-expert, frontend-engineer)
 ```
 
@@ -116,12 +108,13 @@ AURA/
 
 ## Tech stack
 
-- **Ingestion:** Python 3.11, `watchdog.PollingObserver` (works on Windows / Docker bind-mounts where inotify silently drops events), `duckdb` Python client
-- **Storage:** DuckDB (single write DB at `/data/aura.duckdb`; read replica at `/data/read/aura.duckdb` produced by atomic snapshot)
-- **Transform:** dbt 1.11 with `dbt-duckdb` adapter, staging / intermediate / marts pattern. `dbt source freshness` declared for `raw_events`; `target/run_results.json` and `target/sources.json` copied to `/data/artifacts/` after every cycle for frontend consumption
+- **Ingestion:** Python 3.12, `watchdog` (polling observer in Docker, OS observer natively), DuckDB's Python client for writing Parquet
+- **Storage:** an append-only Parquet lake (`data/lake/`, Hive `date=` partitions, zstd) plus a SQLite file for checkpoints (`data/state/aura_state.sqlite`)
+- **Transform:** dbt 1.11 with `dbt-duckdb`, building into a DuckDB work DB (`data/work/aura.duckdb`). `run_results.json`, `manifest.json` and `sources.json` are copied to `data/artifacts/` after every cycle
+- **Serving:** a small read DB per publish (`data/read/v<stamp>/aura.duckdb`), holding only the tables and columns the dashboard queries (`watcher/src/aura_watcher/read_tables.sql`)
 - **Pricing:** SCD-style `model_pricing` seed (per-tenant overrides supported)
-- **Frontend:** Next.js 14 App Router, TypeScript, server components reading DuckDB directly. Connection layer uses `fs.stat().ino` to detect when the snapshot worker replaces the read DB and transparently reopens, so the page never serves stale data after a snapshot.
-- **Container:** Docker Compose, two services (`watcher`, `frontend`) sharing the `./data` volume. Frontend mounts it read-only.
+- **Frontend:** Next.js 14 App Router, TypeScript, server components reading DuckDB directly through `lib/db.ts`, which follows `data/read/CURRENT`
+- **Run modes:** Docker Compose (two services sharing `./data`) or native (`start.ps1` / `start.sh`)
 
 ---
 
@@ -133,127 +126,101 @@ AURA/
 git clone https://github.com/<you>/AURA.git
 cd AURA
 cp .env.example .env   # set your identity vars — defaults work out of the box
-docker-compose up --build
+docker compose up --build
 ```
 
-Then open `http://localhost:3000`.
+Then open `http://127.0.0.1:3000` (the port is bound to localhost only).
 
-> **Data staleness expectations:** the dashboard is **not real-time**. The
-> read DB is refreshed every `AURA_SNAPSHOT_INTERVAL` (600 s in the shipped
-> compose file) and dbt rolls up bronze → marts every
-> `AURA_DBT_RUN_INTERVAL_MINUTES` (25 min) — together the numbers you see can
-> lag reality by up to ~35 min. `/observability` shows the exact age of every
-> layer if you need to know precisely how fresh a given number is.
+On first boot the watcher:
 
-On first boot the `watcher` container:
+1. Refuses to start if a native watcher wrote its status in the last 120 s (see [Run modes](#run-modes)).
+2. Deletes leftover `*.tmp` lake files and DuckDB spill files from an unclean shutdown, and creates an empty schema file per lake table.
+3. Starts the dbt thread: the first cycle runs immediately on whatever is in the lake, then every 5 minutes. It does not wait for the backfill.
+4. Sweeps every `.jsonl` under `AURA_LOGS_DIR`, oldest first. This is the backfill: about 28 minutes for 6 GB of transcripts. Byte offsets are checkpointed after each flush, so a restart resumes where it stopped.
+5. Keeps watching for new bytes (observer + periodic sweep).
 
-1. Purges any orphaned DuckDB spill files left in `{AURA_DB_PATH}.tmp` by a previous unclean shutdown (leftover spill files poison DuckDB's temp-size accounting and cause spurious OOMs on the heaviest models).
-2. Starts the `snapshot_worker`, `dbt_worker`, and `sweep_worker` threads **immediately** (they run independently of each other and of the backfill).
-3. Backfills every existing `.jsonl` file under `AURA_LOGS_DIR`, **oldest first**, so the ingestion-lag metric on `/observability` counts down truthfully as the catch-up progresses. Backfill is idempotent: byte offsets are tracked in `ingest_checkpoints`, so re-runs never double-write.
-4. Hands off to the `PollingObserver`, which scans the logs directory every 10 s and processes any new bytes appended to JSONL files. Polling (not inotify) is used so the watcher works on Windows / Docker bind-mounts where filesystem events are unreliable. The `sweep_worker` re-scans on its own interval and ingests anything the observer missed — a stalled observer can no longer freeze ingestion silently.
-
-While backfill is running, the `dbt_worker` fires its first cycle in parallel — it transforms whatever already exists in `raw_events` rather than waiting. The `dbt source freshness` step is skipped until the initial backfill completes (before that point staleness is expected, not a signal); on later cycles freshness runs at the **top** of the cycle, right after the window in which ingestion was free to catch up, so it measures ingestion health rather than dbt-cycle duration. Subsequent cycles run every `AURA_DBT_RUN_INTERVAL_MINUTES` minutes. The frontend reads from a snapshot of the DuckDB file (refreshed every `AURA_SNAPSHOT_INTERVAL` seconds when no dbt cycle is in flight) and the connection layer transparently reopens whenever the underlying file is replaced.
-
-Environment variables (all have sensible defaults):
-
-| Variable | Default | What it does |
-|---|---|---|
-| `AURA_LOGS_DIR` | `/logs/claude` | Where to look for `.jsonl` files inside the watcher container |
-| `AURA_DB_PATH` | `/data/aura.duckdb` | Write-side DuckDB file |
-| `AURA_READ_DB_PATH` | `/data/read/aura.duckdb` | Read-side snapshot (consumed by frontend). The basename must match `AURA_DB_PATH` so dbt-compiled views resolve against the same catalog name |
-| `AURA_SNAPSHOT_INTERVAL` | `2` (code) / `600` in compose | Seconds between snapshot refreshes (snapshot worker waits while a dbt cycle holds the DB). The shipped compose uses 600 s — the dashboard doesn't need real-time freshness, and frequent snapshots of a multi-GB DB are expensive |
-| `AURA_DBT_RUN_INTERVAL_MINUTES` | `5` (code) / `25` in compose | How often the dbt cycle (`source freshness` → `seed` → `run` → `test`) runs. The compose value leaves room between cycles for ingestion to catch up — the cycle holds the write-DB lock for its full duration |
-| `AURA_SWEEP_INTERVAL_SECONDS` | `600` | How often the `sweep_worker` re-scans for JSONL bytes the live observer missed (`0` or negative disables). Safety net that makes ingestion self-healing; logs an `ingest_liveness` watcher error when the observer is persistently lagging |
-| `AURA_DBT_MEMORY_LIMIT` | `4GB` | DuckDB memory ceiling for the dbt subprocess (see `dbt/profiles.yml`). A **soft** cap — DuckDB spills heavy joins/aggregations to disk rather than OOM-ing. Keep it ~1 GB below the container `mem_limit` so DuckDB spills before the container is OOM-killed |
-| `AURA_DBT_THREADS` | `4` | How many dbt models build concurrently. Lower it if a cycle exhausts memory on a small box; raise it to parallelize on a bigger one |
-| `CLAUDE_LOGS_DIR` | `~/.claude/projects` | Host-side path to mount into the watcher |
-| `AURA_QUERY_TIMEOUT_MS` | `15000` | Maximum milliseconds a single DuckDB query may run before being aborted (frontend) |
-| `AURA_REDACT_PAYLOAD` | `true` | Set to `false` to disable secret/base64 redaction in payload (raw JSONL passes through unchanged) |
-| `AURA_HASH_CONTENT` | `` (off) | Set to `1` or `true` to hash conversational text (`message.content`) to `sha256:<hex>` at ingest time — see [Privacy: column masking](#privacy-column-masking-before-anything-leaves-the-machine). Applies to new ingests only; disables session replay for events ingested while on |
-| `AURA_MODEL_WINDOWS_JSON` | `{}` | Optional JSON object to override model context window sizes, e.g. `{"new-model-id":1000000}` |
-| `AURA_ARTIFACTS_DIR` | `/data/artifacts` | Where the watcher copies dbt's `run_results.json` / `sources.json` / `manifest.json` after each cycle; the frontend reads these from the same path |
+**Freshness:** a new event reaches the dashboard after poll (30 s) + flush (30 s) + the wait for the next dbt cycle (≤ 5 min) + the cycle and publish time. The target is a median under 5 minutes; `/observability` shows the age of every layer, and `data/artifacts/freshness.ndjson` records the measured lag per publish.
 
 ---
 
-## Running without Docker (local dev)
+## Run modes
 
-You can run the three surfaces natively — no containers. This is the fastest
-inner loop for watcher/dbt/frontend work.
+| | Docker Compose | Native, Windows | Native, Linux/macOS |
+|---|---|---|---|
+| Start | `docker compose up --build` | `.\start.ps1` (`-Rebuild` forces a frontend build and `pip install`) | `./start.sh` (`--rebuild`) |
+| Stop | `docker compose down` | Ctrl+C or `.\start.ps1 -Stop` | Ctrl+C or `./start.sh stop` |
+| Observer | polling, every 30 s; sweep every 600 s | OS observer; sweep every 60 s | OS observer; sweep every 60 s |
+| Data dir | `./data` mounted at `/data` | `<repo>/data` | `<repo>/data` |
+| Logs | `docker compose logs` | `data/logs/watcher.log`, `frontend.log` (stderr in `*.err.log`) | `data/logs/watcher.log`, `frontend.log` |
+| Status | tested | tested | **untested** (written on Windows, checked with `bash -n` only); compose is the supported Linux/macOS path |
 
-**Requirements:** Python **3.12** (3.13/3.14 are not yet supported by the pinned
-`dbt-duckdb`/`duckdb` wheels), Node 18+, and an existing `~/.claude/projects/`
-with at least one session.
+The native scripts need **Python 3.12** (the pinned dbt-duckdb/duckdb wheels) and **Node ≥ 20**. They create `.venv` at the repo root (watcher and dbt in one venv), build the frontend's standalone server, set the env vars below and start the watcher and the frontend. They do not read `.env`: set `AURA_DEFAULT_PERSON_*` in your shell if you want them (natively `getpass.getuser()` is already you).
 
-### 0. Point the stack at local paths
+**Never run both modes at once.** Both write the same lake, state DB and work DB. The watcher enforces it: if `data/artifacts/watcher_status.json` was written less than 120 s ago by the other mode, it prints which mode and host is running and exits with code 2. After a switch, the first dbt cycle always runs. File paths are stored as logical paths (`claude/<project>/<session>.jsonl`), so a switch does not re-read every file.
 
-Unlike Docker, there's no `/data` mount — pick a working directory and export
-the paths the watcher, dbt, and frontend all read. Do this in **every** shell
-you open (or add to your shell profile).
+**Stopping:** `start.ps1` stops with `taskkill /T /F` (a hard kill, so no orphan `dbt.exe` keeps the work DB locked). Up to 30 s of buffered rows are not flushed; they are re-read on the next start (at-least-once, duplicates removed in dbt, no loss). `start.sh` and `docker compose down` send SIGTERM, and the watcher flushes before it exits.
 
-```bash
-# macOS / Linux (bash/zsh)
-export AURA_LOGS_DIR="$HOME/.claude/projects"      # your Claude Code transcripts
-export AURA_DB_PATH="$HOME/aura/aura.duckdb"        # write DB (watcher + dbt)
-export AURA_READ_DB_PATH="$HOME/aura/read/aura.duckdb"  # read snapshot (frontend)
-mkdir -p "$HOME/aura/read"
-```
+### First-time migration from the old single-DuckDB layout
 
-```powershell
-# Windows (PowerShell)
-$env:AURA_LOGS_DIR     = "$HOME\.claude\projects"
-$env:AURA_DB_PATH      = "$HOME\aura\aura.duckdb"
-$env:AURA_READ_DB_PATH = "$HOME\aura\read\aura.duckdb"
-New-Item -ItemType Directory -Force "$HOME\aura\read" | Out-Null
-```
-
-The read DB's **basename must match** the write DB (`aura.duckdb`) so
-dbt-compiled views resolve against the same catalog — keep them in sibling
-directories as above.
-
-### 1. Watcher
+If you ran Aura before the lake layout, `data/aura.duckdb` holds history whose source JSONL files Claude Code has already deleted (30-day cleanup). Copy it into the lake once, with Docker stopped:
 
 ```bash
-cd watcher
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
-pip install -e .
-python -m aura_watcher.main
+.venv/Scripts/python -m aura_watcher.export_legacy --src data/aura.duckdb --data-dir data   # Linux/macOS: .venv/bin/python
+.venv/Scripts/python -m aura_watcher.main --once --with-dbt
 ```
 
-On start it backfills every `.jsonl` under `AURA_LOGS_DIR` (newest first), then
-tails for changes, snapshots the read DB, and — if `dbt` is on PATH — runs the
-dbt cycle every `AURA_DBT_RUN_INTERVAL_MINUTES`. Leave it running.
+The export opens the old file read-only, redacts payloads with the current rules, verifies row counts and uuid sets in a staging dir before it touches the lake, and writes `data/artifacts/export_legacy.json` (counts, `redacted`, `invalid_json`). Check it before you continue. The `--once` run then backfills the files still on disk and does the first full dbt build. Keep `data/aura.duckdb` as a backup; the new code never reads it.
 
-> The watcher also invokes `dbt` and the Node number-verify script as
-> subprocesses. If you'd rather drive dbt by hand (below), that's fine — the
-> embedded cycle is best-effort and logs, never crashes, when a tool is missing.
+### Environment variables
 
-### 2. dbt (in a second shell, after the watcher has written some rows)
+Paths default to locations under `AURA_DATA_DIR`; set them only to move one piece. Use absolute, forward-slash paths.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `AURA_DATA_DIR` | `/data` (scripts: `<repo>/data`) | Root of the lake, state, work, read, inbox, artifacts and logs dirs |
+| `AURA_RUN_MODE` | `compose` / `native`; unset = `unknown` | Written to the status file; the mode guard compares it |
+| `AURA_LAKE_DIR` | `$AURA_DATA_DIR/lake` | Parquet lake (watcher writes, dbt reads) |
+| `AURA_STATE_DB` | `$AURA_DATA_DIR/state/aura_state.sqlite` | Checkpoints, file stats, meta (watcher only) |
+| `AURA_DB_PATH` | `$AURA_DATA_DIR/work/aura.duckdb` | dbt work DB. The basename must stay `aura.duckdb` (dbt bakes the catalog name into views) |
+| `AURA_READ_DIR` | `$AURA_DATA_DIR/read` | Published read DBs and the `CURRENT` pointer (frontend, `run_all.mjs`) |
+| `AURA_ARTIFACTS_DIR` | `$AURA_DATA_DIR/artifacts` | dbt artifacts, `watcher_status.json`, `publish.ndjson`, `freshness.ndjson`, `number_verify.json` |
+| `AURA_VERDICTS_INBOX` | `$AURA_DATA_DIR/inbox/verdicts-inbox.jsonl` | Frontend appends verdicts, dbt reads them |
+| `AURA_LOGS_DIR` | `/logs/claude` (scripts: `~/.claude/projects`) | Where the watcher looks for `.jsonl` files |
+| `CLAUDE_LOGS_DIR` | `~/.claude/projects` | Compose only: host path mounted at `/logs/claude` |
+| `AURA_EXTRA_TRACE_DIRS` | empty | Comma-separated extra dirs with Agent SDK traces |
+| `AURA_OBSERVER` | `polling` (scripts: `native`) | File observer type |
+| `AURA_POLL_SECONDS` | `30` | Polling observer interval |
+| `AURA_SWEEP_INTERVAL_SECONDS` | `600` (scripts: `60`) | Full re-scan for bytes the observer missed |
+| `AURA_FLUSH_SECONDS` | `30` | Lake flush interval |
+| `AURA_FLUSH_MAX_ROWS` | `20000` | Flush early when the buffer reaches this many rows |
+| `AURA_COMPACT_MIN_FILES` | `50` | Compact today's partition once it has this many files (past days: ≥ 2) |
+| `AURA_COVERAGE_INTERVAL` | `300` | Seconds between ingest coverage reports |
+| `AURA_DBT_RUN_INTERVAL_MINUTES` | `5` | dbt cycle interval, start to start |
+| `AURA_DBT_TIMEOUT_SECONDS` | `1800` | Timeout per dbt command |
+| `AURA_DBT_DIR` | `/app/dbt` (scripts: `<repo>/dbt`) | dbt project dir |
+| `AURA_VERIFY_SCRIPT` | `/app/scripts/verify/run_all.mjs` | Number checks run after each cycle (skipped without `node`) |
+| `AURA_DBT_THREADS` / `AURA_DBT_DUCKDB_THREADS` | `2` / `2` in compose | Models built concurrently / DuckDB threads per query |
+| `AURA_DBT_MEMORY_LIMIT` | `4000MB` in compose | DuckDB memory ceiling for dbt. Keep it ~1 GB below the container `mem_limit` so DuckDB spills instead of being OOM-killed |
+| `AURA_REDACT_PAYLOAD` | `true` | Set to `false` to store payloads without secret redaction |
+| `AURA_HASH_CONTENT` | empty (off) | `1`/`true` hashes conversational text at ingest — see [Privacy](#privacy-column-masking-before-anything-leaves-the-machine) |
+| `AURA_MODEL_WINDOWS_JSON` | `{}` | Override model context window sizes, e.g. `{"new-model-id":1000000}` |
+| `AURA_DEFAULT_PERSON_ID` / `AURA_DEFAULT_PERSON_NAME` | `local` / `Local User` in compose | Who the sessions belong to (the container user is `root`) |
+| `AURA_QUERY_TIMEOUT_MS` | `15000` | Frontend: max time for one DuckDB query |
+| `AURA_DUCKDB_THREADS` / `AURA_DUCKDB_MEMORY_LIMIT` | `4` / `1GB` | Frontend DuckDB threads and memory (compose `mem_limit` is 1536m) |
+
+Removed: `AURA_READ_DB_PATH`, `AURA_SNAPSHOT_INTERVAL`, `AURA_BACKFILL_BATCH_SIZE`, `AURA_BACKFILL_BATCH_SECONDS`.
+
+### Developing one surface by hand
+
+Run dbt against the current lake from `dbt/` in the `.venv`, with absolute paths and an existing inbox file:
 
 ```bash
-cd dbt
-pip install dbt-duckdb          # once, ideally in its own 3.12 venv
-dbt seed  --profiles-dir .
-dbt run   --profiles-dir .
-dbt test  --profiles-dir .      # optional; failures don't block models
+export AURA_DB_PATH="$PWD/../data/work/aura.duckdb" AURA_LAKE_DIR="$PWD/../data/lake" \
+       AURA_VERDICTS_INBOX="$PWD/../data/inbox/verdicts-inbox.jsonl" TZ=UTC
+dbt run --profiles-dir . --no-partial-parse
 ```
 
-`dbt/profiles.yml` already reads `AURA_DB_PATH` from the environment, so no
-profile editing is needed — just keep the same env vars exported.
-
-### 3. Frontend (a third shell)
-
-```bash
-cd frontend
-npm install
-npm run dev     # http://localhost:3000
-```
-
-The frontend reads **only** `AURA_READ_DB_PATH` (the snapshot the watcher
-produces), checking the file's inode on every query so it transparently
-reopens after each snapshot.
-
-All other `AURA_*` environment variables from the Docker table above apply
-identically here.
+Stop the watcher first: only one process may open the work DB for writing. For the frontend, `cd frontend && npm run dev` with `AURA_DATA_DIR` pointing at a data dir that has a published read DB.
 
 ---
 
@@ -346,80 +313,48 @@ errors. Polls every 10 s via `/api/observability`.
 ## Notable behaviour
 
 - **Pricing is SCD-aware.** The `model_pricing` seed has `valid_from` / `valid_to` columns; cost calculation joins on the timestamp of the model call, so historical sessions stay correctly priced even when rates change.
-- **Cost is anchored to event timestamp, never session-start.** All cost aggregations across the dashboard derive from `fact_model_calls.calculated_cost` filtered by `CAST(ts AS DATE)`. Session-start (`dim_sessions.start_ts`) is used only for counting sessions and computing behavioural metrics — never for cost. A session that began yesterday but ran into today gets its yesterday's tokens counted on yesterday and its today's tokens counted on today.
-- **Cost reconciles across all pages.** `int_entity_spend` pre-aggregates `fact_model_calls` to `(date × app/agent/person)` grain. Every range-filtered cost on Dashboard, Apps, Agents, People, and their detail pages pulls from this single source — so the total cost on the dashboard equals the sum of app costs equals the sum of agent costs for the same date range. No drift, no double-counting cache tokens, no provider/start-ts mismatch.
+- **Cost is anchored to event timestamp, never session-start.** All cost aggregations derive from `fact_model_calls.calculated_cost` filtered by `CAST(ts AS DATE)`. Session-start (`dim_sessions.start_ts`) is used only for counting sessions and behavioural metrics. The formula behind every displayed number is in [docs/number-map.md](docs/number-map.md).
+- **Cost reconciles across all pages.** `int_entity_spend` pre-aggregates `fact_model_calls` to `(date × app/agent/person)` grain, and every range-filtered cost reads it. The dashboard total equals the sum of app, agent and person costs for the same range. A dbt test (`cost_reconciliation`) and `scripts/verify/run_all.mjs` check this after every cycle.
 - **Cache hit rate uses the right denominator.** `cache_read / (cache_read + cache_write_5m + cache_write_1h)` — not `cache_read / input_tokens`.
 - **Agents are tracked per app**, not just by name. `runner` in your Aura project and `runner` in another project show up as separate rows.
 - **Overkill detection.** `fact_prompts` scores each external prompt on a complexity tier (S/M/L/XL by char count, tool calls, files edited) and compares it to the model tier (Haiku/Sonnet/Pro/Opus). If you used Opus to fix a typo, the prompt gets flagged.
-- **Sidechain agent attribution.** When the main agent dispatches to a subagent via the `Task` tool, every event between dispatch and result is attributed to that subagent in `int_event_agent` and inherits into `dim_agents` / `fact_prompts`.
-- **Backfill is all-or-nothing on the bronze layer.** Both `process_file` (backfill / polling path) and `on_created` (new-file event path) block on `_snapshot_lock` if a dbt cycle is in flight, then write once the lock releases. Earlier versions short-circuited on a `dbt_running` flag in both handlers, which silently dropped any file whose entire processing happened to fall inside a dbt cycle — that bug is gone from both paths.
-- **The frontend never serves stale data after a snapshot.** The watcher's snapshot uses `os.replace()` (atomic rename, new inode). The frontend's `lib/db.ts` checks the file's inode on every `getInstance()` call and reopens the DuckDB connection if it has changed.
-- **Watcher failures are persisted.** Every `except` block in `main.py` calls `writer.log_error(source, file_path, exception)`, which writes a row to the `watcher_errors` table with full traceback. The Observability → Watcher page renders the most recent failures with expandable stack traces.
+- **Sidechain agent attribution.** Subagent transcripts carry their agent id in the file name; `int_event_agent` matches it to the Task/Agent dispatch, so subagent spend shows under the subagent in `dim_agents` and `fact_prompts`.
+- **Ingestion is at-least-once and never blocked.** The watcher writes Parquet files first and commits checkpoints second; dbt drops duplicates on `(tenant_id, uuid)`. No dbt cycle, compaction or dashboard query can make ingestion wait.
+- **The dashboard never sees a half-built DB.** Each publish goes to a new version directory and `CURRENT` is switched with an atomic replace; a failed publish leaves the old version live.
+- **Watcher failures are persisted.** Parse and write errors become `watcher_errors` rows in the lake (with traceback), and the Observability page lists them.
 
 ---
 
 ## Troubleshooting
 
-Operational issues diagnosed while running Aura against a real, growing transcript set. The tuning knobs referenced below all live as commented environment variables in `docker-compose.yml` — read the comments there for the full numeric history if you're changing them.
-
-- **Ingestion stalls / "ingestion halted" alarm.** Two independent causes, both are lock-contention on the single write DB:
-  - *Snapshot-interval starvation.* `take_snapshot` copies the **whole** DuckDB file while holding `_snapshot_lock`; on a multi-GB DB that copy takes minutes. If `AURA_SNAPSHOT_INTERVAL` is shorter than the copy duration, snapshots run effectively back-to-back and never release the lock for live ingestion. The shipped compose uses `600` (was `30`, which starved ingestion continuously).
-  - *dbt cycle lock contention.* A dbt cycle holds the same write-DB lock for its **full duration** (`source freshness` → `seed` → `run` → `test`), so ingestion and snapshots wait behind it. If `AURA_DBT_RUN_INTERVAL_MINUTES` is shorter than (or close to) how long a cycle actually takes, cycles run back-to-back and starve ingestion — this has been observed to leave `raw_events` **hours** stale. The interval must comfortably **exceed** cycle time; the shipped compose uses `25` min.
-- **Out of Memory during dbt.** `AURA_DBT_MEMORY_LIMIT` is a *soft* DuckDB pool ceiling — keep it roughly **1 GB below** the container's `mem_limit` so DuckDB spills heavy joins/aggregations to disk instead of the container OOM-killing the `dbt` process outright. If a model still OOMs at the current ceiling, lower `AURA_DBT_THREADS` (how many models build concurrently) and/or `AURA_DBT_DUCKDB_THREADS` (DuckDB's own per-query thread count — fewer parallel hash tables per query is DuckDB's documented OOM remedy) before raising the memory ceiling further. Two OOM signatures look different and mean different things:
-  1. `Out of Memory ... 16383.9 PiB used` — **not** a real pool exhaustion. This nonsensical number comes from orphaned spill files left in `{AURA_DB_PATH}.tmp` after an unclean shutdown, which poisons DuckDB's temp-size accounting on the next start. The watcher purges these at startup now, but if you see this figure after manually killing the container, delete `{AURA_DB_PATH}.tmp` yourself.
-  2. A genuine pool exhaustion reports a sane figure instead, e.g. `3.7 GiB/3.7 GiB used` — this means raise `AURA_DBT_MEMORY_LIMIT` (within the ~1 GB headroom rule above) or lower the thread knobs.
-- **`docker compose stop` hangs / container won't die.** The watcher spawns `dbt run` as a subprocess; without an init process as PID 1, a `dbt` child that dies mid-signal becomes an unreapable zombie and stop/restart wedges (symptom: "PID is zombie and can not be killed", requiring `docker rm -f`). `init: true` on the `watcher` service runs a tiny init that forwards signals and reaps children — this should not recur; if it does, confirm `init: true` is still present.
-- **No `source freshness` result on the first cycle after startup.** Expected — the watcher prints `Skipping source freshness — initial backfill not complete` instead of running the check, since staleness is meaningless before the backfill has caught up. From the second cycle onward, freshness runs at the top of the cycle (right after the window where ingestion caught up) and reflects real ingestion health — so a genuine `ERROR STALE` there means ingestion really is behind (check the sweep worker and `watcher_errors`).
+- **"another Aura watcher (… ) is running" and exit code 2.** The other run mode is up, or stopped less than 120 s ago. Stop it (`docker compose down`, `.\start.ps1 -Stop`, `./start.sh stop`) or wait.
+- **Dashboard says "read DB not published yet".** No dbt cycle has published since the data dir was created. Watch `/observability` or the watcher log; the first cycle starts at watcher startup.
+- **Numbers stop advancing.** Check the dbt status on `/observability`. A failed or timed-out cycle keeps the old read DB live; the error is in the watcher log and `data/artifacts/watcher_status.json`.
+- **Out of memory during dbt.** `AURA_DBT_MEMORY_LIMIT` is a soft DuckDB ceiling; keep it about 1 GB below the container `mem_limit`. If a model still fails, lower `AURA_DBT_THREADS` and/or `AURA_DBT_DUCKDB_THREADS` before raising the ceiling. Two signatures:
+  1. `Out of Memory ... 16383.9 PiB used` — not real exhaustion; orphaned spill files in `data/work/aura.duckdb.tmp/` from an unclean shutdown. The watcher purges them at startup; delete the dir yourself if you see this after a manual kill.
+  2. A sane figure such as `3.7 GiB/3.7 GiB used` — real exhaustion: raise the ceiling (within the headroom rule) or lower the thread knobs.
+- **`docker compose stop` hangs.** The watcher service needs `init: true` (it reaps the dbt child); confirm it is still in `docker-compose.yml`.
+- **Extra `data/read/v*` dirs on Windows.** A version the frontend still has open cannot be deleted; a later cycle removes it.
 
 ---
 
 ## Performance & materialization strategy
 
-Almost every dbt model in this repo is `table` (full rebuild on each cycle) or `view`. The exceptions are **`fact_prompts`, `stg_tool_results`, and `fact_tool_executions`, which are `incremental` (`delete+insert`)** — their full-history rebuilds (JSON extraction / UNNEST over every tool execution ever recorded) outgrew the DuckDB memory pool first. Because `raw_events.ts` is event-time and frozen at first insert, it is *not* a safe incremental cursor; all three cursor on `ingest_checkpoints.last_seen_at` instead — see the header comment in `dbt/models/marts/fact_prompts.sql` for the full rationale. For everything else, at the data scale this tool was designed for — one developer's transcripts — a full rebuild per cycle is well inside the dbt budget. Switching more models to incremental would add complexity (lookback windows for late-arriving JSONL bytes, `merge` strategies for dimensions that aggregate facts) without measurable wall-clock benefit yet.
+The heavy models are incremental: `fact_prompts`, `fact_tool_executions`, `stg_tool_results` and `dim_turn_messages` rebuild only the sessions that received lake rows since the previous build (`recent_sessions()` macro, cursor = the previous cycle's cutoff, since `raw_events.ts` is event time and not a safe cursor). Everything else is a `table` or `view` rebuilt each cycle. When nothing changed in the lake, the inbox or the dbt project, the cycle is skipped (at most for 60 minutes).
 
-**Known limit: a `fact_prompts` full refresh needs the full 4 GB pool.** Routine *incremental* cycles run comfortably inside the shipped `AURA_DBT_MEMORY_LIMIT=4GB`, but a **full rebuild** of `fact_prompts` (first boot, or `dbt run --full-refresh`) genuinely exhausts a 3 GB pool — verified 2026-07 on a ~750k-event DB with working disk spill (`Out of Memory Error: ... 2.7 GiB/2.7 GiB used`), and a CTE-narrowing rewrite of the model still OOM'd at 3 GB. Don't lower the memory ceiling below 4 GB if a full refresh may run; the shipped compose (4 GB pool / 5 g container `mem_limit`) is the tested floor.
+**Known limit: a `fact_prompts` full refresh needs the full 4 GB pool.** Routine incremental cycles fit easily, but a full rebuild (first boot, a deleted work DB, or `--full-refresh`) exhausted a 3 GB pool in testing. Don't lower `AURA_DBT_MEMORY_LIMIT` below 4 GB if a full refresh may run.
 
-**Wide text lives in a view, not a table.** The per-turn `user_prompt` and `assistant_response` (the latter a ~20-branch content-block extraction) are exposed through the `dim_turn_messages` **view** rather than materialized into `fact_turns`. Baking that text into a `table` mart exhausted DuckDB's memory pool on a full rebuild; keeping it as a view computes it on demand for the handful of session-detail rows that actually render it, and leaves `fact_turns` narrow (metrics only) and cheap to rebuild. The extraction logic lives exactly once, in `int_turns` — `dim_turn_messages` is a thin passthrough. This is why `fact_turns` runs comfortably under the `AURA_DBT_MEMORY_LIMIT` default rather than needing a multi-GB pool.
+**The read DB stays small.** Publish copies only the tables and columns the dashboard queries. Payload JSON and tool output are not copied; prompts and replies are capped at 20,000 characters. Full text stays in the lake and the work DB. Each publish records its size in `data/artifacts/publish.ndjson`.
 
-**When to add incremental models.** Revisit this once `raw_events` crosses roughly **1M rows** or a full `dbt build` cycle starts pushing past 2–3 minutes. The natural candidates, in order:
+**Work DB growth.** DuckDB files do not shrink. If `data/work/aura.duckdb` grows far beyond its data, stop Aura and delete it; the next cycle rebuilds everything from the lake.
 
-1. `fact_model_calls` — append-only on `event_ts`, easy `unique_key=event_uuid`, `incremental_strategy='delete+insert'` over a lookback window.
-2. ~~`fact_tool_executions`~~ (and `stg_tool_results`, its heavy upstream) — **done (2026-07)**: incremental `delete+insert` keyed on `(tenant_id, tool_use_id)` / `(tenant_id, event_uuid)`, cursored on `ingest_checkpoints.last_seen_at`; verified full-column-parity-exact against a full rebuild on a 750k-event DB. `fact_turns` remains a candidate.
-3. ~~`fact_prompts`~~ — **done (2026-07)**: incremental `delete+insert` keyed on `(tenant_id, prompt_id)`, cursored on `ingest_checkpoints.last_seen_at`.
-4. `int_entity_spend` — incremental on `(date, app_id/agent/person_id)` grain, but only after the upstream facts are incremental too.
-
-**How you'd do it in production.** The pattern (illustrative, not yet in the repo) is the standard dbt-incremental shape:
-
-```sql
--- dbt/models/marts/fact_model_calls.sql (hypothetical production form)
-{{ config(
-    materialized='incremental',
-    unique_key='event_uuid',
-    incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
-) }}
-
-SELECT ...
-FROM {{ ref('stg_events') }}
-WHERE event_type = 'assistant'
-
-{% if is_incremental() %}
-  -- 2 h lookback: covers any late-arriving bytes the watcher backfills after
-  -- a JSONL was force-flushed (Claude Code can rewrite the tail when a session
-  -- is resumed). Anything older than 2 h is considered settled.
-  AND event_ts > (SELECT MAX(event_ts) - INTERVAL '2 hours' FROM {{ this }})
-{% endif %}
-```
-
-Dimensions that derive from facts (`dim_sessions`, `dim_apps`, `dim_agents`, `dim_people`) stay `table` even after the facts go incremental — they're cheap to fully rebuild from the now-incremental fact tables, and incremental dimensions are a known source of drift bugs (a session whose cost changed after the fact gets stale dimension rows). Keep the line: facts are append-only and can be incremental; dimensions roll up the current state of facts and should rebuild.
-
-Beyond the dbt layer, the `raw_events` bronze table is already append-only at ingest time (the watcher tracks byte offsets in `ingest_checkpoints` and never re-reads settled prefix bytes), so the bronze stage is effectively incremental without dbt being involved. The bottleneck at scale will be the silver/gold dbt rebuilds, which is what the above plan targets.
+Dimensions that derive from facts (`dim_sessions`, `dim_apps`, `dim_agents`, `dim_people`) stay `table`: they are cheap to rebuild, and incremental dimensions drift when a fact changes after the fact.
 
 ---
 
 ## From individual to team (central rollout)
 
-Aura is deliberately **hub-and-spoke**, not SaaS. Every developer keeps running the full local stack (watcher → DuckDB → dbt → dashboard) exactly as described above — full detail, fully private. Team visibility is an *export* problem, not a hosting problem: each machine periodically ships its **processed, masked marts** — never raw transcripts — to a central store, and one shared dashboard reads the union.
+Aura is deliberately **hub-and-spoke**, not SaaS. Every developer keeps running the full local stack (watcher → Parquet lake → dbt → dashboard) exactly as described above — full detail, fully private. Team visibility is an *export* problem, not a hosting problem: each machine periodically ships its **processed, masked marts** — never raw transcripts — to a central store, and one shared dashboard reads the union.
 
 ```
    dev laptop A                dev laptop B                dev laptop C
@@ -496,14 +431,15 @@ For organizations that would rather ship raw events than processed marts, the he
 - [ ] Multi-tenant auth — `tenant_id` is plumbed through the schema but always `'local'` today
 - [ ] Anomaly detection: prompts that spike in cost, agents that suddenly start erroring out
 - [ ] MetricFlow / dbt Semantic Layer adoption — wire the existing `dbt/models/marts/aura_semantic.yml` semantic models through to the frontend so KPIs are defined once and reconciled by the layer instead of by hand-written SQL in `frontend/lib/queries/*`
-- [ ] Convert the remaining append-only facts to `incremental` as they outgrow the cycle budget (`fact_prompts`, `stg_tool_results`, and `fact_tool_executions` already are — see *Performance & materialization strategy* above; `fact_model_calls` and `fact_turns` are next)
+- [ ] Convert the remaining append-only facts to `incremental` as they outgrow the cycle budget (`fact_prompts`, `stg_tool_results`, `fact_tool_executions` and `dim_turn_messages` already are — see *Performance & materialization strategy* above; `stg_tool_calls`, `fact_model_calls` and `fact_turns` are next)
 - [ ] Surface dbt source-freshness severity directly on the main Observability card (currently shown only on the dbt sub-page)
 
 ---
 
 ## Documentation
 
-- [docs/code-review.md](docs/code-review.md) — full codebase audit with prioritized improvement notes
+- [docs/screens/HOW-IT-WORKS.md](docs/screens/HOW-IT-WORKS.md) — architecture deep-dive
+- [docs/number-map.md](docs/number-map.md) — the formula and source behind every displayed number
 
 ---
 

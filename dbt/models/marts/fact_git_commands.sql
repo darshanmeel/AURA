@@ -3,6 +3,7 @@
 SELECT
     tenant_id,
     session_id,
+    cwd,
     tool_call_ts                                                                AS ts,
     json_extract_string(input_payload, '$.command')                             AS raw_command,
     output_text,

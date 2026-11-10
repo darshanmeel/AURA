@@ -173,14 +173,6 @@ export function Avatar({ name, id }: { name: string; id?: string }) {
   )
 }
 
-export function SessionLink({ id, title }: { id: string; title?: string }) {
-  return (
-    <a href={`/sessions/${id}`} className="session-link">
-      {title ?? id.slice(0, 8)}
-    </a>
-  )
-}
-
 export function TBar({ pct }: { pct: number }) {
   return (
     <div className="tbar">

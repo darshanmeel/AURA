@@ -1,0 +1,5 @@
+node_modules
+.next
+*.tsbuildinfo
+.tmp-dev.log
+.env*
