@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: watcher/Dockerfile
     volumes:
-      - ./data:/data
+      - ./data/${AURA_USER:-${USERNAME:-${USER:-local}}}:/data
       - ${CLAUDE_LOGS_DIR:-~/.claude/projects}:/logs/claude:ro
     environment:
       # Never run this and start.ps1 / start.sh at the same time: both write the
@@ -28,8 +28,8 @@ services:
       - AURA_HASH_CONTENT=${AURA_HASH_CONTENT:-}
       - AURA_MODEL_WINDOWS_JSON=
       # getpass.getuser() is 'root' inside the container; set the real person.
-      - AURA_DEFAULT_PERSON_ID=${AURA_DEFAULT_PERSON_ID:-local}
-      - AURA_DEFAULT_PERSON_NAME=${AURA_DEFAULT_PERSON_NAME:-Local User}
+      - AURA_DEFAULT_PERSON_ID=${AURA_DEFAULT_PERSON_ID:-${AURA_USER:-${USERNAME:-${USER:-local}}}}
+      - AURA_DEFAULT_PERSON_NAME=${AURA_DEFAULT_PERSON_NAME:-${AURA_USER:-${USERNAME:-${USER:-local}}}}
     healthcheck:
       # watcher_status.json is rewritten every flush tick (30 s), even when idle.
       test: ["CMD", "python", "-c", "import os,time,sys; p='/data/artifacts/watcher_status.json'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 120 else 1)"]
@@ -48,9 +48,9 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - ./data:/data:ro
+      - ./data/${AURA_USER:-${USERNAME:-${USER:-local}}}:/data:ro
       # rw for the verdict inbox only; same path as in the watcher.
-      - ./data/inbox:/data/inbox
+      - ./data/${AURA_USER:-${USERNAME:-${USER:-local}}}/inbox:/data/inbox
     environment:
       - AURA_DATA_DIR=/data
       - AURA_VERDICTS_INBOX=/data/inbox/verdicts-inbox.jsonl

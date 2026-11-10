@@ -34,3 +34,5 @@ SELECT
     json_extract(content_item, '$.input') as input_payload
 FROM exploded
 WHERE json_extract_string(content_item, '$.type') = 'tool_use'
+-- Claude Code can write the same tool_use under two event uuids (same message, same ts).
+QUALIFY ROW_NUMBER() OVER (PARTITION BY tenant_id, tool_use_id ORDER BY ts, event_uuid) = 1

@@ -61,6 +61,8 @@ Three stages that never block each other: JSONL → Parquet lake (the watcher, e
                          └──────────────────────────────────────────────────────┘
 ```
 
+All data lives in `data/<user>/`, where `<user>` is the OS username (`AURA_USER` overrides). Sessions are attributed to the same user unless `AURA_DEFAULT_PERSON_ID` is set.
+
 | Surface | Language | Purpose |
 |---|---|---|
 | `watcher/` | Python 3.12, `watchdog`, DuckDB (for Parquet I/O) | Tail JSONL, redact secrets, flush rows to the Parquet lake, keep byte-offset checkpoints in SQLite, compact small files, run the dbt cycle and publish the read DB |
@@ -109,11 +111,11 @@ AURA/
 ## Tech stack
 
 - **Ingestion:** Python 3.12, `watchdog` (polling observer in Docker, OS observer natively), DuckDB's Python client for writing Parquet
-- **Storage:** an append-only Parquet lake (`data/lake/`, Hive `date=` partitions, zstd) plus a SQLite file for checkpoints (`data/state/aura_state.sqlite`)
-- **Transform:** dbt 1.11 with `dbt-duckdb`, building into a DuckDB work DB (`data/work/aura.duckdb`). `run_results.json`, `manifest.json` and `sources.json` are copied to `data/artifacts/` after every cycle
-- **Serving:** a small read DB per publish (`data/read/v<stamp>/aura.duckdb`), holding only the tables and columns the dashboard queries (`watcher/src/aura_watcher/read_tables.sql`)
+- **Storage:** an append-only Parquet lake (`data/<user>/lake/`, Hive `date=` partitions, zstd) plus a SQLite file for checkpoints (`data/<user>/state/aura_state.sqlite`)
+- **Transform:** dbt 1.11 with `dbt-duckdb`, building into a DuckDB work DB (`data/<user>/work/aura.duckdb`). `run_results.json`, `manifest.json` and `sources.json` are copied to `data/<user>/artifacts/` after every cycle
+- **Serving:** a small read DB per publish (`data/<user>/read/v<stamp>/aura.duckdb`), holding only the tables and columns the dashboard queries (`watcher/src/aura_watcher/read_tables.sql`)
 - **Pricing:** SCD-style `model_pricing` seed (per-tenant overrides supported)
-- **Frontend:** Next.js 14 App Router, TypeScript, server components reading DuckDB directly through `lib/db.ts`, which follows `data/read/CURRENT`
+- **Frontend:** Next.js 14 App Router, TypeScript, server components reading DuckDB directly through `lib/db.ts`, which follows `data/<user>/read/CURRENT`
 - **Run modes:** Docker Compose (two services sharing `./data`) or native (`start.ps1` / `start.sh`)
 
 ---
@@ -139,7 +141,7 @@ On first boot the watcher:
 4. Sweeps every `.jsonl` under `AURA_LOGS_DIR`, oldest first. This is the backfill: about 28 minutes for 6 GB of transcripts. Byte offsets are checkpointed after each flush, so a restart resumes where it stopped.
 5. Keeps watching for new bytes (observer + periodic sweep).
 
-**Freshness:** a new event reaches the dashboard after poll (30 s) + flush (30 s) + the wait for the next dbt cycle (≤ 5 min) + the cycle and publish time. The target is a median under 5 minutes; `/observability` shows the age of every layer, and `data/artifacts/freshness.ndjson` records the measured lag per publish.
+**Freshness:** a new event reaches the dashboard after poll (30 s) + flush (30 s) + the wait for the next dbt cycle (≤ 5 min) + the cycle and publish time. The target is a median under 5 minutes; `/observability` shows the age of every layer, and `data/<user>/artifacts/freshness.ndjson` records the measured lag per publish.
 
 ---
 
@@ -151,12 +153,12 @@ On first boot the watcher:
 | Stop | `docker compose down` | Ctrl+C or `.\start.ps1 -Stop` | Ctrl+C or `./start.sh stop` |
 | Observer | polling, every 30 s; sweep every 600 s | OS observer; sweep every 60 s | OS observer; sweep every 60 s |
 | Data dir | `./data` mounted at `/data` | `<repo>/data` | `<repo>/data` |
-| Logs | `docker compose logs` | `data/logs/watcher.log`, `frontend.log` (stderr in `*.err.log`) | `data/logs/watcher.log`, `frontend.log` |
+| Logs | `docker compose logs` | `data/<user>/logs/watcher.log`, `frontend.log` (stderr in `*.err.log`) | `data/<user>/logs/watcher.log`, `frontend.log` |
 | Status | tested | tested | **untested** (written on Windows, checked with `bash -n` only); compose is the supported Linux/macOS path |
 
-The native scripts need **Python 3.12** (the pinned dbt-duckdb/duckdb wheels) and **Node ≥ 20**. They create `.venv` at the repo root (watcher and dbt in one venv), build the frontend's standalone server, set the env vars below and start the watcher and the frontend. They do not read `.env`: set `AURA_DEFAULT_PERSON_*` in your shell if you want them (natively `getpass.getuser()` is already you).
+The native scripts need **Python 3.12** (the pinned dbt-duckdb/duckdb wheels) and **Node ≥ 20**. They create `.venv` at the repo root (watcher and dbt in one venv), build the frontend's standalone server, set the env vars below and start the watcher and the frontend. They do not read `.env`: set `AURA_USER` or `AURA_DEFAULT_PERSON_*` in your shell to override the OS username.
 
-**Never run both modes at once.** Both write the same lake, state DB and work DB. The watcher enforces it: if `data/artifacts/watcher_status.json` was written less than 120 s ago by the other mode, it prints which mode and host is running and exits with code 2. After a switch, the first dbt cycle always runs. File paths are stored as logical paths (`claude/<project>/<session>.jsonl`), so a switch does not re-read every file.
+**Never run both modes at once.** Both write the same lake, state DB and work DB. The watcher enforces it: if `data/<user>/artifacts/watcher_status.json` was written less than 120 s ago by the other mode, it prints which mode and host is running and exits with code 2. After a switch, the first dbt cycle always runs. File paths are stored as logical paths (`claude/<project>/<session>.jsonl`), so a switch does not re-read every file.
 
 **Stopping:** `start.ps1` stops with `taskkill /T /F` (a hard kill, so no orphan `dbt.exe` keeps the work DB locked). Up to 30 s of buffered rows are not flushed; they are re-read on the next start (at-least-once, duplicates removed in dbt, no loss). `start.sh` and `docker compose down` send SIGTERM, and the watcher flushes before it exits.
 
@@ -165,11 +167,11 @@ The native scripts need **Python 3.12** (the pinned dbt-duckdb/duckdb wheels) an
 If you ran Aura before the lake layout, `data/aura.duckdb` holds history whose source JSONL files Claude Code has already deleted (30-day cleanup). Copy it into the lake once, with Docker stopped:
 
 ```bash
-.venv/Scripts/python -m aura_watcher.export_legacy --src data/aura.duckdb --data-dir data   # Linux/macOS: .venv/bin/python
+.venv/Scripts/python -m aura_watcher.export_legacy --src data/aura.duckdb --data-dir data/<user>   # Linux/macOS: .venv/bin/python
 .venv/Scripts/python -m aura_watcher.main --once --with-dbt
 ```
 
-The export opens the old file read-only, redacts payloads with the current rules, verifies row counts and uuid sets in a staging dir before it touches the lake, and writes `data/artifacts/export_legacy.json` (counts, `redacted`, `invalid_json`). Check it before you continue. The `--once` run then backfills the files still on disk and does the first full dbt build. Keep `data/aura.duckdb` as a backup; the new code never reads it.
+The export opens the old file read-only, redacts payloads with the current rules, verifies row counts and uuid sets in a staging dir before it touches the lake, and writes `data/<user>/artifacts/export_legacy.json` (counts, `redacted`, `invalid_json`). Check it before you continue. The `--once` run then backfills the files still on disk and does the first full dbt build. Keep `data/aura.duckdb` as a backup; the new code never reads it.
 
 ### Environment variables
 
@@ -215,8 +217,8 @@ Removed: `AURA_READ_DB_PATH`, `AURA_SNAPSHOT_INTERVAL`, `AURA_BACKFILL_BATCH_SIZ
 Run dbt against the current lake from `dbt/` in the `.venv`, with absolute paths and an existing inbox file:
 
 ```bash
-export AURA_DB_PATH="$PWD/../data/work/aura.duckdb" AURA_LAKE_DIR="$PWD/../data/lake" \
-       AURA_VERDICTS_INBOX="$PWD/../data/inbox/verdicts-inbox.jsonl" TZ=UTC
+export AURA_DB_PATH="$PWD/../data/<user>/work/aura.duckdb" AURA_LAKE_DIR="$PWD/../data/<user>/lake" \
+       AURA_VERDICTS_INBOX="$PWD/../data/<user>/inbox/verdicts-inbox.jsonl" TZ=UTC
 dbt run --profiles-dir . --no-partial-parse
 ```
 
@@ -226,7 +228,7 @@ Stop the watcher first: only one process may open the work DB for writing. For t
 
 ## Configuring people
 
-By default, every session is attributed to the host OS user (`getpass.getuser()`). To make the People page meaningful with friendly display names, create `~/.aura/people.json`:
+By default, every session is attributed to the host OS user (`getpass.getuser()` natively; compose passes the host username in). To make the People page meaningful with friendly display names, create `~/.aura/people.json`:
 
 ```json
 {
@@ -329,12 +331,12 @@ errors. Polls every 10 s via `/api/observability`.
 
 - **"another Aura watcher (… ) is running" and exit code 2.** The other run mode is up, or stopped less than 120 s ago. Stop it (`docker compose down`, `.\start.ps1 -Stop`, `./start.sh stop`) or wait.
 - **Dashboard says "read DB not published yet".** No dbt cycle has published since the data dir was created. Watch `/observability` or the watcher log; the first cycle starts at watcher startup.
-- **Numbers stop advancing.** Check the dbt status on `/observability`. A failed or timed-out cycle keeps the old read DB live; the error is in the watcher log and `data/artifacts/watcher_status.json`.
+- **Numbers stop advancing.** Check the dbt status on `/observability`. A failed or timed-out cycle keeps the old read DB live; the error is in the watcher log and `data/<user>/artifacts/watcher_status.json`.
 - **Out of memory during dbt.** `AURA_DBT_MEMORY_LIMIT` is a soft DuckDB ceiling; keep it about 1 GB below the container `mem_limit`. If a model still fails, lower `AURA_DBT_THREADS` and/or `AURA_DBT_DUCKDB_THREADS` before raising the ceiling. Two signatures:
-  1. `Out of Memory ... 16383.9 PiB used` — not real exhaustion; orphaned spill files in `data/work/aura.duckdb.tmp/` from an unclean shutdown. The watcher purges them at startup; delete the dir yourself if you see this after a manual kill.
+  1. `Out of Memory ... 16383.9 PiB used` — not real exhaustion; orphaned spill files in `data/<user>/work/aura.duckdb.tmp/` from an unclean shutdown. The watcher purges them at startup; delete the dir yourself if you see this after a manual kill.
   2. A sane figure such as `3.7 GiB/3.7 GiB used` — real exhaustion: raise the ceiling (within the headroom rule) or lower the thread knobs.
 - **`docker compose stop` hangs.** The watcher service needs `init: true` (it reaps the dbt child); confirm it is still in `docker-compose.yml`.
-- **Extra `data/read/v*` dirs on Windows.** A version the frontend still has open cannot be deleted; a later cycle removes it.
+- **Extra `data/<user>/read/v*` dirs on Windows.** A version the frontend still has open cannot be deleted; a later cycle removes it.
 
 ---
 
@@ -344,9 +346,9 @@ The heavy models are incremental: `fact_prompts`, `fact_tool_executions`, `stg_t
 
 **Known limit: a `fact_prompts` full refresh needs the full 4 GB pool.** Routine incremental cycles fit easily, but a full rebuild (first boot, a deleted work DB, or `--full-refresh`) exhausted a 3 GB pool in testing. Don't lower `AURA_DBT_MEMORY_LIMIT` below 4 GB if a full refresh may run.
 
-**The read DB stays small.** Publish copies only the tables and columns the dashboard queries. Payload JSON and tool output are not copied; prompts and replies are capped at 20,000 characters. Full text stays in the lake and the work DB. Each publish records its size in `data/artifacts/publish.ndjson`.
+**The read DB stays small.** Publish copies only the tables and columns the dashboard queries. Payload JSON and tool output are not copied; prompts and replies are capped at 20,000 characters. Full text stays in the lake and the work DB. Each publish records its size in `data/<user>/artifacts/publish.ndjson`.
 
-**Work DB growth.** DuckDB files do not shrink. If `data/work/aura.duckdb` grows far beyond its data, stop Aura and delete it; the next cycle rebuilds everything from the lake.
+**Work DB growth.** DuckDB files do not shrink. If `data/<user>/work/aura.duckdb` grows far beyond its data, stop Aura and delete it; the next cycle rebuilds everything from the lake.
 
 Dimensions that derive from facts (`dim_sessions`, `dim_apps`, `dim_agents`, `dim_people`) stay `table`: they are cheap to rebuild, and incremental dimensions drift when a fact changes after the fact.
 

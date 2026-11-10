@@ -1,14 +1,16 @@
 # Native (no Docker) run on Windows: watcher + dbt cycle + frontend.
 #   .\start.ps1            start, Ctrl+C stops both
 #   .\start.ps1 -Rebuild   force `npm run build` and `pip install -e watcher`
-#   .\start.ps1 -Stop      stop a running instance (reads data/state/native.pids)
+#   .\start.ps1 -Stop      stop a running instance (reads data/<user>/state/native.pids)
 # A stop is a hard kill (taskkill /T /F): the unflushed <= 30 s buffer is
 # re-read on the next start (at-least-once, no loss).
 param([switch]$Rebuild, [switch]$Stop)
 $ErrorActionPreference = 'Stop'
 
 $Repo = $PSScriptRoot -replace '\\', '/'
-$Data = "$Repo/data"
+# One data folder per OS user (data/<user>/); AURA_USER overrides.
+$User = if ($env:AURA_USER) { $env:AURA_USER } else { $env:USERNAME }
+$Data = "$Repo/data/$User"
 $PidFile = "$Data/state/native.pids"
 
 function Stop-Aura {
@@ -25,7 +27,10 @@ if ($Stop) { Stop-Aura; exit 0 }
 
 # 1. The watcher's own mode guard is the real enforcement; this is an early, clearer error.
 if (Get-Command docker -ErrorAction SilentlyContinue) {
+    # Docker installed but not running writes to stderr, which 'Stop' would turn into a fatal error.
+    $ErrorActionPreference = 'Continue'
     $running = & docker ps -q --filter name=aura-watcher 2>$null
+    $ErrorActionPreference = 'Stop'
     if ($running) { throw 'The compose watcher is running. Run `docker compose down` first (never run both modes at once).' }
 }
 
@@ -67,6 +72,9 @@ $env:AURA_OBSERVER = 'native'
 $env:AURA_SWEEP_INTERVAL_SECONDS = '60'
 $env:AURA_DBT_DIR = "$Repo/dbt"
 $env:AURA_VERIFY_SCRIPT = "$Repo/scripts/verify/run_all.mjs"
+# 4 threads x 4 GB OOMs on catch-up cycles (stg_tool_results, dim_turn_messages); one model at a time with more memory does not.
+if (-not $env:AURA_DBT_THREADS) { $env:AURA_DBT_THREADS = '1' }
+if (-not $env:AURA_DBT_MEMORY_LIMIT) { $env:AURA_DBT_MEMORY_LIMIT = '6GB' }
 $env:TZ = 'UTC'
 # The default console codepage is cp1252.
 $env:PYTHONUTF8 = '1'

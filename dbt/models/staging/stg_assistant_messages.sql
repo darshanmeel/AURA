@@ -33,7 +33,12 @@ SELECT
     ephemeral_5m_input_tokens,
     ephemeral_1h_input_tokens,
     cache_read_input_tokens,
-    context_pct,
+    -- Recomputed from the seed window so a model added to the seed later is fixed for old rows too.
+    COALESCE((input_tokens + cache_creation_input_tokens + cache_read_input_tokens)
+             / NULLIF(w.context_window_tokens, 0), context_pct) AS context_pct,
     payload
 FROM ranked
-WHERE rn = 1
+LEFT JOIN (SELECT model AS w_model, MAX(context_window_tokens) AS context_window_tokens
+           FROM {{ ref('model_pricing') }} WHERE valid_to IS NULL GROUP BY model) w
+    ON w.w_model = ranked.model
+WHERE ranked.rn = 1

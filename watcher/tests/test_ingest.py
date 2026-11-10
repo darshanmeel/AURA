@@ -184,3 +184,16 @@ def test_mode_guard(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as e:
         main.startup(main.load_config())
     assert e.value.code == 2
+
+
+def test_status_pending_ignores_stale_sweep_sizes(env, tmp_path):
+    from types import SimpleNamespace
+    lp = env.write("p/s1.jsonl", [event("u1")])
+    ctx = env.ctx()
+    _ingest(ctx, lp)
+    offset = ctx.checkpoints[lp]["last_offset"]
+    ctx.last_sweep = [(lp, offset - 10, 0), ("p/new.jsonl", 50, 0)]  # first size is older than the checkpoint
+    cfg = SimpleNamespace(run_mode="native", observer="native", artifacts_dir=str(tmp_path))
+    main.write_status(cfg, ctx, "2026-11-10T00:00:00Z")
+    doc = json.load(open(tmp_path / main.STATUS_FILE, encoding="utf-8"))
+    assert (doc["files_pending"], doc["bytes_pending"]) == (1, 50)

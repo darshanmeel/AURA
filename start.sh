@@ -2,13 +2,15 @@
 # Native (no Docker) run on Linux/macOS: watcher + dbt cycle + frontend.
 #   ./start.sh            start, Ctrl+C stops both
 #   ./start.sh --rebuild  force `npm run build` and `pip install -e watcher`
-#   ./start.sh stop       stop a running instance (reads data/state/native.pids)
+#   ./start.sh stop       stop a running instance (reads data/<user>/state/native.pids)
 # Untested on Linux/macOS (written on Windows, checked with `bash -n` only).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 REPO="$PWD"
-DATA="$REPO/data"
+# One data folder per OS user (data/<user>/); AURA_USER overrides.
+AURA_USER="${AURA_USER:-$(id -un)}"
+DATA="$REPO/data/$AURA_USER"
 PID_FILE="$DATA/state/native.pids"
 REBUILD=0
 

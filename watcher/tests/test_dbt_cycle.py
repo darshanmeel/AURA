@@ -190,9 +190,9 @@ def test_publish_swap_and_prune_with_open_reader(cfg):
 
 
 class FakeDbt:
-    def __init__(self, run_rc=0, timeout=False):
+    def __init__(self, run_rc=0, timeout=False, retry_rc=None):
         self.calls = []
-        self.run_rc = run_rc
+        self.rc = {"run": run_rc, "retry": run_rc if retry_rc is None else retry_rc}
         self.timeout = timeout
 
     def __call__(self, argv, **kw):
@@ -200,7 +200,7 @@ class FakeDbt:
         cmd = argv[1]
         if self.timeout and cmd == "run":
             raise subprocess.TimeoutExpired(argv, kw["timeout"])
-        return subprocess.CompletedProcess(argv, self.run_rc if cmd == "run" else 0, "out", "")
+        return subprocess.CompletedProcess(argv, self.rc.get(cmd, 0), "out", "")
 
 
 def test_run_cycle_ok_argv_and_publish(cfg, monkeypatch):
@@ -223,6 +223,14 @@ def test_run_cycle_failure_and_timeout_do_not_publish(cfg, monkeypatch):
     assert dbt_cycle.run_cycle(cfg, errors, force=True) == "timeout"
     assert dbt_cycle.read_current(cfg.read_dir) is None
     assert [e[0] for e in errors] == ["dbt_run", "dbt_run"]
+
+
+def test_run_cycle_retry_recovers_failed_run(cfg, monkeypatch):
+    fake = FakeDbt(run_rc=1, retry_rc=0)
+    monkeypatch.setattr(dbt_cycle.subprocess, "run", fake)
+    assert dbt_cycle.run_cycle(cfg, Errors()) == "ok"
+    assert [c[1] for c in fake.calls] == ["seed", "run", "retry", "test", "source"]
+    assert dbt_cycle.read_current(cfg.read_dir) is not None
 
 
 def test_publish_runs_under_lake_lock(cfg, monkeypatch):

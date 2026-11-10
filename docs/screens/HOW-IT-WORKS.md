@@ -23,15 +23,15 @@ date). Everything in this document describes how that page gets populated.
 on the developer's machine, in Docker or natively. Four rules keep it sane:
 
 1. **The lake is append-only files, not a database.** The watcher writes
-   Parquet files into `data/lake/` every 30 s. Writing never takes a
+   Parquet files into `data/<user>/lake/` every 30 s. Writing never takes a
    database lock, so ingestion never waits for dbt.
 2. **dbt owns its own DuckDB file.** dbt reads the lake through
    `read_parquet` views and builds marts into the **work DB**
-   (`data/work/aura.duckdb`). Only the dbt cycle opens it.
+   (`data/<user>/work/aura.duckdb`). Only the dbt cycle opens it.
 3. **The dashboard reads a published copy.** After each successful
    `dbt run`, the watcher builds a fresh, small **read DB** that holds only
    the tables and columns the frontend uses, in a new version directory
-   (`data/read/v<stamp>/aura.duckdb`), and points `data/read/CURRENT` at it.
+   (`data/<user>/read/v<stamp>/aura.duckdb`), and points `data/<user>/read/CURRENT` at it.
    The frontend never sees a half-built file.
 4. **Every dbt cycle reads one consistent snapshot of the lake.** The cycle
    takes a cutoff timestamp under the flush lock; every lake read filters
@@ -43,13 +43,13 @@ on the developer's machine, in Docker or natively. Four rules keep it sane:
         │  observer + 60–600 s sweep
         ▼
   watcher (Python, one process)
-    ├── ingest thread: parse → buffer → flush every 30 s ─▶ data/lake/<table>/date=YYYY-MM-DD/part-*.parquet
-    │                                   └─ checkpoints ───▶ data/state/aura_state.sqlite
+    ├── ingest thread: parse → buffer → flush every 30 s ─▶ data/<user>/lake/<table>/date=YYYY-MM-DD/part-*.parquet
+    │                                   └─ checkpoints ───▶ data/<user>/state/aura_state.sqlite
     ├── compaction (≤ every 10 min): merge small files per day partition
     └── dbt thread, every AURA_DBT_RUN_INTERVAL_MINUTES (5):
-          cutoff → dbt seed → dbt run ─▶ data/work/aura.duckdb   (work DB)
-          publish ───────────────────▶ data/read/v<stamp>/aura.duckdb + data/read/CURRENT
-          dbt test, source freshness, run_all.mjs ─▶ data/artifacts/
+          cutoff → dbt seed → dbt run ─▶ data/<user>/work/aura.duckdb   (work DB)
+          publish ───────────────────▶ data/<user>/read/v<stamp>/aura.duckdb + data/<user>/read/CURRENT
+          dbt test, source freshness, run_all.mjs ─▶ data/<user>/artifacts/
         │
         ▼
   Next.js (frontend) — opens <CURRENT>/aura.duckdb read-only
@@ -86,14 +86,14 @@ Every `AURA_FLUSH_SECONDS` (30 s), or earlier when the buffer reaches
 1. Under `flush_lock`, stamp one `ingested_at` for the whole flush.
 2. Write one Parquet file per table and day partition (`.tmp`, then
    `os.replace`), so readers never see a partial file.
-3. Commit the byte-offset checkpoints to SQLite (`data/state/aura_state.sqlite`).
+3. Commit the byte-offset checkpoints to SQLite (`data/<user>/state/aura_state.sqlite`).
 
 Files first, checkpoint second gives **at-least-once** delivery: a crash
 between the two re-reads the same bytes on restart, and dbt drops the
 duplicates on `(tenant_id, uuid)`. A failed write keeps the buffer and
 retries on the next tick without advancing the checkpoint.
 
-After each tick the watcher writes `data/artifacts/watcher_status.json`
+After each tick the watcher writes `data/<user>/artifacts/watcher_status.json`
 (mode, last flush, files and bytes tracked, pending files, dbt status,
 publish size and freshness lag). The Docker healthcheck and the
 Observability page read it.
@@ -161,8 +161,8 @@ the logical path is the same, so switching modes does not re-read every file.
   ingest time.
 - Session titles go through the same redaction.
 - `session_meta.person_id` comes from `AURA_DEFAULT_PERSON_ID`, else
-  `~/.aura/people.json`, else `getpass.getuser()` (which is `root` inside the
-  container — set the env vars there).
+  `~/.aura/people.json`, else `getpass.getuser()` (compose passes the host username in as
+  `AURA_DEFAULT_PERSON_ID`, so it is never `root`).
 
 ### The `agent` column trap
 
@@ -187,7 +187,7 @@ verdict inbox, dbt project files) and the last publish is < 60 min old.
    `dbt seed`, `dbt run`, then **publish** (§3).
 3. `dbt test` and `dbt source freshness` (they never block the publish).
 4. Copy `run_results.json`, `manifest.json`, `sources.json` to
-   `data/artifacts/` (history: last 20), then run
+   `data/<user>/artifacts/` (history: last 20), then run
    `scripts/verify/run_all.mjs` against the new read DB.
 
 Every dbt call uses `--profiles-dir . --no-partial-parse` from `dbt/`, with
@@ -231,7 +231,7 @@ blocking.
 
 The session page's verdict buttons (`accepted`, `wrong`, `needs_review`)
 cannot write to any DuckDB file, so the frontend appends one JSON line per
-click to `AURA_VERDICTS_INBOX` (`data/inbox/verdicts-inbox.jsonl`):
+click to `AURA_VERDICTS_INBOX` (`data/<user>/inbox/verdicts-inbox.jsonl`):
 
 ```jsonc
 {"tenant_id":"local","session_id":"<uuid>","verdict":"accepted","note":null,"created_at":"2026-11-10T18:53:00Z"}
@@ -240,7 +240,7 @@ click to `AURA_VERDICTS_INBOX` (`data/inbox/verdicts-inbox.jsonl`):
 dbt reads the file directly in `stg_session_verdicts` (`read_json`, bad and
 torn lines dropped, latest verdict per session, note capped at 500 chars);
 `dim_sessions.verdict` carries it to the UI after the next cycle. In Docker
-the frontend mounts `data/` read-only and only `data/inbox/` read-write.
+the frontend mounts `data/` read-only and only `data/<user>/inbox/` read-write.
 
 ---
 
@@ -266,8 +266,8 @@ After `dbt run` succeeds, still under `lake_lock`:
 
 If any statement fails, the new directory is deleted and the old version
 stays live: a read DB is published whole or not at all. Each publish appends
-its size, duration and row counts to `data/artifacts/publish.ndjson`, and the
-lag from the newest event to publish time to `data/artifacts/freshness.ndjson`.
+its size, duration and row counts to `data/<user>/artifacts/publish.ndjson`, and the
+lag from the newest event to publish time to `data/<user>/artifacts/freshness.ndjson`.
 
 Worst-case dashboard lag ≈ poll (30 s) + flush (30 s) + wait for the next
 cycle (≤ 5 min) + cycle time + publish time. `/observability` shows the age
@@ -291,7 +291,7 @@ of every layer.
 - Queries may only use the read DB tables listed in `read_tables.sql`; the
   contract test `lib/queries/readdb.test.ts` runs `EXPLAIN` on every query
   against a published read DB.
-- The Observability page also reads `data/artifacts/` (dbt results,
+- The Observability page also reads `data/<user>/artifacts/` (dbt results,
   `watcher_status.json`, `number_verify.json`) via `/api/observability`.
 
 ### Range pattern
@@ -420,10 +420,10 @@ columns and multi-agent display per row:
 | Failure | Symptom | Recovery |
 |---|---|---|
 | Both modes running | Second watcher exits with code 2: "another Aura watcher (… ) is running" | Stop the other mode (`docker compose down` or `start.ps1 -Stop` / `./start.sh stop`), or wait 120 s after it stopped |
-| dbt cycle fails or times out | `/observability` shows dbt red; dashboard numbers stop advancing | The old read DB stays live. Read `data/artifacts/run_results.json` / the watcher log, fix, and the next cycle publishes |
+| dbt cycle fails or times out | `/observability` shows dbt red; dashboard numbers stop advancing | The old read DB stays live. Read `data/<user>/artifacts/run_results.json` / the watcher log, fix, and the next cycle publishes |
 | `Out of Memory ... 16383.9 PiB used` | dbt fails with an absurd figure | Orphaned spill files; the watcher purges `work/aura.duckdb.tmp/` at startup. Delete it by hand if you killed the process yourself |
 | Genuine dbt OOM (`3.7 GiB/3.7 GiB used`) | One heavy model fails | Raise `AURA_DBT_MEMORY_LIMIT` (keep ~1 GB below the container `mem_limit`) or lower `AURA_DBT_THREADS` / `AURA_DBT_DUCKDB_THREADS` |
-| Old read version not pruned (Windows) | Extra `data/read/v*` dirs | Expected while the frontend has it open; removed on a later cycle |
+| Old read version not pruned (Windows) | Extra `data/<user>/read/v*` dirs | Expected while the frontend has it open; removed on a later cycle |
 | Hard stop (`start.ps1`, `taskkill /F`) | Up to 30 s of buffered rows not flushed | Re-read on the next start (at-least-once); duplicates removed in `stg_events` |
 | Build cache holds a stale image | `docker compose up --build` succeeds but containers are old | `docker compose build --no-cache <svc>` |
 | Frontend bails to client-side rendering | `<template data-dgst="BAILOUT_TO_CLIENT_SIDE_RENDERING">` in HTML | Expected for pages that use hooks (`/sessions` filter state); the browser renders it |
@@ -463,7 +463,7 @@ frontend/
     range.ts              # range parser (UTC)
   components/             # atoms, SessionTabs, charts
 
-scripts/verify/run_all.mjs  # number checks on the read DB → data/artifacts/number_verify.json
+scripts/verify/run_all.mjs  # number checks on the read DB → data/<user>/artifacts/number_verify.json
 docker-compose.yml          # compose mode
 start.ps1 / start.sh        # native mode (Windows / Linux, macOS)
 ```

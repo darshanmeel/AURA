@@ -98,8 +98,9 @@ def startup(cfg):
 
 
 def write_status(cfg, ctx, started_at: str) -> None:
+    # last_sweep sizes can be older than the checkpoints, so only a size ahead of the offset is pending.
     pending = [(lp, size) for lp, size, _ in ctx.last_sweep
-               if (ctx.checkpoints.get(lp) or {}).get("last_offset") != size]
+               if size > (ctx.checkpoints.get(lp) or {}).get("last_offset", 0)]
     doc = {
         "written_at": dbt_cycle._iso(), "started_at": started_at, "mode": cfg.run_mode,
         "host": socket.gethostname(), "observer": cfg.observer,

@@ -320,6 +320,9 @@ def run_cycle(cfg, log_error, force: bool = False) -> str:
         if seed != "ok":
             log_error("dbt_seed", None, f"dbt seed {seed}: {seed_out[-500:]}")
         run, run_out = dbt(["run"], cfg, cutoff)
+        if run == "failed":
+            # Reruns only the failed and skipped models from target/run_results.json.
+            run, run_out = dbt(["retry"], cfg, cutoff)
         if run == "ok":
             rec = publish(cfg.db_path, cfg.read_dir, cfg.artifacts_dir, log_error)
         else:
