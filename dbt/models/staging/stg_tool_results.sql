@@ -41,26 +41,38 @@ WITH
 -- row of these sessions' events.
 recent_sessions AS ({{ recent_sessions() }}),
 {% endif %}
+-- Filter to the cursor's sessions first, then unnest in the SELECT list: a
+-- CROSS JOIN UNNEST over payload is decorrelated into a DELIM join keyed on the
+-- whole payload string (376 s for 8.8k rows on the real lake).
+user_events AS (
+    SELECT se.tenant_id, se.uuid, se.session_id, se.ts, se.payload
+    FROM {{ ref('stg_events') }} se
+    {% if is_incremental() %}
+    SEMI JOIN recent_sessions rs
+        ON  rs.tenant_id  = se.tenant_id
+        AND rs.session_id = se.session_id
+    {% endif %}
+    WHERE se.event_type = 'user'
+),
+content_items AS (
+    SELECT tenant_id, uuid, session_id, ts,
+           unnest(CAST(json_extract(payload, '$.message.content') AS JSON[])) AS content_item
+    FROM user_events
+    WHERE payload LIKE '%"type": "tool_result"%'
+),
 unioned_results AS (
     -- Case 1: Unnested content array (type = 'tool_result')
     SELECT
-        se.tenant_id,
-        se.uuid as event_uuid,
-        se.session_id,
-        se.ts,
+        tenant_id,
+        uuid as event_uuid,
+        session_id,
+        ts,
         json_extract_string(content_item, '$.tool_use_id') as tool_use_id,
         json_extract_string(content_item, '$.content') as output_text,
         json_extract_string(content_item, '$.is_error') = 'true' as is_error,
         1 AS src_case
-    FROM {{ ref('stg_events') }} se
-    CROSS JOIN UNNEST(CAST(json_extract(se.payload, '$.message.content') AS JSON[])) as t(content_item)
-    {% if is_incremental() %}
-    JOIN recent_sessions rs
-        ON  rs.tenant_id  = se.tenant_id
-        AND rs.session_id = se.session_id
-    {% endif %}
-    WHERE se.event_type = 'user' AND se.payload LIKE '%"type": "tool_result"%'
-      AND json_extract_string(content_item, '$.type') = 'tool_result'
+    FROM content_items
+    WHERE json_extract_string(content_item, '$.type') = 'tool_result'
 
     UNION ALL
 
@@ -74,15 +86,10 @@ unioned_results AS (
         json_extract_string(e.payload, '$.toolUseResult.text') as output_text,
         COALESCE(json_extract_string(e.payload, '$.toolUseResult.isError') = 'true', FALSE) as is_error,
         2 AS src_case
-    FROM {{ ref('stg_events') }} e
+    FROM user_events e
     LEFT JOIN {{ ref('stg_tool_calls') }} tc
         ON tc.event_uuid = json_extract_string(e.payload, '$.sourceToolAssistantUUID')
-    {% if is_incremental() %}
-    JOIN recent_sessions rs
-        ON  rs.tenant_id  = e.tenant_id
-        AND rs.session_id = e.session_id
-    {% endif %}
-    WHERE e.event_type = 'user' AND json_extract(e.payload, '$.toolUseResult') IS NOT NULL
+    WHERE json_extract(e.payload, '$.toolUseResult') IS NOT NULL
 )
 -- Dedup strategy (D-M8 fix):
 --

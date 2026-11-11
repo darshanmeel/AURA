@@ -104,38 +104,60 @@ windowed AS (
     SELECT
         rp.*,
         LEAD(prompt_ts) OVER (
-            PARTITION BY tenant_id, session_id ORDER BY prompt_ts
+            PARTITION BY tenant_id, session_id ORDER BY prompt_ts, prompt_id
         )                                              AS next_prompt_ts,
         ROW_NUMBER() OVER (
-            PARTITION BY tenant_id, session_id ORDER BY prompt_ts
+            PARTITION BY tenant_id, session_id ORDER BY prompt_ts, prompt_id
         )                                              AS prompt_idx
     FROM real_prompts rp
 ),
--- Aggregate fact_turns metrics across each prompt's span window.
+-- Span assignment: each turn / tool call / assistant message belongs to the
+-- latest prompt at or before its ts (ASOF JOIN). That equals the old
+-- `ts >= prompt_ts AND (next_prompt_ts IS NULL OR ts < next_prompt_ts)`
+-- window, whose OR blocked DuckDB's range join and made it quadratic per
+-- session. Rows before a session's first prompt match no prompt, as before.
+-- Prompts sharing a prompt_ts: the last by (prompt_ts, prompt_id) owns the
+-- span; the others have an empty [ts, ts) window, as in the old predicate.
+span_owners AS (
+    SELECT tenant_id, session_id, prompt_id, prompt_ts
+    FROM windowed
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY tenant_id, session_id, prompt_ts ORDER BY prompt_id DESC
+    ) = 1
+),
+turn_spans AS (
+    SELECT w.prompt_id, ft.*
+    FROM joined_fact_turns ft
+    ASOF JOIN span_owners w
+        ON  w.tenant_id  = ft.tenant_id
+        AND w.session_id = ft.session_id
+        AND ft.assistant_ts >= w.prompt_ts
+),
+-- Turn, cache and agent aggregates per span (int_event_agent is unique per
+-- (tenant_id, event_uuid), so its join does not fan out).
 span_turn_agg AS (
     SELECT
-        w.tenant_id,
-        w.prompt_id,
-        COUNT(ft.turn_id)                                            AS turn_count,
-        COALESCE(SUM(ft.tool_count), 0)                              AS tool_call_count,
-        COALESCE(SUM(ft.output_tokens), 0)                           AS output_tokens_total,
-        COALESCE(SUM(ft.calculated_cost), 0)                         AS cost_total,
-        -- First model in span
-        FIRST(ft.model ORDER BY ft.assistant_ts)                     AS model_primary,
+        ts.tenant_id,
+        ts.prompt_id,
+        COUNT(ts.turn_id)                                            AS turn_count,
+        COALESCE(SUM(ts.tool_count), 0)                              AS tool_call_count,
+        COALESCE(SUM(ts.output_tokens), 0)                           AS output_tokens_total,
+        COALESCE(SUM(ts.calculated_cost), 0)                         AS cost_total,
+        FIRST(ts.model ORDER BY ts.assistant_ts)                     AS model_primary,
         -- Last turn in span (its text is fetched in span_last_text)
-        LAST(ft.turn_id ORDER BY ft.assistant_ts)                    AS last_turn_id,
-        -- First assistant ts in span — TTFT anchor
-        MIN(ft.assistant_ts)                                         AS first_assistant_ts,
-        -- Distinct models used in span
-        array_agg(DISTINCT ft.model)
-            FILTER (WHERE ft.model IS NOT NULL)                      AS models_used
-    FROM windowed w
-    LEFT JOIN joined_fact_turns ft
-        ON  ft.tenant_id    = w.tenant_id
-        AND ft.session_id   = w.session_id
-        AND ft.assistant_ts >= w.prompt_ts
-        AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-    GROUP BY w.tenant_id, w.prompt_id
+        LAST(ts.turn_id ORDER BY ts.assistant_ts)                    AS last_turn_id,
+        -- TTFT anchor
+        MIN(ts.assistant_ts)                                         AS first_assistant_ts,
+        array_agg(DISTINCT ts.model)
+            FILTER (WHERE ts.model IS NOT NULL)                      AS models_used,
+        COALESCE(SUM(ts.cache_read_input_tokens), 0)                 AS cache_read_total,
+        COALESCE(SUM(ts.cache_creation_input_tokens), 0)             AS cache_creation_total,
+        FIRST(COALESCE(ea.agent_resolved, 'main') ORDER BY ts.assistant_ts) AS agent_resolved
+    FROM turn_spans ts
+    LEFT JOIN {{ ref('int_event_agent') }} ea
+        ON  ea.event_uuid = ts.assistant_event_uuid
+        AND ea.tenant_id  = ts.tenant_id
+    GROUP BY ts.tenant_id, ts.prompt_id
 ),
 -- Text for the span's last turn only, extracted from the session-scoped
 -- assistant messages by message_id (turn_id), so an incremental run never
@@ -149,28 +171,7 @@ span_last_text AS (
         ON  am.tenant_id  = sta.tenant_id
         AND am.message_id = sta.last_turn_id
 ),
--- Cache-token aggregation per span (from raw assistant messages: fact_turns
--- collapses to one row per turn but token columns flow through).
-span_cache_agg AS (
-    SELECT
-        w.prompt_id,
-        COALESCE(SUM(ft.cache_read_input_tokens), 0)                 AS cache_read_total,
-        COALESCE(SUM(ft.cache_creation_input_tokens), 0)             AS cache_creation_total,
-        COALESCE(SUM(ft.input_tokens), 0)                            AS input_tokens_total
-    FROM windowed w
-    LEFT JOIN joined_fact_turns ft
-        ON  ft.tenant_id    = w.tenant_id
-        AND ft.session_id   = w.session_id
-        AND ft.assistant_ts >= w.prompt_ts
-        AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-    GROUP BY w.prompt_id
-),
--- Single range join against fact_tool_executions for this whole model.
--- Was 4 separate `ts BETWEEN prompt_ts AND next_prompt_ts` range joins
--- (span_tool_counts, span_subagents, span_file_agg, span_error_agg), each
--- re-scanning the full table per session. Collapsed into one pass here;
--- every downstream aggregate below reads from this single materialization
--- instead of re-joining fact_tool_executions.
+-- One span assignment of fact_tool_executions feeds every tool aggregate.
 span_fte_joined AS (
     SELECT
         w.prompt_id,
@@ -180,12 +181,11 @@ span_fte_joined AS (
             AS file_path,
         json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.subagent_type')
             AS subagent_type_val
-    FROM windowed w
-    JOIN joined_fact_tool_executions fte
-        ON  fte.tenant_id     = w.tenant_id
-        AND fte.session_id    = w.session_id
+    FROM joined_fact_tool_executions fte
+    ASOF JOIN span_owners w
+        ON  w.tenant_id  = fte.tenant_id
+        AND w.session_id = fte.session_id
         AND fte.tool_call_ts >= w.prompt_ts
-        AND (w.next_prompt_ts IS NULL OR fte.tool_call_ts < w.next_prompt_ts)
 ),
 -- Tool signature: pipe-joined "ToolName:count" ordered by count desc.
 span_tool_counts AS (
@@ -205,10 +205,7 @@ span_tool_signature AS (
     FROM span_tool_counts
     GROUP BY prompt_id
 ),
--- Scalar per-prompt aggregates that used to be 3 separate range joins
--- (span_subagents, span_file_agg, span_error_agg): sub-agents dispatched,
--- distinct files edited, and errors caught. All computed off the single
--- span_fte_joined pass above via FILTER, one row per prompt_id.
+-- Sub-agents dispatched, distinct files edited, errors caught.
 span_fte_scalar_agg AS (
     SELECT
         prompt_id,
@@ -222,68 +219,33 @@ span_fte_scalar_agg AS (
     FROM span_fte_joined
     GROUP BY prompt_id
 ),
--- Retry detection: count assistant rows per request_id in span; sum (rows - 1).
--- Anthropic retries reuse request_id but emit a new message_id; stg_assistant_messages
--- dedups by message_id, so a request_id with >1 rows here = retry(s).
-span_retries AS (
+-- Assistant messages assigned to spans, for retries and the final stop reason.
+am_spans AS (
     SELECT
         w.prompt_id,
-        COALESCE(SUM(GREATEST(rc.n - 1, 0)), 0) AS retry_count
-    FROM windowed w
-    LEFT JOIN (
-        SELECT
-            am.tenant_id,
-            am.session_id,
-            am.request_id,
-            am.ts,
-            COUNT(*) OVER (PARTITION BY am.tenant_id, am.session_id, am.request_id) AS n,
-            ROW_NUMBER() OVER (PARTITION BY am.tenant_id, am.session_id, am.request_id ORDER BY am.ts) AS rn
-        FROM joined_stg_assistant_messages am
-        WHERE am.request_id IS NOT NULL
-    ) rc
-        ON  rc.tenant_id  = w.tenant_id
-        AND rc.session_id = w.session_id
-        AND rc.ts        >= w.prompt_ts
-        AND (w.next_prompt_ts IS NULL OR rc.ts < w.next_prompt_ts)
-        AND rc.rn = 1   -- count each request_id once per span
-    GROUP BY w.prompt_id
+        am.request_id,
+        am.stop_reason,
+        am.ts,
+        am.byte_offset,
+        COUNT(*) OVER (PARTITION BY am.tenant_id, am.session_id, am.request_id) AS request_rows,
+        ROW_NUMBER() OVER (PARTITION BY am.tenant_id, am.session_id, am.request_id ORDER BY am.ts) AS request_rn
+    FROM joined_stg_assistant_messages am
+    ASOF JOIN span_owners w
+        ON  w.tenant_id  = am.tenant_id
+        AND w.session_id = am.session_id
+        AND am.ts >= w.prompt_ts
 ),
--- Final stop_reason for the span = stop_reason of the last assistant message
--- (by ts) in the window.
-span_stop AS (
+-- Retries: Anthropic retries reuse request_id with a new message_id; each
+-- request_id counts once, in the span of its first row, as (rows - 1).
+-- Final stop_reason = that of the span's last assistant message.
+span_am_agg AS (
     SELECT
-        w.prompt_id,
-        LAST(am.stop_reason ORDER BY am.ts, am.byte_offset) AS final_stop_reason
-    FROM windowed w
-    LEFT JOIN joined_stg_assistant_messages am
-        ON  am.tenant_id  = w.tenant_id
-        AND am.session_id = w.session_id
-        AND am.ts        >= w.prompt_ts
-        AND (w.next_prompt_ts IS NULL OR am.ts < w.next_prompt_ts)
-    GROUP BY w.prompt_id
-),
--- files_edited and errors_caught now come from span_fte_scalar_agg above
--- (was span_file_agg + span_error_agg, two more range joins against
--- fact_tool_executions). The FILTER-not-JOIN-predicate lesson from the old
--- span_error_agg comment still applies and is preserved: is_error = TRUE
--- lives in a COUNT(*) FILTER, not the join's ON clause, so a prompt with
--- zero tool executions still resolves to 0 (via the outer COALESCE in
--- `spans` below) instead of being miscounted or dropped.
--- Resolved agent: first agent_resolved in span, ordered by assistant_ts.
-span_agent_agg AS (
-    SELECT
-        w.prompt_id,
-        FIRST(COALESCE(ea.agent_resolved, 'main') ORDER BY ft.assistant_ts) AS agent_resolved
-    FROM windowed w
-    LEFT JOIN joined_fact_turns ft
-        ON  ft.tenant_id    = w.tenant_id
-        AND ft.session_id   = w.session_id
-        AND ft.assistant_ts >= w.prompt_ts
-        AND (w.next_prompt_ts IS NULL OR ft.assistant_ts < w.next_prompt_ts)
-    LEFT JOIN {{ ref('int_event_agent') }} ea
-        ON ea.event_uuid = ft.assistant_event_uuid
-       AND ea.tenant_id  = ft.tenant_id
-    GROUP BY w.prompt_id
+        prompt_id,
+        COALESCE(SUM(GREATEST(request_rows - 1, 0))
+            FILTER (WHERE request_id IS NOT NULL AND request_rn = 1), 0) AS retry_count,
+        LAST(stop_reason ORDER BY ts, byte_offset)                       AS final_stop_reason
+    FROM am_spans
+    GROUP BY prompt_id
 ),
 -- Assemble all span aggregates back onto windowed prompts.
 spans AS (
@@ -303,10 +265,10 @@ spans AS (
         SUBSTR(slt.last_assistant_response, 1, 200)
             || CASE WHEN length(slt.last_assistant_response) > 200 THEN '…' ELSE '' END
                                                                             AS summary_200,
-        sta.turn_count,
-        sta.tool_call_count,
-        sta.output_tokens_total,
-        sta.cost_total,
+        COALESCE(sta.turn_count, 0)                                         AS turn_count,
+        COALESCE(sta.tool_call_count, 0)                                    AS tool_call_count,
+        COALESCE(sta.output_tokens_total, 0)                                AS output_tokens_total,
+        COALESCE(sta.cost_total, 0)                                         AS cost_total,
         sta.first_assistant_ts,
         COALESCE(sta.models_used, CAST([] AS VARCHAR[]))                    AS models_used,
         COALESCE(sfa.files_edited, 0)                                       AS files_edited,
@@ -318,10 +280,10 @@ spans AS (
         -- NULLIF guards the zero-denominator case; COALESCE to 0.0 keeps the
         -- not_null test green and dashboard arithmetic clean.
         COALESCE(
-            CAST(COALESCE(sca.cache_read_total, 0) AS DOUBLE)
+            CAST(COALESCE(sta.cache_read_total, 0) AS DOUBLE)
             / NULLIF(
-                COALESCE(sca.cache_read_total, 0)
-                + COALESCE(sca.cache_creation_total, 0),
+                COALESCE(sta.cache_read_total, 0)
+                + COALESCE(sta.cache_creation_total, 0),
                 0
             ),
             0.0
@@ -333,28 +295,26 @@ spans AS (
             ELSE EXTRACT(EPOCH FROM (sta.first_assistant_ts - w.prompt_ts))
         END                                                                 AS ttft_seconds,
         COALESCE(sts.tool_signature, '')                                    AS tool_signature,
-        COALESCE(sr.retry_count, 0)                                         AS retry_count,
-        ss.final_stop_reason                                                AS final_stop_reason,
-        COALESCE(sfa.sub_agents_dispatched, CAST([] AS VARCHAR[]))          AS sub_agents_dispatched
+        COALESCE(sam.retry_count, 0)                                        AS retry_count,
+        sam.final_stop_reason                                               AS final_stop_reason,
+        COALESCE(sfa.sub_agents_dispatched, CAST([] AS VARCHAR[]))          AS sub_agents_dispatched,
+        sta.agent_resolved
     FROM windowed w
     LEFT JOIN span_turn_agg      sta ON sta.prompt_id = w.prompt_id
     LEFT JOIN span_last_text     slt ON slt.prompt_id = w.prompt_id
-    LEFT JOIN span_cache_agg     sca ON sca.prompt_id = w.prompt_id
     LEFT JOIN span_fte_scalar_agg sfa ON sfa.prompt_id = w.prompt_id
     LEFT JOIN span_tool_signature sts ON sts.prompt_id = w.prompt_id
-    LEFT JOIN span_retries       sr  ON sr.prompt_id  = w.prompt_id
-    LEFT JOIN span_stop          ss  ON ss.prompt_id  = w.prompt_id
+    LEFT JOIN span_am_agg        sam ON sam.prompt_id = w.prompt_id
 ),
--- Attach resolved agent (from span_agent_agg) and app/project.
+-- Attach resolved agent and app/project.
 with_agent_and_app AS (
     SELECT
-        s.*,
-        COALESCE(saa.agent_resolved, 'main')                                AS agent,
+        s.* EXCLUDE (agent_resolved),
+        COALESCE(s.agent_resolved, 'main')                                  AS agent,
         ds.app_id,
         ds.project_id,
         EXTRACT(EPOCH FROM (COALESCE(s.next_prompt_ts, NOW()) - s.prompt_ts)) AS duration_seconds
     FROM spans s
-    LEFT JOIN span_agent_agg saa ON saa.prompt_id = s.prompt_id
     LEFT JOIN {{ ref('dim_sessions') }} ds
         USING (tenant_id, session_id)
 ),

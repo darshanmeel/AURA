@@ -15,6 +15,8 @@ $PidFile = "$Data/state/native.pids"
 
 function Stop-Aura {
     if (-not (Test-Path $PidFile)) { return }
+    # taskkill on an already-exited PID writes to stderr; keep going.
+    $ErrorActionPreference = 'Continue'
     foreach ($p in Get-Content $PidFile) {
         # /T also kills dbt.exe / node children, so no orphan dbt keeps the work-DB lock.
         if ($p) { & taskkill /T /F /PID $p 2>$null | Out-Null }
