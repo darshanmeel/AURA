@@ -3,6 +3,7 @@
 Diagrams are generated here and injected between <!--map:NAME--> ... <!--/map:NAME-->.
 Lineage uses Graphviz `dot` (temp files are deleted)."""
 import csv, html, math, re, subprocess, sys, tempfile
+from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -265,110 +266,170 @@ def swim(name, W, lane_names, steps, arrows, gap=48, top=34, boxw=None, minlane=
     return cv, H
 
 
+# ---------------------------------------------------------------- source line numbers
+WSRC = "watcher/src/aura_watcher/"
+
+
+@lru_cache(maxsize=None)
+def _lines(path):
+    return (ROOT / path).read_text(encoding="utf-8").splitlines()
+
+
+def at(path, pat, to=None):
+    """'path:N' for the first line matching regex `pat`; 'path:N-M' when `to` is given
+    (M = first line at or after N matching `to`). Fails when a pattern is absent."""
+    ls = _lines(path)
+    n = next((i for i, s in enumerate(ls, 1) if re.search(pat, s)), None)
+    assert n, "%s: no line matches %r" % (path, pat)
+    if to is None:
+        return "%s:%d" % (path, n)
+    m = next((i for i in range(n, len(ls) + 1) if re.search(to, ls[i - 1])), None)
+    assert m, "%s: no line matches %r after line %d" % (path, to, n)
+    return "%s:%d-%d" % (path, n, m)
+
+
+def W(f, pat, to=None):
+    return at(WSRC + f, pat, to)
+
+
+def S(f, pat, to=None):
+    """short cite (file name only) for diagram boxes"""
+    return at(WSRC + f, pat, to).rsplit("/", 1)[-1]
+
+
+def c(x):
+    return "`%s`" % x
+
+
+# ---------------------------------------------------------------- facts read from the repo
+sys.path.insert(0, str(ROOT / "watcher/src"))
+from aura_watcher import lake  # noqa: E402  (KEYS and SCHEMAS are the watcher -> dbt contract)
+
+MODEL_FILES = sorted((ROOT / "dbt/models").glob("*/*.sql"))
+MAT = {p.stem: re.search(r"materialized\s*=\s*'(\w+)'", p.read_text(encoding="utf-8")).group(1) for p in MODEL_FILES}
+LAYER = {p.stem: p.parent.name for p in MODEL_FILES}
+
+
+def n_generic_tests():
+    import yaml
+    n = 0
+    for f in (ROOT / "dbt/models").glob("*/schema.yml"):
+        for m in yaml.safe_load(f.read_text(encoding="utf-8")).get("models", []):
+            n += len(m.get("data_tests") or m.get("tests") or [])
+            for col in m.get("columns", []):
+                n += len(col.get("data_tests") or col.get("tests") or [])
+    return n
+
+
+N_SINGULAR = len(list((ROOT / "dbt/tests").glob("*.sql")))
+N_TEST_FILES = len(list((ROOT / "watcher/tests").glob("test_*.py")))
+N_TESTS = sum(len(re.findall(r"^def test_", p.read_text(encoding="utf-8"), re.M)) for p in (ROOT / "watcher/tests").glob("test_*.py"))
+
+
 # ================================================================ DIAGRAMS
 def d_l0():
-    cv = Cv("l0", 1000, 440)
-    W, H = 230, 96
-    cv.box(0, 40, W, H, "c actor", title="Developer using Claude Code")
-    cv.box(385, 40, W, H, "c data", "DATA", "JSONL transcripts", "`<user-home>/.claude/projects/**/*.jsonl`")
-    cv.box(770, 40, W, H, "c entry", "ENTRY", "watcher", "parse · redact · write")
-    cv.box(770, 210, W, H, "c data", "DATA", "DuckDB write DB", "`data/aura.duckdb`")
-    cv.box(385, 210, W, H, "c data", "DATA", "DuckDB read snapshot", "`data/read/aura.duckdb`")
-    cv.box(0, 210, W, H, "c", "APP", "Next.js dashboard", "`localhost:3000`")
-    cv.box(770, 372, W, 56, "c routine", title="dbt run (inside watcher)", mono=True)
-    cv.poly([(W, 88), (385, 88)]); cv.lblv(307, 88, "appends 1 line|per event"); cv.num(307, 88, 1)
-    cv.poly([(615, 88), (770, 88)], True); cv.lblv(692, 88, "poll every 10 s"); cv.num(692, 88, 2)
-    cv.poly([(885, 136), (885, 210)], True); cv.lbl(893, 160, "INSERT", align="l"); cv.lbl(893, 175, "raw_events", align="l"); cv.num(885, 173, 3)
-    cv.poly([(885, 306), (885, 372)], head=True, tail=True); cv.lbl(893, 330, "every 25 min", align="l"); cv.lbl(893, 345, "builds marts", align="l"); cv.num(885, 339, 4)
-    cv.poly([(770, 258), (615, 258)], True); cv.lblv(692, 258, "copy every|600 s"); cv.num(692, 258, 5)
-    cv.poly([(385, 258), (230, 258)], True); cv.lblv(307, 258, "read-only|queries"); cv.num(307, 258, 6)
-    cv.poly([(115, 210), (115, 136)]); cv.lbl(123, 160, "cost +", align="l"); cv.lbl(123, 175, "behaviour", align="l"); cv.num(115, 173, 7)
+    cv = Cv("l0", 1000, 470)
+    W_, H = 230, 96
+    cv.box(0, 40, W_, H, "c actor", title="Developer using Claude Code")
+    cv.box(385, 40, W_, H, "c data", "DATA", "JSONL transcripts", "`<user-home>/.claude/projects/**/*.jsonl`")
+    cv.box(770, 40, W_, H, "c entry", "ENTRY", "watcher main loop", "parse · redact · buffer")
+    cv.box(770, 190, W_, H, "c data", "DATA", "Parquet lake", "`data/<user>/lake/`")
+    cv.box(385, 190, W_, H, "c routine", "THREAD", "dbt cycle", "work DB `work/aura.duckdb`")
+    cv.box(385, 340, W_, H, "c data", "DATA", "published read DB", "`read/v<stamp>/` + `CURRENT`")
+    cv.box(0, 340, W_, H, "c", "APP", "Next.js dashboard", "`localhost:3000`")
+    cv.poly([(W_, 88), (385, 88)]); cv.lblv(307, 88, "appends 1 line|per event"); cv.num(307, 88, 1)
+    cv.poly([(615, 88), (770, 88)], True); cv.lblv(692, 88, "poll 30 s|sweep 600 s"); cv.num(692, 88, 2)
+    cv.poly([(885, 136), (885, 190)], True); cv.lbl(893, 155, "flush every", align="l"); cv.lbl(893, 170, "30 s", align="l"); cv.num(885, 163, 3)
+    cv.poly([(770, 238), (615, 238)], True); cv.lblv(692, 238, "dbt reads|every 5 min"); cv.num(692, 238, 4)
+    cv.poly([(500, 286), (500, 340)]); cv.lbl(508, 306, "publish,", align="l"); cv.lbl(508, 321, "switch CURRENT", align="l"); cv.num(500, 313, 5)
+    cv.poly([(385, 388), (230, 388)], True); cv.lblv(307, 388, "read-only|queries"); cv.num(307, 388, 6)
+    cv.poly([(115, 340), (115, 136)]); cv.lbl(123, 215, "cost +", align="l"); cv.lbl(123, 230, "behaviour", align="l"); cv.num(115, 238, 7)
     return cv.html()
 
 
 def d_l2():
-    cv = Cv("l2", 1000, 900)
-    cv.frame(0, 40, 136, 810, "HOST")
+    cv = Cv("l2", 1000, 850)
+    FH = 750
+    cv.frame(0, 40, 136, FH, "HOST")
     cv.box(6, 176, 124, 104, "data", "DATA", "CLAUDE_LOGS_DIR", "`<user-home>/`|`.claude/`|`projects`", mono=True)
-    cv.box(6, 600, 124, 64, "data", "DATA", "./data/", "bind mount", mono=True)
-    cv.frame(190, 40, 550, 810, "CONTAINER watcher", "python:3.12-slim · mem_limit 5g|init: true · restart unless-stopped")
-    R = [("main", "main()", "ENTRY · startup, env, threads", "main.py:978", "routine entry"),
-         ("obs", "PollingObserver", "timeout=10 · JSONLHandler live events", "main.py:1181,390-418", "routine"),
-         ("pf", "process_file → adapters", "ClaudeAdapter · SdkTraceAdapter: parse, redact", "main.py:228, adapters/claude.py:84", "routine"),
-         ("wr", "DuckDBWriter + CheckpointManager", "inserts, offsets", "duckdb_writer.py · checkpoint.py", "routine"),
-         ("dbtw", "dbt_worker", "seed → run → test in /app/dbt", "main.py:549", "routine"),
-         ("snap", "snapshot_worker → take_snapshot", "every AURA_SNAPSHOT_INTERVAL", "main.py:521, snapshot.py:7", "routine"),
-         ("sw", "sweep_worker", "catch missed bytes, 600 s", "main.py:761", "routine"),
-         ("cov", "coverage_worker", "coverage JSON, 300 s", "main.py:735", "routine"),
-         ("vi", "process_verdicts_inbox", "every 5 s, main thread", "main.py:905", "routine")]
-    for i, (_, t, sub, c, k) in enumerate(R):
-        cv.box(205, 100 + 76 * i, 280, 64, k, title=t, sub=sub, cite_=c, mono=True)
-    cv.box(205, 792, 515, 34, "data", title="_snapshot_lock: one in-process lock (main.py:427)", mono=True)
+    cv.box(6, 640, 124, 64, "data", "DATA", "./data/<user>", "bind mount", mono=True)
+    cv.frame(190, 40, 550, FH, "CONTAINER watcher", "python:3.12-slim · mem_limit 5g|init: true · restart unless-stopped")
+    R = [("main()", "ENTRY · config, startup, run loop", S("main.py", r"^def main"), "routine entry"),
+         ("observer → dirty queue", "PollingObserver · logical paths", S("main.py", r"^class _Handler"), "routine"),
+         ("process_file → adapters", "adapters: parse, redact, buffer", S("ingest.py", r"^def process_file"), "routine"),
+         ("flush every 30 s", "Parquet first, then SQLite checkpoint", S("ingest.py", r"^def flush"), "routine"),
+         ("_dbt_loop → run_cycle", "every 5 min: seed, run, retry", S("main.py", r"^def _dbt_loop") + ", " + S("dbt_cycle.py", r"^def run_cycle"), "routine"),
+         ("publish", "read_tables.sql → read/v<stamp>", S("dbt_cycle.py", r"^def publish"), "routine"),
+         ("compaction every 600 s", "merge small lake files, verify row count", S("lake.py", r"^def compact"), "routine")]
+    for i, (t, sub, cit, k) in enumerate(R):
+        cv.box(205, 100 + 76 * i, 280, 64, k, title=t, sub=sub, cite_=cit, mono=True)
+    cv.box(205, 650, 280, 52, "data", title="flush_lock · lake_lock", cite_=S("lake.py", r"^flush_lock =", r"^lake_lock ="), mono=True)
     DX, DW = 580, 140
-    cv.box(DX, 328, DW, 64, "data", title="/data/|aura.duckdb", sub="write DB", mono=True)
-    cv.box(DX, 480, DW, 64, "data", title="/data/read/|aura.duckdb", sub="read DB", mono=True)
-    cv.box(DX, 590, DW, 80, "data", title="/data/artifacts/", sub="dbt JSON files", mono=True)
-    cv.box(DX, 700, DW, 80, "data", title="/data/|verdicts-inbox.jsonl", sub="verdict hand-off", mono=True)
-    cv.frame(770, 40, 230, 770, "CONTAINER frontend", "node:20-alpine|Next standalone :3000|/data ro · mem_limit 512m")
-    cv.box(785, 126, 200, 64, "routine", title="app/**/page.tsx", sub="force-dynamic RSC", mono=True)
-    cv.box(785, 220, 150, 64, "routine", title="app/api/**/route.ts", sub="12 handlers", mono=True)
-    cv.box(785, 477, 200, 70, "routine", title="lib/db.ts query()", sub="READ_ONLY, inode check, 15 s timeout", mono=True)
-    cv.box(785, 590, 200, 80, "routine", title="queries/observability.ts", sub="reads artifacts JSON", mono=True)
-    cv.box(785, 708, 200, 64, "routine", title="api/sessions/[id]/verdict", sub="appends to inbox", mono=True)
+    cv.box(DX, 296, DW, 56, "data", title="state/|aura_state.sqlite", sub="checkpoints", mono=True)
+    cv.box(DX, 372, DW, 56, "data", title="lake/", sub="Parquet · date=<d>", mono=True)
+    cv.box(DX, 448, DW, 56, "data", title="work/aura.duckdb", sub="dbt work DB", mono=True)
+    cv.box(DX, 524, DW, 56, "data", title="read/v<stamp>/|+ CURRENT", sub="read DB", mono=True)
+    cv.box(DX, 600, DW, 56, "data", title="artifacts/", sub="status + dbt JSON", mono=True)
+    cv.box(DX, 690, DW, 56, "data", title="inbox/|verdicts-inbox.jsonl", sub="read by dbt", mono=True)
+    cv.frame(770, 40, 230, FH, "CONTAINER frontend", "node:20-slim|Next standalone :3000|/data ro · inbox rw|mem_limit 1536m")
+    cv.box(785, 100, 200, 56, "routine", title="app/**/page.tsx", sub="force-dynamic RSC", mono=True)
+    cv.box(785, 180, 150, 56, "routine", title="app/api/**/route.ts", sub="12 handlers", mono=True)
+    cv.box(785, 510, 200, 84, "routine", title="lib/db.ts query()", sub="CURRENT cached 1 s, READ_ONLY, 15 s timeout", mono=True)
+    cv.box(785, 600, 200, 56, "routine", title="queries/observability.ts", sub="reads artifacts JSON", mono=True)
+    cv.box(785, 690, 200, 56, "routine", title="api/sessions/[id]/verdict", sub="appends to inbox", mono=True)
     cv.box(800, 0, 200, 30, "c actor", title="Browser · GET /?range=7d", mono=True)
     cv.poly([(130, 208), (205, 208)], True); cv.lbl(167, 194, "ro mount")
-    cv.poly([(345, 164), (345, 176)]); cv.poly([(345, 240), (345, 252)]); cv.poly([(345, 316), (345, 328)])
-    cv.poly([(485, 350), (DX, 350)], True); cv.lbl(532, 336, "INSERT")
-    cv.poly([(485, 420), (515, 420), (515, 372), (DX, 372)]); cv.lbl(548, 386, "dbt run")
-    cv.poly([(650, 392), (650, 480)], True); cv.lbl(658, 436, "checkpoint", align="l")
-    cv.poly([(485, 512), (DX, 512)], True); cv.lbl(505, 498, "copy")
-    cv.poly([(485, 452), (545, 452), (545, 630), (DX, 630)], True); cv.lbl(552, 567, "copy artifacts", align="l")
-    cv.poly([(DX, 740), (485, 740)], True); cv.lbl(532, 726, "poll 5 s")
-    cv.poly([(130, 632), (190, 632)], True); cv.lbl(160, 618, "rw /data")
-    cv.poly([(68, 664), (68, 880), (880, 880), (880, 810)], True); cv.lbl(500, 866, "ro /data")
-    cv.poly([(720, 512), (785, 512)], True); cv.lbl(752, 498, "ro")
-    cv.poly([(720, 630), (785, 630)], True); cv.lbl(752, 616, "ro")
-    cv.poly([(785, 740), (720, 740)], True); cv.lbl(752, 726, "append")
-    cv.poly([(970, 30), (970, 126)])
-    cv.poly([(960, 190), (960, 477)]); cv.poly([(860, 284), (860, 477)])
+    for i in (0, 1, 2, 4):
+        cv.poly([(345, 100 + 76 * i + 64), (345, 100 + 76 * (i + 1))])
+    cv.poly([(485, 340), (DX, 340)], True); cv.lbl(532, 326, "commit")
+    cv.poly([(485, 380), (DX, 380)], True); cv.lbl(532, 366, "write")
+    cv.poly([(DX, 420), (485, 420)], True); cv.lbl(532, 406, "read")
+    cv.poly([(485, 460), (DX, 460)], True); cv.lbl(532, 446, "dbt run")
+    cv.poly([(DX, 494), (485, 494)], True); cv.lbl(532, 480, "attach ro")
+    cv.poly([(485, 534), (DX, 534)], True); cv.lbl(532, 520, "copy")
+    cv.poly([(130, 672), (190, 672)], True); cv.lbl(160, 658, "rw /data")
+    cv.poly([(68, 704), (68, 820), (880, 820), (880, 790)], True); cv.lbl(500, 806, "ro /data (inbox rw)")
+    cv.poly([(720, 550), (785, 550)], True); cv.lbl(752, 536, "ro")
+    cv.poly([(720, 628), (785, 628)], True); cv.lbl(752, 614, "ro")
+    cv.poly([(785, 718), (720, 718)], True); cv.lbl(752, 704, "append")
+    cv.poly([(970, 30), (970, 100)])
+    cv.poly([(960, 156), (960, 510)]); cv.poly([(860, 236), (860, 510)])
     return cv.html()
 
 
 def d_ingest():
     steps = [
-        dict(id="s1", lane=1, row=0, kind="entry", tag="STEP 1", title="`purge_duckdb_spill_dir`",
-             bul=["deletes `{db}.tmp` contents before first connect"], inn="`/data/aura.duckdb.tmp/*`", out="`0 orphan spill files`"),
-        dict(id="s2", lane=1, row=1, kind="routine", tag="STEP 2", title="`DuckDBWriter()` + start threads",
-             bul=["DDL `CREATE TABLE IF NOT EXISTS`", "snapshot, coverage, dbt, sweep threads"], inn="`env vars`", out="`4 daemon threads`"),
+        dict(id="s1", lane=1, row=0, kind="entry", tag="STEP 1", title="`startup`",
+             bul=["mode guard, `clean_tmp`, `ensure_tables`", "purge DuckDB spill dir, open SQLite"], inn="`env vars`", out="`ctx` + checkpoints in memory"),
+        dict(id="s2", lane=1, row=1, kind="routine", tag="STEP 2", title="`run()` start threads",
+             bul=["observer thread, dbt thread", "then the startup sweep"], inn="`ctx`", out="`2 threads`"),
         dict(id="f3", lane=0, row=2, kind="data", tag="DATA", title="`*.jsonl` files", sub="host transcripts, read-only"),
-        dict(id="s3", lane=1, row=2, kind="routine", tag="STEP 3", title="`list_backfill_files` + `filter_files_with_new_bytes`",
-             bul=["oldest mtime first", "skip fully checkpointed files"], inn="e.g. `15,000 files`", out="e.g. `200 with new bytes`"),
-        dict(id="s4", lane=1, row=3, kind="routine", tag="STEP 4", title="`run_batched_backfill`", grp="Repeats per batch (100 files / 120 s)",
-             bul=["holds lock per batch", "persistent connection"], inn="`100 files`", out="`lock released`"),
-        dict(id="f5", lane=0, row=4, kind="data", tag="DATA", title="file grew", sub="live append to a `*.jsonl`"),
-        dict(id="s5", lane=1, row=4, kind="routine", tag="STEP 5", title="`JSONLHandler.on_modified / on_created`",
-             bul=["`*.jsonl` only, not workflow journals"], inn="`file grew`", out="`process_file(path)`"),
-        dict(id="s6", lane=1, row=5, kind="routine", tag="STEP 6", title="`process_file` read from checkpoint",
-             bul=["seek `last_offset`"], inn="`last_offset=5000`", out="`bytes 5000..EOF`"),
-        dict(id="d6", lane=1, row=6, kind="dec", title="`size < last_offset?`"),
-        dict(id="y6", lane=0, row=6, kind="step", tag="YES", title="reset offset to 0", bul=["overwrite file stats"]),
-        dict(id="s7", lane=2, row=7, kind="routine", tag="STEP 7", title="`ClaudeAdapter.parse_line`",
+        dict(id="s3", lane=1, row=2, kind="routine", tag="STEP 3", title="`sweep` + `list_files`",
+             bul=["oldest mtime first", "queue files where size != offset"], inn="e.g. `15,000 files`", out="e.g. `200 queued`"),
+        dict(id="f4", lane=0, row=3, kind="data", tag="DATA", title="file grew", sub="live append to a `*.jsonl`"),
+        dict(id="s4", lane=1, row=3, kind="routine", tag="STEP 4", title="`dirty` queue",
+             bul=["observer enqueues `*.jsonl` only", "main loop pops one path per turn"], inn="logical path", out="`process_file(path)`"),
+        dict(id="s5", lane=1, row=4, kind="routine", tag="STEP 5", title="`process_file` from checkpoint",
+             bul=["`needs_read`: offset or reset", "torn last line is left unread"], inn="`last_offset=5000`", out="`bytes 5000..EOF`"),
+        dict(id="d5", lane=1, row=5, kind="dec", title="`size < offset` or new head hash?"),
+        dict(id="y5", lane=0, row=5, kind="step", tag="YES", title="reset offset to 0", bul=["replace file stats"]),
+        dict(id="s6", lane=2, row=6, kind="routine", tag="STEP 6", title="`ClaudeAdapter.parse_line`",
              bul=["maps type, usage, model, message.id, sessionId, cwd", "`redact_obj` then `json.dumps`"], inn="`1 JSON line`", out="`1 row or None`"),
-        dict(id="x7", lane=1, row=7, kind="fail", tag="FAILURE", title="`json.loads` fails",
+        dict(id="x6", lane=1, row=6, kind="fail", tag="FAILURE", title="parse fails",
              bul=["`parse_errors` +1", "`watcher_errors` row"]),
-        dict(id="s8", lane=3, row=8, kind="data", tag="STEP 8", title="`insert_events` (+ skills, mcps)",
-             bul=["`ON CONFLICT DO NOTHING` on `(tenant_id, uuid)`"], inn="`N rows`", out="`N new · 0 dup`"),
-        dict(id="s9", lane=3, row=9, kind="data", tag="STEP 9", title="`update_checkpoint` + `update_file_stats`",
-             bul=["same lock hold", "only if offset advanced"], inn="`new_offset`", out="`last_offset = size`"),
-        dict(id="s10", lane=1, row=10, kind="routine", tag="STEP 10", title="`sweep_worker`",
-             bul=["every 600 s re-scans for missed bytes"], inn="`all files`", out="`missed bytes ingested`"),
+        dict(id="s7", lane=1, row=7, kind="routine", tag="STEP 7", title="append to buffers",
+             bul=["one buffer per lake table", "pending checkpoint stashed"], inn="`1 row`", out="`buffer +1`"),
+        dict(id="s8", lane=3, row=8, kind="data", tag="STEP 8", title="`flush` every 30 s",
+             bul=["under `flush_lock`, stamp `ingested_at`", "`part-*.parquet` via tmp + rename"], inn="`N buffered rows`", out="`N rows in lake`"),
+        dict(id="s9", lane=3, row=9, kind="data", tag="STEP 9", title="`commit_flush` to SQLite",
+             bul=["one transaction", "only after all files exist"], inn="`pending offsets`", out="`last_offset = size`"),
     ]
     arrows = [dict(a="s1", b="s2"), dict(a="s2", b="s3"), dict(a="f3", b="s3", style="dash"), dict(a="s3", b="s4"),
-              dict(a="s4", b="s5"), dict(a="f5", b="s5", style="dash"), dict(a="s5", b="s6"), dict(a="s6", b="d6"),
-              dict(a="d6", b="y6", label="yes"), dict(a="d6", b="s7", label="no", ymid=-8),
-              dict(a="y6", b="s7", toff=-45, ymid=10, soff=0), dict(a="s7", b="x7", style="fail"),
-              dict(a="s7", b="s8"), dict(a="s8", b="s9"), dict(a="s9", b="s10")]
-    cv, H = swim("ingest", 1000, ["FILESYSTEM", "WATCHER main.py", "ADAPTER", "DUCKDB aura.duckdb"], steps, arrows, boxw=214)
+              dict(a="f4", b="s4", style="dash"), dict(a="s4", b="s5"), dict(a="s5", b="d5"),
+              dict(a="d5", b="y5", label="yes"), dict(a="d5", b="s6", label="no", ymid=-8),
+              dict(a="y5", b="s6", toff=-45, ymid=10, soff=0), dict(a="s6", b="x6", style="fail"),
+              dict(a="s6", b="s7"), dict(a="s7", b="s8"), dict(a="s8", b="s9")]
+    cv, H = swim("ingest", 1000, ["FILESYSTEM", "WATCHER main thread", "ADAPTER", "LAKE + SQLITE"], steps, arrows, boxw=214)
     return cv.html()
 
 
@@ -376,34 +437,33 @@ def d_dbtcycle():
     steps = [
         dict(id="d1", lane=0, row=0, kind="dec", title="`interval <= 0?`"),
         dict(id="x1", lane=1, row=0, kind="step", tag="YES", title="thread exits"),
-        dict(id="s2", lane=0, row=1, kind="routine", tag="STEP 2", title="`acquire _snapshot_lock`",
-             bul=["ingestion and snapshots now wait"], inn="`—`", out="`lock held`"),
-        dict(id="s3", lane=1, row=2, kind="routine", tag="STEP 3", title="`dbt source freshness`",
-             bul=["skipped until `initial_backfill_done`"], inn="`raw_events.ts`", out="`sources.json`"),
-        dict(id="s4", lane=1, row=3, kind="routine", tag="STEP 4", title="`dbt seed`",
-             bul=["`--profiles-dir . --no-partial-parse`", "loads `model_pricing.csv`"], inn="`11 seed rows`", out="`model_pricing`"),
-        dict(id="s5", lane=1, row=4, kind="routine", tag="STEP 5", title="`dbt run`",
-             bul=["`--profiles-dir . --no-partial-parse`", "`run`, not `build`: models refresh even if tests fail"], inn="`raw_events`", out="`29 models`"),
-        dict(id="f5", lane=0, row=4, kind="fail", tag="FAILURE", title="`exit != 0`", bul=["`watcher_errors` source `dbt_run`", "models keep last build"]),
-        dict(id="s6", lane=1, row=5, kind="routine", tag="STEP 6", title="`dbt test`",
-             bul=["`--profiles-dir . --no-partial-parse`", "failures logged, never block"], inn="`105 generic + 2 singular`", out="`run_results.json`"),
-        dict(id="s7", lane=0, row=6, kind="routine", tag="STEP 7", title="`release lock` then copy artifacts",
-             bul=["to `/data/artifacts`", "keeps last 20 in `history/`"], inn="`target/*.json`", out="`/data/artifacts/*.json`"),
-        dict(id="q1", lane=2, row=6, kind="routine", tag="STEP S1", title="`with _snapshot_lock:`",
-             bul=["waits for dbt, never skips"], inn="`—`", out="`lock`"),
-        dict(id="s8", lane=0, row=7, kind="routine", tag="STEP 8", title="`node run_all.mjs` (60 s timeout)",
-             bul=["8 integrity checks"], inn="`read DB`", out="`number_verify.json`"),
-        dict(id="q2", lane=2, row=7, kind="data", tag="STEP S2", title="`take_snapshot`",
-             bul=["`PRAGMA force_checkpoint`", "`copy2` to `dst.tmp`, `os.replace`"], inn="`/data/aura.duckdb`", out="`/data/read/aura.duckdb` (new inode)"),
-        dict(id="s9", lane=0, row=8, kind="routine", tag="STEP 9", title="`sleep 25 min`",
-             bul=["sleep starts after the cycle ends"], inn="`—`", out="`next cycle`"),
+        dict(id="d2", lane=0, row=1, kind="dec", title="same `fingerprint`, published < 1 h?"),
+        dict(id="x2", lane=1, row=1, kind="step", tag="YES", title="status `skipped`", bul=["wait out the interval"]),
+        dict(id="s3", lane=0, row=2, kind="routine", tag="STEP 3", title="purge spill dir, take cutoff",
+             bul=["cutoff = now, under `flush_lock`", "dbt reads `ingested_at <= cutoff`"], inn="`lake` state", out="`aura_cutoff`"),
+        dict(id="s4", lane=0, row=3, kind="routine", tag="STEP 4", title="acquire `lake_lock`",
+             bul=["held for seed + run + publish", "compaction skips meanwhile"], inn="`—`", out="`lock held`"),
+        dict(id="s5", lane=1, row=4, kind="routine", tag="STEP 5", title="`dbt seed`",
+             bul=["`--profiles-dir . --no-partial-parse`", "loads `model_pricing.csv`"], inn="`%d seed rows`" % len(SEED), out="`model_pricing`"),
+        dict(id="s6", lane=1, row=5, kind="routine", tag="STEP 6", title="`dbt run`",
+             bul=["`run`, not `build`: models refresh even if tests fail", "incremental models rebuild touched sessions"], inn="lake Parquet", out="`%d models`" % len(MODEL_FILES)),
+        dict(id="f6", lane=0, row=5, kind="fail", tag="FAILURE", title="`dbt run` failed",
+             bul=["`dbt retry`: failed + skipped models", "still failing: previous read DB stays live"]),
+        dict(id="s7", lane=2, row=6, kind="data", tag="STEP 7", title="`publish`",
+             bul=["`read_tables.sql` into `read/v<stamp>/`", "atomic `CURRENT` switch"], inn="`work/aura.duckdb`", out="`read/CURRENT = v<stamp>`"),
+        dict(id="s8", lane=1, row=7, kind="routine", tag="STEP 8", title="release lock; `dbt test`",
+             bul=["then `dbt source freshness`", "failures logged, never block publish"], inn="work DB", out="`run_results.json`"),
+        dict(id="s9", lane=0, row=8, kind="routine", tag="STEP 9", title="copy artifacts; `node run_all.mjs`",
+             bul=["60 s timeout, non-blocking", "8 integrity checks on the read DB"], inn="`target/*.json`", out="`artifacts/*.json`"),
+        dict(id="s10", lane=0, row=9, kind="routine", tag="STEP 10", title="wait `interval - elapsed`",
+             bul=["start-to-start, 5 min by default"], inn="`—`", out="`next cycle`"),
     ]
-    arrows = [dict(a="d1", b="x1", label="yes"), dict(a="d1", b="s2", label="no"), dict(a="s2", b="s3"), dict(a="s3", b="s4"),
-              dict(a="s4", b="s5"), dict(a="s5", b="f5", style="fail"), dict(a="s5", b="s6"), dict(a="s6", b="s7"),
-              dict(a="s7", b="q1", style="dash"), dict(a="s7", b="s8"), dict(a="q1", b="q2"), dict(a="s8", b="s9")]
-    cv, H = swim("dbtcycle", 1000, ["dbt_worker THREAD", "dbt SUBPROCESS cwd /app/dbt", "snapshot_worker THREAD"], steps, arrows, boxw=290)
+    arrows = [dict(a="d1", b="x1", label="yes"), dict(a="d1", b="d2", label="no"), dict(a="d2", b="x2", label="yes"),
+              dict(a="d2", b="s3", label="no"), dict(a="s3", b="s4"), dict(a="s4", b="s5"), dict(a="s5", b="s6"),
+              dict(a="s6", b="f6", style="fail"), dict(a="s6", b="s7"), dict(a="s7", b="s8"), dict(a="s8", b="s9"),
+              dict(a="s9", b="s10")]
+    cv, H = swim("dbtcycle", 1000, ["dbt thread _dbt_loop", "dbt SUBPROCESS cwd dbt/", "publish"], steps, arrows, boxw=290)
     return cv.html()
-
 
 def d_pageload():
     steps = [
@@ -413,9 +473,9 @@ def d_pageload():
         dict(id="s2", lane=2, row=1, kind="routine", tag="STEP 2", title="`parseRange`, `rangeSince`", inn="`7d`", out="`since` ISO timestamp"),
         dict(id="s3", lane=2, row=2, kind="routine", tag="STEP 3", title="`Promise.all` of 17 `safe(...)`", inn="`since`", out="`17 promises`"),
         dict(id="f3", lane=2, row=3, kind="fail", tag="FAILURE", title="mart missing", bul=["`safe()` returns fallback", "one panel empty"]),
-        dict(id="s4", lane=3, row=3, kind="routine", tag="STEP 4", title="`getInstance()` inode check", inn="`statSync(DB_PATH).ino`", out="cached or new `READ_ONLY` instance"),
+        dict(id="s4", lane=3, row=3, kind="routine", tag="STEP 4", title="`getInstance()` CURRENT check", inn="`read/CURRENT` (cached 1 s)", out="cached or new `READ_ONLY` instance"),
         dict(id="s5", lane=3, row=4, kind="routine", tag="STEP 5", title="`runAndReadAll`", bul=["`(sql, params)`, 15 s timeout"], inn="SQL + `?` params", out="`rows`"),
-        dict(id="db", lane=4, row=4, kind="data", tag="DATA", title="READ DB", sub="`data/read/aura.duckdb`"),
+        dict(id="db", lane=4, row=4, kind="data", tag="DATA", title="READ DB", sub="`read/<CURRENT>/aura.duckdb`"),
         dict(id="s6", lane=3, row=5, kind="routine", tag="STEP 6", title="`normalizeBigInts`", inn="`5n`, `Date`", out="`5`, ISO string"),
         dict(id="f5", lane=4, row=5, kind="fail", tag="FAILURE", title="query over 15 s", bul=["interrupt, then reject", "see bullets below"]),
         dict(id="s7", lane=2, row=6, kind="routine", tag="STEP 7", title="render with `fmt.usd`", inn="`rows`", out="HTML + RSC payload"),
@@ -433,11 +493,11 @@ def d_cost():
         dict(id="s1", lane=0, row=0, kind="routine", tag="STEP 1", title="`ClaudeAdapter` token columns", inn="`message.usage`", out="6 token columns on `raw_events`"),
         dict(id="s1b", lane=0, row=1, kind="routine", tag="STEP 1b", title="`SdkTraceAdapter`", inn="`result.total_cost_usd`", out="`reported_cost_usd`"),
         dict(id="s2", lane=1, row=2, kind="shape", tag="STEP 2", title="`stg_assistant_messages`", bul=["latest `ts`, `byte_offset` wins"], inn="N streamed rows per `message_id`", out="1 row"),
-        dict(id="mp", lane=1, row=3, kind="data", tag="SEED", title="`model_pricing`", sub="per-Mtok rates, 11 rows"),
+        dict(id="mp", lane=1, row=3, kind="data", tag="SEED", title="`model_pricing`", sub="per-Mtok rates, %d rows" % len(SEED)),
         dict(id="s3", lane=2, row=3, kind="routine", tag="STEP 3", title="`fact_model_calls.calculated_cost`",
-             bul=["`sdk_trace`: `COALESCE(reported_cost_usd, 0)`", "else tokens × rate / 1e6"], inn="tokens + pricing row", out="USD per call"),
+             bul=["`sdk_trace`: `COALESCE(reported_cost_usd, 0)`", "else tokens × rate / 1e6", "residual cache write at 5m rate"], inn="tokens + pricing row", out="USD per call"),
         dict(id="d3", lane=2, row=4, kind="dec", title="`sdk_trace`? else pricing row found?"),
-        dict(id="f3", lane=3, row=4, kind="fail", tag="FAILURE", title="`NULL` cost", bul=["`not_null` test fails", "`fact_turns` shows `$0.0000`"]),
+        dict(id="f3", lane=3, row=4, kind="fail", tag="FAILURE", title="`NULL` cost", bul=["`not_null` test fails", "`fact_turns` keeps `NULL`"]),
         dict(id="s4", lane=2, row=5, kind="routine", tag="STEP 4", title="fan-out of `calculated_cost`",
              bul=["`fact_daily_spend.daily_cost`", "`fact_turns` → `dim_sessions.total_cost`", "`int_entity_spend`, `fact_spend_pace`"], inn="`calculated_cost`", out="4 mart totals"),
         dict(id="s5", lane=3, row=6, kind="routine", tag="STEP 5", title="`getDashboardKPIs` → `fmt.usd`", inn="`SUM(daily_cost)`", out="`$0.123`"),
@@ -505,36 +565,44 @@ def erline(cv, pts, dash, k1, k2, label=None, lp=None, align="c"):
             cv.lbl(lp[0], lp[1] + 14 * i, t, align=align)
 
 
+def lake_rows(table):
+    """entity rows for a lake table: key columns as PK, then a '+ N columns' summary"""
+    keys = lake.KEYS[table] or []
+    cols = [col for col, _ in lake.SCHEMAS[table]]
+    rest = [col for col in cols if col not in keys]
+    return [(k, "PK", "") for k in keys] if keys else [("no primary key", "", "")], len(rest)
+
+
 def d_er_raw():
     cv = Cv("er_raw", 1000, 660)
     w = 250
-    re_ = ent(cv, 0, 0, w, "raw_events", "watcher", "1 row per JSONL line with uuid + timestamp",
-              [("tenant_id", "PK", ""), ("uuid", "PK", ""), ("session_id", "FK", ""), ("file_path", "FK", ""), ("message_id", "", ""), ("+ 23 columns", "", "")])
-    sm = ent(cv, 375, 0, w, "session_meta", "watcher", "1 row per session",
-             [("session_id", "PK", ""), ("tenant_id", "", ""), ("+ 7 columns", "", "")])
-    sk = ent(cv, 750, 0, w, "raw_session_skills", "watcher", "1 row per (tenant, session, skill)",
-             [("tenant_id", "PK", ""), ("session_id", "PK", ""), ("skill_name", "PK", ""), ("+ 1 column", "", "")])
+    k, n = lake_rows("raw_events")
+    re_ = ent(cv, 0, 0, w, "raw_events", "lake · Parquet", "1 row per JSONL line with uuid + timestamp",
+              k + [("session_id", "FK", ""), ("file_path", "FK", ""), ("message_id", "", ""), ("+ %d columns" % (n - 3), "", "")])
+    k, n = lake_rows("session_meta")
+    sm = ent(cv, 375, 0, w, "session_meta", "lake · Parquet", "1 row per observation, append-only",
+             [("tenant_id", "", ""), ("session_id", "", "")] + k + [("+ %d columns" % (n - 2), "", "")])
+    k, n = lake_rows("raw_session_skills")
+    sk = ent(cv, 750, 0, w, "raw_session_skills", "lake · Parquet", "1 row per (tenant, session, skill)", k + [("+ %d columns" % n, "", "")])
     y1 = 260
-    ic = ent(cv, 0, y1, w, "ingest_checkpoints", "watcher", "1 row per (tenant, JSONL file)",
-             [("tenant_id", "PK", ""), ("file_path", "PK", ""), ("last_offset", "", ""), ("last_seen_at", "", ""), ("+ 1 column", "", "")])
-    sv = ent(cv, 375, y1, w, "session_verdicts", "watcher", "1 row per (tenant, session)",
-             [("tenant_id", "PK", ""), ("session_id", "PK", ""), ("+ 3 columns", "", "")])
-    mc = ent(cv, 750, y1, w, "raw_session_mcps", "watcher", "1 row per (tenant, session, MCP server)",
-             [("tenant_id", "PK", ""), ("session_id", "PK", ""), ("mcp_server", "PK", ""), ("+ 1 column", "", "")])
+    ic = ent(cv, 0, y1, w, "checkpoints", "SQLite state", "1 row per (tenant, JSONL file)",
+             [("tenant_id", "PK", ""), ("file_path", "PK", ""), ("last_offset", "", ""), ("head_hash", "", ""), ("last_seen_at", "", ""), ("+ 3 columns", "", "")])
+    k, n = lake_rows("watcher_errors")
+    we = ent(cv, 375, y1, w, "watcher_errors", "lake · Parquet", "1 row per logged error; stands alone", k + [("~%d columns" % n, "", "")])
+    k, n = lake_rows("raw_session_mcps")
+    mc = ent(cv, 750, y1, w, "raw_session_mcps", "lake · Parquet", "1 row per (tenant, session, MCP server)", k + [("+ %d columns" % n, "", "")])
     y2 = y1 + ic["h"] + 70
-    fs = ent(cv, 0, y2, w, "ingest_file_stats", "watcher", "1 row per (tenant, JSONL file)",
+    fs = ent(cv, 0, y2, w, "file_stats", "SQLite state", "1 row per (tenant, JSONL file)",
              [("tenant_id", "PK", ""), ("file_path", "PK", ""), ("+ 7 columns", "", "")])
-    we = ent(cv, 750, y2, w, "watcher_errors", "watcher", "1 row per logged error; stands alone",
-             [("no primary key", "", ""), ("~5 columns", "", "")])
+    mt = ent(cv, 375, y2, w, "meta", "SQLite state", "1 row per key; stands alone", [("key", "PK", ""), ("value", "", "")])
     cv.h = y2 + fs["h"] + 20
     y = row_y(re_, 2)
-    erline(cv, [(w, y), (375, y)], True, "many", "one", "tenant_id,|session_id", (312, y - 36))
+    erline(cv, [(w, y), (375, y)], True, "many", "many", "tenant_id,|session_id", (312, y - 36))
     y = row_y(sk, 1)
-    erline(cv, [(750, y), (625, y)], True, "many", "one", "tenant_id,|session_id", (687, y - 36))
+    erline(cv, [(750, y), (625, y)], True, "many", "many", "tenant_id,|session_id", (687, y - 36))
     ym = row_y(mc, 1)
-    erline(cv, [(750, ym), (687, ym), (687, row_y(sm, 1) + 4), (625, row_y(sm, 1) + 4)], True, "many", "one")
+    erline(cv, [(750, ym), (687, ym), (687, row_y(sm, 1) + 4), (625, row_y(sm, 1) + 4)], True, "many", "many")
     cv.lbl(687, 296, "tenant_id,", chip=True); cv.lbl(687, 312, "session_id", chip=True)
-    erline(cv, [(500, y1), (500, sm["y"] + sm["h"])], True, "one", "one", "tenant_id, session_id", (508, (y1 + sm["h"]) / 2), "l")
     erline(cv, [(60, re_["h"]), (60, y1)], True, "many", "one", "tenant_id, file_path", (68, (re_["h"] + y1) / 2 + 6), "l")
     erline(cv, [(60, ic["y"] + ic["h"]), (60, y2)], True, "one", "one", "tenant_id, file_path", (68, (ic["y"] + ic["h"] + y2) / 2), "l")
     return cv.html()
@@ -552,7 +620,7 @@ def d_er_marts():
              [("tenant_id", "PK", ""), ("session_id", "PK", ""), ("person_id", "FK", ""), ("cwd", "", ""), ("+ session roll-up columns", "", "")])
     pe = ent(cv, 375, 806, w, "dim_people", "marts", "1 row per (tenant_id, person_id)", [("tenant_id", "PK", ""), ("person_id", "PK", "")])
     mp = ent(cv, 0, 330, w, "model_pricing", "seed", "1 row per (tenant_id, model, valid_from)",
-             [("tenant_id", "PK", ""), ("model", "PK", ""), ("valid_from", "PK", ""), ("valid_to", "", ""), ("+ 11 columns", "", "")])
+             [("tenant_id", "PK", ""), ("model", "PK", ""), ("valid_from", "PK", ""), ("valid_to", "", ""), ("+ %d columns" % (len(SEED[0]) - 4), "", "")])
     mc = ent(cv, 0, 560, w, "fact_model_calls", "marts", "1 row per model call",
              [("event_uuid", "PK", ""), ("model_call_id", "", ""), ("session_id", "FK", ""), ("model", "FK", ""), ("+ tokens, calculated_cost", "", "")])
     ft = ent(cv, 0, 789, w, "fact_turns", "marts", "1 row per turn",
@@ -570,9 +638,10 @@ def d_er_marts():
     hub_att = ss["y"] + 110
     bx = 735
     ys = [row_y(te, 2), row_y(er, 0), row_y(gc, 0), row_y(sf, 1)]
-    cv.poly([(bx, ys[0]), (bx, ys[-1])], False, head=False)
-    for yy in ys:
-        cv.poly([(X, yy), (bx, yy)], False, head=False)
+    cv.poly([(bx, ys[0]), (bx, hub_att)], False, head=False)
+    cv.poly([(bx, hub_att), (bx, ys[-1])], True, head=False, anim=False)
+    for i, yy in enumerate(ys):
+        cv.poly([(X, yy), (bx, yy)], i > 1, head=False, anim=False)
         endmark(cv, (X, yy), (1, 0), "many")
     cv.poly([(bx, hub_att), (625, hub_att)], False, head=False)
     endmark(cv, (625, hub_att), (1, 0), "one")
@@ -603,25 +672,25 @@ def d_er_marts():
     return cv.html()
 
 
+
 # ---------------------------------------------------------------- lineage (Graphviz)
 def read_edges():
-    t = (ROOT / "AURA-knowledge-graph/flows/dbt-lineage.md").read_text(encoding="utf-8")
-    return re.findall(r"^\s+(\w+) --> (\w+)\s*$", t, re.M)
+    """ref()/source() edges read from the model files, comments stripped"""
+    out = set()
+    for p in MODEL_FILES:
+        t = re.sub(r"--[^\n]*", "", re.sub(r"\{#.*?#\}", "", p.read_text(encoding="utf-8"), flags=re.S))
+        out |= {(r, p.stem) for r in re.findall(r"ref\(\s*'(\w+)'\s*\)", t)}
+        out |= {("src_" + s, p.stem) for s in re.findall(r"source\(\s*'lake'\s*,\s*'(\w+)'\s*\)", t)}
+    return sorted(out)
 
 
 COST = {("src_raw_events", "stg_events"), ("stg_events", "stg_assistant_messages"), ("stg_assistant_messages", "fact_model_calls"),
         ("fact_model_calls", "fact_daily_spend"), ("model_pricing", "fact_model_calls"), ("fact_model_calls", "fact_turns"),
         ("fact_turns", "dim_sessions")}
-SRC = ["src_raw_events", "src_session_meta", "src_raw_session_skills", "src_raw_session_mcps", "src_session_verdicts",
-       "src_ingest_checkpoints", "src_watcher_errors"]
-VIEWS = ["stg_events", "stg_assistant_messages", "stg_session_meta", "stg_session_skills", "stg_session_mcps",
-         "stg_session_verdicts", "stg_thinking_blocks", "int_turns", "dim_turn_messages"]
-INCR = ["stg_tool_results", "fact_tool_executions", "fact_prompts"]
-
-
+SRC = sorted({a for a, _ in read_edges() if a.startswith("src_")})
 GRP = "stg_session_group"
 SESS = ["stg_session_meta", "stg_session_skills", "stg_session_mcps", "stg_session_verdicts"]
-UP = set(SRC) | set(VIEWS[:7]) | {"stg_tool_calls", "stg_tool_results", "int_turns", "int_event_agent", "dim_turn_messages"}
+UP = set(SRC) | {m for m in MAT if m.startswith("stg_")} | {"int_turns", "int_event_agent", "dim_turn_messages"}
 
 
 def d_lineage(name, edges, extra=(), group=False, rd="TB"):
@@ -639,15 +708,13 @@ def d_lineage(name, edges, extra=(), group=False, rd="TB"):
         lab = n[4:] if n.startswith("src_") else n
         if n.startswith("src_"):
             st = 'style=filled, fillcolor="#EEEFEC", color="#B9BCC2", label="src: %s"' % lab
-            if n == "src_watcher_errors":
-                st = st[:-1] + '\n(read by frontend only)"'
         elif n == "model_pricing":
             st = 'style=filled, fillcolor="#EEEFEC", color="#B9BCC2", label="SEED: model_pricing"'
         elif n == GRP:
             st = 'style="filled,dashed", fillcolor="#FFFFFF", color="#17191D", label="stg_session_meta\nstg_session_skills\nstg_session_mcps\nstg_session_verdicts"'
-        elif n in VIEWS:
+        elif MAT.get(n) == "view":
             st = 'style="filled,dashed", fillcolor="#FFFFFF", color="#17191D", label="%s"' % n
-        elif n in INCR:
+        elif MAT.get(n) == "incremental":
             st = 'style=filled, fillcolor="#FCEBC8", color="#8A5A00", label="%s"' % n
         else:
             st = 'style=filled, fillcolor="#DDF0EE", color="#1C5C57", label="%s"' % n
@@ -678,14 +745,14 @@ def d_deploy():
     cv.box(16, 70, 140, 96, "c data", "DATA", "Claude transcripts", "<user-home>/|.claude/projects")
     cv.box(16, 270, 140, 80, "c data", "DATA", "./data/", "host folder in repo")
     cv.box(266, 50, 180, 190, "", "CONTAINER", "watcher", bul=["`watcher/Dockerfile`", "`python:3.12-slim`", "CMD `python -m aura_watcher.main`"])
-    cv.box(510, 50, 170, 190, "", "CONTAINER", "frontend", bul=["`frontend/Dockerfile`", "`node:20-alpine`, 3 stages", "CMD `node server.js`", "port 3000"])
+    cv.box(510, 50, 170, 190, "", "CONTAINER", "frontend", bul=["`frontend/Dockerfile`", "`node:20-slim`, 3 stages", "CMD `node server.js`", "port 3000"])
     cv.box(590, 330, 100, 44, "c actor", title="Browser")
     cv.frame(800, 10, 200, 320, "GITHUB ACTIONS", solid=True, color="#17191D")
-    for i, t in enumerate(["watcher job", "dbt job", "frontend job"]):
+    for i, t in enumerate(["watcher job", "pipeline job"]):
         cv.box(815, 56 + 62 * i, 170, 46, "c routine", title=t, mono=True)
-    cv.box(815, 250, 170, 60, "c", title="checks only", sub="no deploy")
+    cv.box(815, 180, 170, 60, "c", title="checks only", sub="no deploy")
     cv.div.append('<div class="b c" style="left:800px;top:350px;width:200px;height:70px;border:1px dashed #9AA0A8;background:transparent">'
-                  '<span class="t">Central / team rollout</span><span class="sub">not built (README.md:420-479)</span></div>')
+                  '<span class="t">Central / team rollout</span><span class="sub">not built (' + at("README.md", r"## From individual to team", r"## Roadmap") + ')</span></div>')
     cv.poly([(156, 105), (266, 105)], True); cv.lblv(211, 105, "ro|/logs/claude")
     cv.poly([(156, 300), (356, 300), (356, 240)], True, head=True, tail=True); cv.lbl(256, 286, "rw /data")
     cv.poly([(156, 330), (556, 330), (556, 240)], True); cv.lbl(380, 344, "ro /data")
@@ -700,25 +767,36 @@ with open(ROOT / "dbt/seeds/model_pricing.csv", encoding="utf-8") as f:
     for r in csv.DictReader(f):
         SEED.append(r)
 SEED_BY = {r["model"]: r for r in SEED}
+SEED_CSV = "dbt/seeds/model_pricing.csv"
+FMC = "dbt/models/marts/fact_model_calls.sql"
+COMPOSE = "docker-compose.yml"
+DBTC = "watcher/src/aura_watcher/dbt_cycle.py"
+DBJS = "frontend/lib/db.ts"
+PIN = lambda name: re.search(name + r"==([\w.]+)", (ROOT / "watcher/pyproject.toml").read_text(encoding="utf-8")).group(1)
+PKG = lambda name: re.search(r'"%s": "([^"]+)"' % re.escape(name), (ROOT / "frontend/package.json").read_text(encoding="utf-8")).group(1)
+
+
+def seed_line(model):
+    return at(SEED_CSV, r"^,%s," % re.escape(model))
 
 
 def calc(model, inp=0, out=0, c5=0, c1=0, cc=0, cr=0):
     r = SEED_BY[model]
     g = lambda k: float(r[k] or 0)
     v = (inp * g("cost_input_per_mtok") + out * g("cost_output_per_mtok") + c5 * g("cost_cache_write_5m_per_mtok")
-         + c1 * g("cost_cache_write_1h_per_mtok") + (cc - c5 - c1) * g("cost_cache_write_1h_per_mtok")
+         + c1 * g("cost_cache_write_1h_per_mtok") + max(cc - c5 - c1, 0) * g("cost_cache_write_5m_per_mtok")
          + cr * g("cost_cache_read_per_mtok"))
     return v / 1e6
 
 
-def usd(n):  # mirrors frontend/lib/fmt.ts:13-19
+def usd(n):  # mirrors fmt.usd in frontend/lib/fmt.ts
     return "$%.4f" % n if n < 0.01 else ("$%.3f" % n if n < 1 else "$%.2f" % n)
 
 
 CHECK = {"sonnet": calc("claude-sonnet-5", 1000, 2000, 20000, 0, 20000, 50000),
          "opus": calc("claude-opus-4-8", 400, 1000, 0, 8000, 8000, 100000),
          "haiku": calc("claude-haiku-4-5", 0, 1000, 0, 0, 10000, 0)}
-assert (usd(CHECK["sonnet"]), usd(CHECK["opus"]), usd(CHECK["haiku"])) == ("$0.123", "$0.157", "$0.025"), CHECK
+assert (usd(CHECK["sonnet"]), usd(CHECK["opus"])) == ("$0.082", "$0.157"), CHECK
 
 
 def depths(edges):
@@ -733,11 +811,48 @@ def depths(edges):
         if n not in memo:
             memo[n] = 1 + max([d(p) for p in par.get(n, [])] or [-1])
         return memo[n]
-    nodes = {b for _, b in edges}
+    nodes = {b for _, b in edges} | {a for a, _ in edges if not a.startswith("src_") and a != "model_pricing"}
     out = {}
     for n in nodes:
         out.setdefault(d(n), []).append(n)
     return {k: sorted(v) for k, v in sorted(out.items())}
+
+
+GRAIN = {  # model: (grain, key)
+    "stg_events": ("1 per lake event, duplicates removed", "`tenant_id, uuid`; delete+insert on `tenant_id, session_id`"),
+    "stg_content_blocks": ("1 per message.content block", "`tenant_id, event_uuid, block_idx`; delete+insert on session"),
+    "stg_lake_event_dups": ("1 per losing lake copy of an event", "`tenant_id, uuid, filename, file_row_number`"),
+    "stg_assistant_messages": ("1 per (tenant, message_id); latest event", "`tenant_id, message_id`"),
+    "stg_session_meta": ("1 per session; latest value per attribute", "`tenant_id, session_id`"),
+    "stg_session_skills": ("1 per (tenant, session, skill)", "`tenant_id, session_id, skill_name`"),
+    "stg_session_mcps": ("1 per (tenant, session, server)", "`tenant_id, session_id, mcp_server`"),
+    "stg_session_verdicts": ("1 per session; latest inbox line", "`tenant_id, session_id`"),
+    "stg_thinking_blocks": ("1 per thinking block", "`assistant_event_uuid, thinking_idx`"),
+    "stg_tool_calls": ("1 per tool_use block", "`tenant_id, tool_use_id`"),
+    "stg_tool_results": ("1 per tool result", "dbt unique_key `tenant_id, event_uuid`"),
+    "stg_watcher_errors": ("1 per logged error", "—"),
+    "dim_turn_messages": ("1 per turn; text columns only", "`tenant_id, turn_id`"),
+    "int_app_cwd_lookup": ("1 per (tenant, cwd)", "`tenant_id, cwd`"),
+    "int_entity_spend": ("1 per (tenant, entity_type, entity_id, project_id, date)", "same"),
+    "int_event_agent": ("1 per (tenant, event_uuid)", "`tenant_id, event_uuid`"),
+    "int_turns": ("1 per assistant turn (turn_id = message_id)", "`tenant_id, turn_id`"),
+    "dim_agents": ("1 per (tenant, agent, app_id, project_id)", "same"),
+    "dim_apps": ("1 per (tenant, app_id, project_id)", "same"),
+    "dim_people": ("1 per (tenant, person_id)", "same"),
+    "dim_projects": ("1 per (tenant, project_id)", "same"),
+    "dim_sessions": ("1 per (tenant, session_id)", "same"),
+    "fact_daily_spend": ("1 per (tenant, date, agent, model, provider)", "`tenant_id, date, agent, model`"),
+    "fact_errors": ("1 per distinct error tuple", "—"),
+    "fact_git_commands": ("1 per git Bash call", "—"),
+    "fact_hourly_activity": ("up to 168 rows (day × hour)", "`day_of_week, hour_of_day`"),
+    "fact_model_calls": ("1 per model call", "`event_uuid`"),
+    "fact_prompts": ("1 per external prompt", "`tenant_id, prompt_id`"),
+    "fact_session_files": ("1 per (tenant, session, file)", "same"),
+    "fact_spend_pace": ("1 per tenant", "`tenant_id`"),
+    "fact_tool_executions": ("1 per tool_use_id", "`tenant_id, tool_use_id`"),
+    "fact_turns": ("1 per turn", "`turn_id`"),
+}
+assert set(GRAIN) == set(MAT), set(GRAIN) ^ set(MAT)
 
 
 def build():
@@ -746,101 +861,124 @@ def build():
     e1 = [e for e in edges if e[1] in UP]
     e2 = [e for e in edges if e[1] not in UP]
     assert len(e1) + len(e2) == n_edges
-    lin1, sc1 = d_lineage("lineage_up", e1, extra=["src_watcher_errors"], rd="LR")
+    lin1, sc1 = d_lineage("lineage_up", e1, rd="LR")
     lin2, sc2 = d_lineage("lineage_marts", e2, group=True)
     scale = min(sc1, sc2)
     dep = depths(edges)
+    n_models, n_gen, n_sing = len(MODEL_FILES), n_generic_tests(), N_SINGULAR
+    n_pages = len(list((ROOT / "frontend/app").rglob("page.tsx")))
+    n_api = len(list((ROOT / "frontend/app/api").rglob("route.ts")))
     S = []
+    README = "README.md"
 
     # ---- 1
     S.append(sec("s1", "Big picture", d_l0() + key("pill = person · grey = data · teal = code · dashed = data moves · numbers = order")
-        + notice("The dashboard never reads the write DB; it reads a copy refreshed every 600 s.")
-        + ul(["One process owns `data/aura.duckdb`; dbt runs as its subprocess.",
-              "Readers open only the snapshot `data/read/aura.duckdb`, `READ_ONLY`."])))
+        + notice("The dashboard reads only the published read DB; the lake and the work DB are never opened by the frontend.")
+        + ul(["The watcher flushes parsed events to a Parquet lake every 30 s.",
+              "dbt builds a work DB from the lake every 5 min, then publishes a fresh read DB.",
+              "A failed run or publish keeps the previous read DB live.",
+              "Delivery is at-least-once; dbt removes duplicate events.",
+              "New event on screen: one flush + the wait for the next cycle (≤ 5 min) + run and publish time — `%s`." % at(README, r"\*\*Freshness:\*\*")])))
 
     # ---- 2
     S.append(sec("s2", "Architecture", d_l2()
         + key("frame = container · teal = code · grey = data · dashed = data moves")
-        + notice("Every watcher routine that touches DuckDB takes the same `_snapshot_lock`, so dbt blocks ingestion while it runs.")
+        + notice("Ingest and dbt share only two locks: `flush_lock` for the instant the cutoff is taken, `lake_lock` against compaction.")
         + table(["Component", "Responsibility", "Tech", "Path"], [
-            ["watcher", "Ingest JSONL, own write DB, schedule dbt + snapshot", "Python 3.12, watchdog, duckdb", "`watcher/src/aura_watcher/`"],
-            ["ClaudeAdapter", "One JSONL line to one `raw_events` row", "Python", "`watcher/src/aura_watcher/adapters/claude.py`"],
-            ["SdkTraceAdapter", "SDK trace line (`kind`, `t`, `turn`) to row", "Python", "`watcher/src/aura_watcher/adapters/sdk_trace.py`"],
-            ["redact", "Regex scrub before write", "Python `re`", "`watcher/src/aura_watcher/redact.py`"],
-            ["dbt project `aura`", "staging, intermediate, marts, pricing seed", "dbt-duckdb", "`dbt/`"],
-            ["frontend", "Server-rendered dashboard + 12 API handlers", "Next.js 14.2.3, React 18", "`frontend/`"],
-            ["number verify", "Reconciles cost totals after each dbt cycle", "Node 20, `@duckdb/node-api`", "`scripts/verify/run_all.mjs`"]])
-        + ul(["Polling, not inotify: inotify drops events on Windows bind mounts — `main.py:1179-1181`.",
-              "Read DB basename must equal write DB basename (`aura.duckdb`) — `main.py:981-985`."])))
+            ["watcher main loop", "Observe, parse, buffer, flush every 30 s, sweep, compact", "Python 3.12, watchdog", c(WSRC + "main.py")],
+            ["ClaudeAdapter", "One JSONL line to one `raw_events` row", "Python", c(WSRC + "adapters/claude.py")],
+            ["SdkTraceAdapter", "SDK trace line (`kind`, `t`) to row", "Python", c(WSRC + "adapters/sdk_trace.py")],
+            ["redact", "Value-level secret scrub before write", "Python `re`", c(WSRC + "redact.py")],
+            ["lake", "Parquet schemas, atomic writes, compaction, two locks", "DuckDB `COPY`", c(WSRC + "lake.py")],
+            ["state", "SQLite checkpoints, file stats, meta", "sqlite3", c(WSRC + "state.py")],
+            ["dbt_cycle", "dbt subprocesses, publish, prune, artifacts", "Python `subprocess`", c(WSRC + "dbt_cycle.py")],
+            ["dbt project `aura`", "staging, intermediate, marts, pricing seed", "dbt-core %s, dbt-duckdb %s" % (PIN("dbt-core"), PIN("dbt-duckdb")), "`dbt/`"],
+            ["frontend", "Server-rendered dashboard + %d API handlers" % n_api, "Next.js %s, React 18" % PKG("next"), "`frontend/`"],
+            ["number verify", "Reconciles cost totals after each cycle", "Node 20, `@duckdb/node-api`", "`scripts/verify/run_all.mjs`"]])
+        + ul(["Compose polls files: inotify events do not cross Docker Desktop bind mounts — `%s`." % at(COMPOSE, r"inotify events do not cross"),
+              "Native mode uses the OS observer and sweeps every 60 s — `%s`." % at("start.ps1", r"AURA_OBSERVER", r"AURA_SWEEP"),
+              "Work DB basename must stay `aura.duckdb`: dbt bakes the catalog name into views — `%s`." % at(DBTC, r"dbt bakes the catalog"),
+              "The main thread owns buffers and SQLite; the dbt thread owns the work DB — `%s`." % W("main.py", r"One ingest thread")])))
 
     # ---- 3
     S.append(sec("s3", "Flow: ingest and backfill", d_ingest()
         + key("teal = code · grey = data · purple dashed = repeats · red dashed = failure branch · numbers = order")
-        + notice("Steps 8 and 9 run under one lock hold, so a crash re-reads lines and the dedup key absorbs them.")
+        + notice("Files are written first and the checkpoint commits after, so a crash re-reads lines and dbt removes the duplicates.")
         + table(["#", "Step", "In", "Out", "Source"], [
-            ["1", "`purge_duckdb_spill_dir`", "`/data/aura.duckdb.tmp/*`", "`0 orphan spill files`", "`main.py:33-90,1008`"],
-            ["2", "`DuckDBWriter()` + start threads", "`env vars`", "`4 daemon threads`", "`main.py:1010,1044-1083`"],
-            ["3", "`list_backfill_files` + `filter_files_with_new_bytes`", "e.g. `15,000 files`", "e.g. `200 with new bytes`", "`main.py:114,154,1096-1123`"],
-            ["4", "`run_batched_backfill`", "`100 files`", "`lock released`", "`main.py:440,498`"],
-            ["5", "`JSONLHandler.on_modified / on_created`", "`file grew`", "`process_file(path)`", "`main.py:398-418`"],
-            ["6", "`process_file` read from checkpoint", "`last_offset=5000`", "`bytes 5000..EOF`", "`main.py:259-296`"],
-            ["7", "`ClaudeAdapter.parse_line`", "`1 JSON line`", "`1 row or None`", "`adapters/claude.py:84-228`"],
-            ["8", "`insert_events` (+ skills, mcps)", "`N rows`", "`N new · 0 dup`", "`duckdb_writer.py:194-228`"],
-            ["9", "`update_checkpoint` + `update_file_stats`", "`new_offset`", "`ingest_checkpoints.last_offset = size`", "`main.py:349-370`, `checkpoint.py:18-27`"],
-            ["10", "`sweep_worker`", "`all files`", "`missed bytes ingested`", "`main.py:761,774`"]], "steps", mono=(2, 3))
-        + ul(["Workers start before backfill, so dashboards refresh during a long catch-up.",
-              "Oldest file first keeps `max(raw_events.ts)` advancing — `main.py:114-152`.",
-              "Live path: read and parse run outside the lock; only DB writes are locked (a backfill batch holds the lock for the whole batch) — `main.py:258-259,349-390`.",
-              "Size check: `size < last_offset` resets the offset to 0 — `main.py:266-268`.",
-              "Workflow `journal.jsonl` files are skipped by backfill — `main.py:140,178`."])
+            ["1", "`startup`", "`env vars`", "`ctx` + checkpoints in memory", c(W("main.py", r"^def startup", r"return ingest\.new_context"))],
+            ["2", "`run()` start threads", "`ctx`", "`2 threads`", c(W("main.py", r"^def run\(", r"daemon=True"))],
+            ["3", "`sweep` + `list_files`", "e.g. `15,000 files`", "e.g. `200 queued`", c(W("ingest.py", r"^def list_files")) + " " + c(W("ingest.py", r"^def sweep"))],
+            ["4", "`dirty` queue", "logical path", "`process_file(path)`", c(W("main.py", r"^class _Handler", r"on_created")) + " " + c(W("main.py", r"^def _process_dirty"))],
+            ["5", "`process_file` from checkpoint", "`last_offset=5000`", "`bytes 5000..EOF`", c(W("ingest.py", r"^def needs_read")) + " " + c(W("ingest.py", r"^def read_new_lines"))],
+            ["6", "`ClaudeAdapter.parse_line`", "`1 JSON line`", "`1 row or None`", c(W("adapters/claude.py", r"def parse_line"))],
+            ["7", "append to buffers", "`1 row`", "`buffer +1`", c(W("ingest.py", r'ctx\.buffers\["raw_events"\]\.append'))],
+            ["8", "`flush` every 30 s", "`N buffered rows`", "`N rows in lake`", c(W("ingest.py", r"^def flush", r"return True$")) + " " + c(W("lake.py", r"^def write_rows"))],
+            ["9", "`commit_flush` to SQLite", "`pending offsets`", "`last_offset = size`", c(W("state.py", r"^def commit_flush"))]], "steps", mono=(2, 3))
+        + ul(["The startup sweep is the backfill: files whose size differs from the offset, oldest first — `%s`." % W("ingest.py", r"oldest mtime first"),
+              "dbt does not wait for the backfill; the first cycle runs on whatever the lake holds — `%s`." % at(README, r"It does not wait for the backfill"),
+              "Backfill speed measured at about 28 minutes for 6 GB of transcripts — `%s`." % at(README, r"about 28 minutes"),
+              "A torn last line is read only if it parses as JSON — `%s`." % W("ingest.py", r"^def read_new_lines", r"^    with open"),
+              "Reset to offset 0 when the file shrinks or its first 512 bytes change — `%s`." % W("ingest.py", r"^def needs_read", r"return 0, True"),
+              "Mid-file flush at 20,000 rows or 64 MB bounds memory — `%s`." % W("ingest.py", r"S12: bound memory"),
+              "A failed table write keeps buffers and pending checkpoints; the next tick retries — `%s`." % W("ingest.py", r"^def flush", r"C5:"),
+              "Workflow `journal.jsonl` files are skipped — `%s`." % W("ingest.py", r"^def is_workflow_journal")])
         + '<div class="payloads">'
         + payload("IN", "3-line JSONL file: user, assistant, ai-title", '{"type":"user", ...}\n{"type":"assistant", ...}\n{"type":"ai-title", ...}')
-        + payload("OUT", "rows written", "raw_events              +2\ningest_file_stats      lines_total=3 events_kept=2 dropped_known=1\ningest_checkpoints     last_offset = file size\nsession_meta           session_title set from ai-title")
-        + '</div>' + cite("derived from watcher/src/aura_watcher/main.py:303-377")
+        + payload("OUT", "rows written (first flush)", "lake raw_events        +2\nlake session_meta      +2  (first-sight row, title from ai-title)\nSQLite file_stats      lines_total=3 events_kept=2 dropped_known=1\nSQLite checkpoints     last_offset = file size")
+        + '</div>' + cite("derived from %s and %s" % (W("ingest.py", r"^def _process", r"^def _prime"), W("adapters/claude.py", r'"ai-title",')))
         + exset([
-            ex("ok", "TYPICAL", "Append two lines", [("file", "uuid-inc-1, uuid-inc-2"), ("then append", "uuid-inc-3, uuid-inc-4")],
-               "`count(*) = 2`, then `4`; checkpoint `cp2 > cp1`", "from watcher/tests/test_main.py:122-182"),
-            ex("edge", "EDGE", "File truncated", [("last_offset", "5000"), ("file size now", "3000 bytes")],
-               "re-read from `0`; `ingest_file_stats` overwritten, not added", "from watcher/tests/test_main.py:68")])))
+            ex("ok", "TYPICAL", "Torn last line", [("file", "u1, u2, first 20 bytes of u3"), ("then", "rest of u3 appended")],
+               "first flush: `u1, u2`, offset after line 2; second flush adds `u3`", "from %s" % at("watcher/tests/test_ingest.py", r"def test_torn_line")),
+            ex("edge", "EDGE", "File truncated", [("last_offset", "1000"), ("file size now", "smaller")],
+               "re-read from `0`; `file_stats` replaced, not added", "from %s" % at("watcher/tests/test_ingest.py", r"def test_truncation_resets")),
+            ex("edge", "EDGE", "Crash before checkpoint", [("flush", "files written"), ("commit_flush", "raises")],
+               "lines re-read after restart; `raw_events` holds each uuid twice, `stg_lake_event_dups` drops one",
+               "from %s" % at("watcher/tests/test_state.py", r"def test_crash_between_flush"))])))
 
     # ---- 4
-    S.append(sec("s4", "Flow: dbt cycle and snapshot", d_dbtcycle()
-        + key("lanes = threads / process · teal = code · grey = data · red dashed = failure branch")
-        + notice("A ~20 min cycle plus a 25 min sleep gives a ~45 min period with a 25 min lock-free window.")
-        + ul(["Cycle ~20 min; slowest models `stg_tool_results` 450-634 s, `fact_prompts` ~493 s — `docker-compose.yml:27-28`.",
-              "`run`, not `build`, so models refresh even when tests fail — `main.py:644-651`.",
-              "Incremental (delete+insert, 24 h lookback on `ingest_checkpoints.last_seen_at`): `stg_tool_results`, `fact_tool_executions`, `fact_prompts` — `dbt/models/marts/fact_prompts.sql:49-57`.",
-              "Snapshot copies the whole file under the lock — `docker-compose.yml:17-25`."])
-        + table(["Time", "dbt_worker", "snapshot_worker", "Ingestion"], [
-            ["10:00", "lock taken, `dbt run` starts", "waits", "waits"],
-            ["10:20", "lock released, verify runs", "copies, read DB replaced", "flushes backlog"],
-            ["10:45", "next cycle starts", "—", "waits again"]])
-        + cite("derived from watcher/src/aura_watcher/main.py:549-733")))
+    S.append(sec("s4", "Flow: dbt cycle and publish", d_dbtcycle()
+        + key("lanes = thread / subprocess / publish · teal = code · grey = data · red dashed = failure branch")
+        + notice("A failed run or failed publish leaves `CURRENT` untouched, so the dashboard keeps serving the previous version.")
+        + ul(["Skip when lake files, inbox and dbt code are unchanged and the last publish is under 1 h old — `%s`." % at(DBTC, r"recent = _cycle", r"return \"skipped\""),
+              "The cutoff is taken under `flush_lock`: every row stamped before it is in a finished file — `%s`." % at(DBTC, r"with lake\.flush_lock:", r"cutoff = "),
+              "`run`, not `build`, so models refresh when tests fail; tests run after publish — `%s`." % at(DBTC, r'dbt\(\["run"\]', r'dbt\(\["retry"\]'),
+              "Incremental models rebuild sessions with lake rows newer than their last `_built_at` minus 1 h — `%s`." % at("dbt/macros/recent_sessions.sql", r"macro recent_sessions", r"endmacro"),
+              "Each dbt command times out after `AURA_DBT_TIMEOUT_SECONDS` (1800) — `%s`." % at(DBTC, r"timeout=cfg\.dbt_timeout"),
+              "Prune keeps `CURRENT` and the newest older version; a locked dir is retried next cycle — `%s`." % at(DBTC, r"^def prune", r"keep = ")])
+        + table(["Item", "Value", "Source"], [
+            ["Cycle interval", "5 min start-to-start (`AURA_DBT_RUN_INTERVAL_MINUTES`)", c(W("main.py", r"stop\.wait\(max"))],
+            ["Lake flush", "30 s (`AURA_FLUSH_SECONDS`)", c(W("main.py", r"flush_seconds=float"))],
+            ["Last full cold build", "PASS=155, ERROR=0, 1347 s", "owner-reported run; not stored in the repo"],
+            ["Warm 5-min cycle", "not measured yet", "—"],
+            ["Lag per publish", "recorded in `artifacts/freshness.ndjson`", c(at(DBTC, r"^def freshness_lag"))]])
+        + cite("derived from %s" % at(DBTC, r"^def run_cycle", r"return result"))))
 
     # ---- 5
     S.append(sec("s5", "Flow: page load", d_pageload()
         + key("lanes = processes · teal = code · grey = data · red dashed = failure branch")
-        + notice("A replaced snapshot gets a new inode; the old handle stays open 3 s so in-flight queries finish.")
+        + notice("A new read DB version opens a new instance; the old one closes after the query timeout plus 1 s so in-flight queries finish.")
         + table(["#", "From → To", "Step", "Source"], [
-            ["1", "Browser → Next", "`GET /?range=7d`", "`frontend/app/page.tsx:1`"],
-            ["2", "page.tsx", "`parseRange`, `rangeSince`", "`page.tsx:28-29`, `lib/range.ts:3-23`"],
-            ["3", "page.tsx", "`Promise.all` of 17 `safe(label, getX(since), fallback)`", "`page.tsx:46-64`, `lib/api-safe.ts:17`"],
-            ["4", "lib/db.ts", "`getInstance()` inode check", "`lib/db.ts:30-65`"],
-            ["5", "lib/db.ts → READ DB", "`runAndReadAll(sql, params)`, 15 s timeout", "`lib/db.ts:115-176`"],
-            ["6", "lib/db.ts", "`normalizeBigInts`", "`lib/db.ts:70-113`"],
-            ["7", "page.tsx → Browser", "render with `fmt.usd`", "`lib/fmt.ts:13-19`"]], "steps")
-        + ul(["Timeout failure rejects with `Query timeout after 15000ms: <first 80 chars of SQL>` — `lib/db.ts:115-176`.", "Missing mart: `safe()` returns the fallback and logs `[aura:safe]`; one panel stays empty — `lib/api-safe.ts:17`.",
-        "Range lives in the URL: `today` (default), `7d`, `30d`, `all` — `frontend/lib/range.ts:3-23`.",
-        "Pages never price tokens; they sum dbt cost columns — `frontend/lib/queries/dashboard.ts:27`."]) + "<h3>Page variants</h3>"
+            ["1", "Browser → Next", "`GET /?range=7d`", c(at("frontend/app/page.tsx", r"force-dynamic"))],
+            ["2", "page.tsx", "`parseRange`, `rangeSince`", c(at("frontend/app/page.tsx", r"parseRange\(searchParams", r"rangeSince\(range\)")) + " " + c(at("frontend/lib/range.ts", r"export function parseRange"))],
+            ["3", "page.tsx", "`Promise.all` of 17 `safe(label, getX(since), fallback)`", c(at("frontend/app/page.tsx", r"await Promise\.all", r"safe\('topMcps'")) + " " + c(at("frontend/lib/api-safe.ts", r"export async function safe"))],
+            ["4", "lib/db.ts", "`getInstance()` reads `CURRENT` (cached 1 s), opens new version", c(at(DBJS, r"^function currentVersion", r"^}")) + " " + c(at(DBJS, r"^async function getInstance", r"^}"))],
+            ["5", "lib/db.ts → READ DB", "`runAndReadAll(sql, params)`, 15 s timeout", c(at(DBJS, r"^export async function query", r"^}"))],
+            ["6", "lib/db.ts", "`normalizeBigInts`", c(at(DBJS, r"^export function normalizeBigInts", r"^}"))],
+            ["7", "page.tsx → Browser", "render with `fmt.usd`", c(at("frontend/lib/fmt.ts", r"usd:", r"^  \},"))]], "steps")
+        + ul(["Timeout rejects with `Query timeout after 15000ms: <first 80 chars of SQL>` — `%s`." % at(DBJS, r"Query timeout after"),
+              "No `CURRENT` pointer yet: `read DB not published yet`; pages show empty states — `%s`." % at(DBJS, r"read DB not published yet"),
+              "Missing mart: `safe()` returns the fallback and logs `[aura:safe]`; one panel stays empty — `%s`." % at("frontend/lib/api-safe.ts", r"\[aura:safe\] query failed"),
+              "Range lives in the URL: `today` (default), `7d`, `30d`, `all` — `%s`." % at("frontend/lib/range.ts", r"export function parseRange", r"^}"),
+              "Pages never price tokens; they sum dbt cost columns — `%s`." % at("frontend/lib/queries/dashboard.ts", r"SELECT SUM\(daily_cost\)")]) + "<h3>Page variants</h3>"
         + table(["Page", "How data arrives", "Source"], [
-            ["`/`, `/agents`, `/apps`, `/people`, `/tokens`", "Server component queries per request", "`frontend/app/page.tsx:47`"],
-            ["`/sessions`", "Client fetch `GET /api/sessions?range&sort…`", "`frontend/app/sessions/page.tsx:33`"],
-            ["`/errors`", "Client fetch `GET /api/errors` (latest 500 rows)", "`frontend/app/api/errors/route.ts:4-6`"],
-            ["`/sessions/[sessionId]`", "12 queries; Prompts tab lazy-loads `/api/sessions/{id}/prompts-enriched`", "`frontend/app/sessions/[sessionId]/page.tsx:41-52`"],
-            ["`/observability`", "SSR `getPipelineSnapshot()`, then poll `/api/observability` every 10 s", "`frontend/app/observability/PipelineLive.tsx:1394-1411`"]])
+            ["`/`, `/agents`, `/apps`, `/people`, `/tokens`", "Server component queries per request", c(at("frontend/app/page.tsx", r"await Promise\.all"))],
+            ["`/sessions`", "Client fetch `GET /api/sessions?range&sort…`", c(at("frontend/app/sessions/page.tsx", r"fetch\(`/api/sessions"))],
+            ["`/errors`", "Client fetch `GET /api/errors?since=…`", c(at("frontend/app/errors/page.tsx", r"fetch\(`/api/errors"))],
+            ["`/sessions/[sessionId]`", "12 queries; Prompts tab lazy-loads `/api/sessions/{id}/prompts-enriched`", c(at("frontend/app/sessions/[sessionId]/page.tsx", r"await Promise\.all", r"\]\)")) + " " + c(at("frontend/components/SessionTabs.tsx", r"prompts-enriched"))],
+            ["`/observability`", "SSR `getPipelineSnapshot()`, then poll `/api/observability` every 10 s", c(at("frontend/app/observability/page.tsx", r"getPipelineSnapshot\(\)")) + " " + c(at("frontend/app/observability/PipelineLive.tsx", r"REFRESH_SEC ="))]])
         + '<div class="payloads">' + payload("OUT", "GET /api/sessions?range=7d&sort=cost",
-            '{ "sessions": [ up to 200 rows by total_cost DESC ],\n  "stats": { "total_count": …, "total_cost": … } }')
-        + '</div>' + cite("from frontend/app/api/sessions/route.ts:17-20")))
+            '{ "sessions": [ rows in the requested sort order ],\n  "stats": { "total_count": …, "total_cost": … } }')
+        + '</div>' + cite("from %s" % at("frontend/app/api/sessions/route.ts", r"NextResponse\.json\(\{ sessions, stats \}"))))
 
     # ---- 6
     jr = lambda title, sub, rows, cls="": ('<div class="stage %s"><div class="h"><b>%s</b><small>%s</small></div><table>%s</table></div>'
@@ -849,107 +987,100 @@ def build():
     journey = ('<div class="journey">'
         + jr("1 · JSONL line", "as written", [("type", "assistant"), ("model", "claude-sonnet-5"), ("message.id", "msg_1"), ("input_tokens", "1000"),
               ("output_tokens", "2000"), ("cache_creation", "20000"), ("ephemeral_5m", "20000"), ("ephemeral_1h", "0"), ("cache_read", "50000")])
-        + arrow + jr("2 · raw_events", "parsed + redacted", [("uuid", "&lt;line uuid&gt;"), ("message_id", "msg_1"), ("tokens", "same, as columns"), ("payload", "redacted")])
+        + arrow + jr("2 · lake raw_events", "parsed + redacted", [("uuid", "&lt;line uuid&gt;"), ("message_id", "msg_1"), ("tokens", "same, as columns"), ("payload", "redacted")])
         + arrow + jr("3 · stg_assistant_messages", "deduped by message_id", [("rows", '<span class="old">3 streamed</span><span class="new-v">1 row for msg_1</span>')], "changed")
         + '<div class="what"><div>as written</div><div></div><div>parsed + redacted</div><div></div><div>deduped by message_id</div></div></div>')
+    sr = SEED_BY["claude-sonnet-5"]
     journey2 = ('<div class="journey" style="grid-template-columns:1fr">'
         + jr("4 · fact_model_calls", "priced with seed row", [("calculated_cost",
-              '<span class="calc">(1000×3.0 + 2000×15.0 + 20000×3.75 + 0×6.0 + 0 residual + 50000×0.3) / 1e6</span>'),
-              ("result", '<span class="new-v">0.123 → $0.123</span>')]) + '</div>')
+              '<span class="calc">(1000×%s + 2000×%s + 20000×%s + 0×%s + 0 residual + 50000×%s) / 1e6</span>'
+              % (sr["cost_input_per_mtok"], sr["cost_output_per_mtok"], sr["cost_cache_write_5m_per_mtok"], sr["cost_cache_write_1h_per_mtok"], sr["cost_cache_read_per_mtok"])),
+              ("result", '<span class="new-v">%.3f → %s</span>' % (CHECK["sonnet"], usd(CHECK["sonnet"])))]) + '</div>')
     S.append(sec("s6", "Flow: cost calculation", d_cost()
         + key("teal = code · grey = data · amber = shape change · red dashed = failure branch")
         + notice("Cost is priced once per model call in dbt; every mart and screen sums that value.")
         + table(["#", "Step", "In", "Out", "Source"], [
-            ["1", "`ClaudeAdapter` token columns", "`message.usage`", "6 token columns on `raw_events`", "`adapters/claude.py:214-219`"],
-            ["1b", "`SdkTraceAdapter`", "`result.total_cost_usd`", "`reported_cost_usd`", "`adapters/sdk_trace.py:162-167`"],
-            ["2", "`stg_assistant_messages`", "N streamed rows per `message_id`", "1 row (latest `ts`, `byte_offset`)", "`stg_assistant_messages.sql:6-8,39`"],
-            ["3", "`fact_model_calls.calculated_cost`", "tokens + pricing row", "USD per call", "`fact_model_calls.sql:41-89`"],
+            ["1", "`ClaudeAdapter` token columns", "`message.usage`", "6 token columns on `raw_events`", c(W("adapters/claude.py", r'"input_tokens": usage', r'"cache_read_input_tokens": usage'))],
+            ["1b", "`SdkTraceAdapter`", "`result.total_cost_usd`", "`reported_cost_usd`", c(W("adapters/sdk_trace.py", r'get\("total_cost_usd"\)'))],
+            ["2", "`stg_assistant_messages`", "N streamed rows per `message_id`", "1 row (latest `ts`, `byte_offset`)", c(at("dbt/models/staging/stg_assistant_messages.sql", r"ROW_NUMBER\(\) OVER", r"message_id IS NOT NULL"))],
+            ["3", "`fact_model_calls.calculated_cost`", "tokens + pricing row", "USD per call", c(at(FMC, r"^\s+CASE\s*$", r"END AS calculated_cost"))],
             ["4", "fan-out", "`calculated_cost`", "`fact_daily_spend.daily_cost`, `fact_turns` → `dim_sessions.total_cost`, `int_entity_spend.total_cost`, `fact_spend_pace.today_cost`",
-             "`fact_daily_spend.sql:13`, `fact_turns.sql:34`, `dim_sessions.sql:18,43`"],
-            ["5", "`getDashboardKPIs` → `fmt.usd`", "`SUM(daily_cost)`", "`$0.123`", "`lib/queries/dashboard.ts:27`, `page.tsx:134`"]], "steps")
+             "%s %s %s %s" % (c(at("dbt/models/marts/fact_daily_spend.sql", r"SUM\(calculated_cost\)")), c(at("dbt/models/marts/fact_turns.sql", r"mc\.calculated_cost")),
+                              c(at("dbt/models/marts/dim_sessions.sql", r"SUM\(calculated_cost\)")), c(at("dbt/models/marts/fact_spend_pace.sql", r"SUM\(calculated_cost\) AS today_cost")))],
+            ["5", "`getDashboardKPIs` → `fmt.usd`", "`SUM(daily_cost)`", "`$0.123`-style string", "%s %s" % (c(at("frontend/lib/queries/dashboard.ts", r"SELECT SUM\(daily_cost\)")), c(at("frontend/app/page.tsx", r"fmt\.usd\(kpis\.total_cost\)")))]], "steps")
         + "<h3>Data journey: one message</h3>" + journey + journey2
-        + cite("derived from dbt/models/marts/fact_model_calls.sql:41-60 and dbt/seeds/model_pricing.csv:5, synthetic token counts")
-        + ul(["`fact_turns` uses `COALESCE(calculated_cost, 0.0)`; an unpriced turn shows `$0.0000` — `fact_turns.sql:34`, `fmt.ts:13-19`.",
-              "Reconciliation checks run after each cycle — `scripts/verify/run_all.mjs:72-110`."])))
+        + cite("derived from %s and %s, synthetic token counts" % (at(FMC, r"^\s+CASE\s*$", r"END AS calculated_cost"), seed_line("claude-sonnet-5")))
+        + ul(["Residual cache write (no 5m/1h split) is priced at the 5m rate, floored at 0 — `%s`." % at(FMC, r"GREATEST\(COALESCE\(c\.cache_creation", r"cost_cache_write_5m"),
+              "`fact_turns` passes `NULL` cost through; it no longer shows 0 — `%s`." % at("dbt/models/marts/fact_turns.sql", r"NULL when the model has no pricing row"),
+              "`fmt.usd(null)` renders `$—` — `%s`." % at("frontend/lib/fmt.ts", r"\$—"),
+              "Reconciliation checks run after each cycle — `%s`." % at("scripts/verify/run_all.mjs", r"check: 'session_cost_reconciles'", r"check: 'sdk_verbatim_cost'")])))
 
     # ---- 7
-    def vt(rows):
-        return table(["Object", "Grain", "Key", "Written by"], rows)
-    T1 = [
-        ["`raw_events`", "1 per JSONL line with uuid + ts", "`tenant_id, uuid`", "watcher `DuckDBWriter.insert_events` (`duckdb_writer.py:194`)"],
-        ["`ingest_checkpoints`", "1 per (tenant, file)", "`tenant_id, file_path`", "watcher `CheckpointManager.update_checkpoint` (`checkpoint.py:18`)"],
-        ["`ingest_file_stats`", "1 per (tenant, file)", "`tenant_id, file_path`", "watcher `update_file_stats` (`duckdb_writer.py:256`)"],
-        ["`session_meta`", "1 per session", "`session_id`", "watcher `write_session_meta`, `upsert_session_attributes` (`session_meta.py:128`, `duckdb_writer.py:323`)"],
-        ["`raw_session_skills`", "1 per (tenant, session, skill)", "`tenant_id, session_id, skill_name`", "watcher `insert_session_skills` (`duckdb_writer.py:230`)"],
-        ["`raw_session_mcps`", "1 per (tenant, session, server)", "`tenant_id, session_id, mcp_server`", "watcher `insert_session_mcps` (`duckdb_writer.py:243`)"],
-        ["`session_verdicts`", "1 per (tenant, session)", "`tenant_id, session_id`", "watcher `process_verdicts_inbox` (`main.py:905-960`)"],
-        ["`watcher_errors`", "1 per logged error", "—", "watcher `log_error` (`duckdb_writer.py:357`)"],
-        ["`stg_tool_calls` (table)", "1 per tool_use block", "`tenant_id, tool_use_id`", "dbt `dbt/models/staging/stg_tool_calls.sql`"],
-        ["`stg_tool_results` (incremental)", "1 per tool_use_id", "dedup on `tenant_id, COALESCE(tool_use_id, event_uuid)`; dbt unique_key `tenant_id, event_uuid`", "dbt `dbt/models/staging/stg_tool_results.sql`"],
-        ["`int_app_cwd_lookup`", "1 per (tenant, cwd)", "`tenant_id, cwd`", "dbt `dbt/models/intermediate/int_app_cwd_lookup.sql`"],
-        ["`int_entity_spend`", "1 per (tenant, entity_type, entity_id, project_id, date)", "same", "dbt `dbt/models/intermediate/int_entity_spend.sql`"],
-        ["`int_event_agent`", "1 per (tenant, event_uuid)", "`tenant_id, event_uuid`", "dbt `dbt/models/intermediate/int_event_agent.sql`"],
-        ["`dim_agents`", "1 per (tenant, agent, app_id, project_id)", "same", "dbt `dbt/models/marts/dim_agents.sql`"],
-        ["`dim_apps`", "1 per (tenant, app_id, project_id)", "same", "dbt `dbt/models/marts/dim_apps.sql`"],
-        ["`dim_people`", "1 per (tenant, person_id)", "same", "dbt `dbt/models/marts/dim_people.sql`"],
-        ["`dim_projects`", "1 per (tenant, project_id)", "same", "dbt `dbt/models/marts/dim_projects.sql`"],
-        ["`dim_sessions`", "1 per (tenant, session_id)", "same", "dbt `dbt/models/marts/dim_sessions.sql`"],
-        ["`fact_daily_spend`", "1 per (tenant, date, agent, model, provider)", "`tenant_id, date, agent, model`", "dbt `dbt/models/marts/fact_daily_spend.sql`"],
-        ["`fact_errors`", "1 per distinct error tuple", "—", "dbt `dbt/models/marts/fact_errors.sql`"],
-        ["`fact_git_commands`", "1 per git Bash call", "—", "dbt `dbt/models/marts/fact_git_commands.sql`"],
-        ["`fact_hourly_activity`", "up to 168 rows (day × hour)", "`day_of_week, hour_of_day`", "dbt `dbt/models/marts/fact_hourly_activity.sql`"],
-        ["`fact_model_calls`", "1 per model call", "`event_uuid`", "dbt `dbt/models/marts/fact_model_calls.sql`"],
-        ["`fact_prompts` (incremental)", "1 per external prompt", "`tenant_id, prompt_id`", "dbt `dbt/models/marts/fact_prompts.sql`"],
-        ["`fact_session_files`", "1 per (tenant, session, file)", "same", "dbt `dbt/models/marts/fact_session_files.sql`"],
-        ["`fact_spend_pace`", "1 per tenant", "`tenant_id`", "dbt `dbt/models/marts/fact_spend_pace.sql`"],
-        ["`fact_tool_executions` (incremental)", "1 per tool_use_id", "`tenant_id, tool_use_id`", "dbt `dbt/models/marts/fact_tool_executions.sql`"],
-        ["`fact_turns`", "1 per turn", "`turn_id`", "dbt `dbt/models/marts/fact_turns.sql`"],
-        ["`model_pricing` (seed)", "1 per (tenant, model, valid_from)", "same", "`dbt seed` from `dbt/seeds/model_pricing.csv`"],
-        ["`coverage_test` (seed)", "1 placeholder row", "—", "`dbt seed` from `dbt/seeds/coverage_test.csv`"]]
-    assert len(T1) == 30
-    T2 = [
-        ["`stg_events`", "`source aura.raw_events`", "1 per `raw_events` row; payload that is not JSON → NULL"],
-        ["`stg_assistant_messages`", "`stg_events`", "1 per (tenant_id, message_id); latest ts, byte_offset"],
-        ["`stg_session_meta`", "`source aura.session_meta`", "1 per (tenant_id, session_id)"],
-        ["`stg_session_skills`", "`source raw.raw_session_skills`", "1 per (tenant_id, session_id, skill_name)"],
-        ["`stg_session_mcps`", "`source raw.raw_session_mcps`", "1 per (tenant_id, session_id, mcp_server)"],
-        ["`stg_session_verdicts`", "`source aura.session_verdicts`", "1 per (tenant_id, session_id)"],
-        ["`stg_thinking_blocks`", "`stg_events`", "1 per thinking block (assistant_event_uuid, thinking_idx)"],
-        ["`int_turns`", "`stg_assistant_messages`, `stg_events`", "1 per assistant turn (turn_id = message_id)"],
-        ["`dim_turn_messages`", "`int_turns`", "1 per turn_id; text columns only; must stay a view (OOM)"]]
+    lake_t = [["`%s`" % t, "lake Parquet · " + ("1 per row" if t == "raw_events" else "see grain"), "`%s`" % (", ".join(lake.KEYS[t]) if lake.KEYS[t] else "none"),
+               "watcher `ingest.flush` → `lake.write_rows` (`%s`)" % W("lake.py", r"^def write_rows")] for t in lake.SCHEMAS]
+    lake_t[0][1] = "lake Parquet · 1 per JSONL line with uuid + ts"
+    lake_t[1][1] = "lake Parquet · 1 per (tenant, session, skill)"
+    lake_t[2][1] = "lake Parquet · 1 per (tenant, session, server)"
+    lake_t[3][1] = "lake Parquet · 1 per observation, append-only"
+    lake_t[4][1] = "lake Parquet · 1 per logged error"
+    state_t = [
+        ["`checkpoints`", "SQLite · 1 per (tenant, file)", "`tenant_id, file_path`", "watcher `state.commit_flush` (`%s`)" % W("state.py", r"^def commit_flush")],
+        ["`file_stats`", "SQLite · 1 per (tenant, file)", "`tenant_id, file_path`", "watcher `state.commit_flush`"],
+        ["`meta`", "SQLite · 1 per key", "`key`", "watcher `state.set_meta` (`%s`)" % W("state.py", r"^def set_meta")],
+        ["`verdicts-inbox.jsonl`", "file · 1 line per verdict POST", "latest line per session wins", "frontend `api/sessions/[id]/verdict/route.ts`, read by `stg_session_verdicts`"]]
+    models_t = []
+    for layer in ("staging", "intermediate", "marts"):
+        for m in sorted(m for m in MAT if LAYER[m] == layer and MAT[m] != "view"):
+            models_t.append(["`%s`%s" % (m, " (incremental)" if MAT[m] == "incremental" else ""), GRAIN[m][0], GRAIN[m][1], "dbt `dbt/models/%s/%s.sql`" % (layer, m)])
+    models_t.append(["`model_pricing` (seed)", "1 per (tenant, model, valid_from)", "same", "`dbt seed` from `%s`" % SEED_CSV])
+    parents = {}
+    for a, b in edges:
+        parents.setdefault(b, []).append(a)
+    views_t = [["`%s`" % m, ", ".join("`%s`" % p for p in sorted(parents[m])), GRAIN[m][0]] for m in sorted(MAT) if MAT[m] == "view"]
+    n_view = len(views_t)
+    n_lake = len(lake.SCHEMAS)
     S.append(sec("s7", "Data model",
-        ul(["8 raw tables (watcher), 29 dbt models, 2 seeds; raw tables have no enforced foreign keys."])
+        ul(["%d lake tables and 3 SQLite tables (watcher), %d dbt models, 1 seed; no enforced foreign keys." % (n_lake, n_models)])
         + "<h3>Watcher tables</h3>" + d_er_raw()
         + key("PK/FK badges · ‖ one · crow's foot many · dashed = logical (not enforced)")
-        + notice("`session_meta` is keyed by `session_id` alone, unlike every other raw table.")
-        + cite("derived from watcher/src/aura_watcher/duckdb_writer.py:82-170")
+        + notice("`session_meta` and `watcher_errors` have no key: they are append-only logs that dbt collapses.")
+        + cite("derived from %s and %s" % (W("lake.py", r"^SCHEMAS = ", r"^KEYS = "), at("watcher/src/aura_watcher/state.py", r"CREATE TABLE IF NOT EXISTS checkpoints", r"meta\(key")))
         + "<h3>Core marts</h3>" + d_er_marts()
         + key("solid = enforced by dbt relationships test · dashed = logical join · PK/FK badges")
-        + notice("Six facts are tested against `dim_sessions`; `fact_prompts` → `dim_sessions` is not tested.")
+        + notice("Four facts are tested against `dim_sessions` and `fact_prompts` against `dim_apps`; the other joins are logical.")
         + cite("solid lines from dbt/models/marts/schema.yml")
         + ul(["`watcher_errors`, `fact_errors`, `fact_git_commands` have no primary key.",
-              "Standalone, not drawn: `fact_daily_spend`, `fact_hourly_activity`, `fact_spend_pace`, `int_entity_spend`, `int_event_agent`, `dim_agents`, `coverage_test`."])
-        + "<h3>All objects</h3>" + vt(T1) + cite("from watcher/src/aura_watcher/duckdb_writer.py:82-170 and dbt/models/**/*.sql")
-        + "<h3>Views</h3>" + table(["View", "Built from", "Rows"], T2) + cite("from dbt/models/staging/*.sql and dbt/models/intermediate/int_turns.sql")))
+              "Standalone, not drawn: `fact_daily_spend`, `fact_hourly_activity`, `fact_spend_pace`, `int_entity_spend`, `int_event_agent`, `dim_agents`."])
+        + "<h3>All objects</h3>" + table(["Object", "Grain", "Key", "Written by"], lake_t + state_t + models_t)
+        + cite("from %s, %s and dbt/models/**/*.sql" % (W("lake.py", r"^KEYS = ", r"^}"), at("watcher/src/aura_watcher/state.py", r"CREATE TABLE IF NOT EXISTS checkpoints")))
+        + "<h3>Views</h3>" + table(["View", "Built from", "Rows"], views_t) + cite("from dbt/models/staging/*.sql and dbt/models/intermediate/int_turns.sql")))
 
     # ---- 8
     deprows = [[str(k), ", ".join("`%s`" % m for m in v)] for k, v in dep.items()]
+    child = {a for a, _ in edges}
+    assert "stg_thinking_blocks" not in child
+    over = {}
+    for m in sorted(MAT):
+        default = "table" if LAYER[m] == "marts" else "view"
+        if MAT[m] != default:
+            over.setdefault(MAT[m], []).append(m)
     S.append(sec("s8", "dbt lineage", "<h3>Sources to staging and intermediate</h3>" + lin1 + "<h3>Into marts</h3>" + lin2
         + key("grey = source/seed · dashed = view · teal = table · amber = incremental · bold = cost chain")
-        + notice("`dim_apps` builds before `dim_sessions` because it reads `fact_turns`, `fact_git_commands` and `fact_errors`.")
+        + notice("`stg_events` and `stg_content_blocks` parse the transcript JSON once; every downstream model reads their columns.")
         + cite("%d ref/source edges from dbt/models/**/*.sql (%d in the first diagram, %d in the second; the four stg_session_* edges to dim_sessions are drawn as one grouped node); layout by Graphviz dot" % (n_edges, len(e1), len(e2)))
         + "<h3>Build order</h3>" + table(["Depth", "Models"], deprows) + cite("derived from the edge list: longest path from a source")
-        + ul(["29 models, 2 seeds, 7 sources, 105 generic + 2 singular tests (`dbt/tests/`).",
-              "Defaults: staging and intermediate = view, marts = table — `dbt/dbt_project.yml:26-33`.",
-              "Overrides: `stg_tool_calls`, `int_app_cwd_lookup`, `int_entity_spend`, `int_event_agent` table; `int_turns`, `dim_turn_messages` view; `stg_tool_results`, `fact_tool_executions`, `fact_prompts` incremental.",
-              "`raw_events` freshness: warn 5 min, error 30 min on `ts` — `dbt/models/staging/sources.yml:24-25`.",
-              "`stg_thinking_blocks` has no downstream model.",
-              "`watcher_errors` has no dbt edge; the frontend reads it directly."])))
+        + ul(["%d models, 1 seed, %d lake sources, %d generic + %d singular tests (`dbt/tests/`)." % (n_models, len(SRC), n_gen, n_sing),
+              "Defaults: staging and intermediate = view, marts = table — `%s`." % at("dbt/dbt_project.yml", r"^models:", r"materialized: table"),
+              "Overrides to table: %s." % ", ".join("`%s`" % m for m in over["table"]),
+              "Incremental (delete+insert per session): %s." % ", ".join("`%s`" % m for m in over["incremental"]),
+              "`stg_session_verdicts` reads the inbox file with `read_json`, not the lake — `%s`." % at("dbt/models/staging/stg_session_verdicts.sql", r"read_json"),
+              "`raw_events` freshness on `ingested_at`: warn 5 min, error 30 min — `%s`." % at("dbt/models/staging/sources.yml", r"warn_after", r"error_after"),
+              "`stg_thinking_blocks` has no downstream model."])))
 
     # ---- 9
     sql1 = ("CASE\n  WHEN c.source = 'sdk_trace' THEN COALESCE(c.reported_cost_usd, 0)\n  WHEN mp.model IS NULL THEN NULL\n"
             "  ELSE ( input  × cost_input_per_mtok\n       + output × cost_output_per_mtok\n       + ephemeral_5m × cost_cache_write_5m_per_mtok\n"
-            "       + ephemeral_1h × cost_cache_write_1h_per_mtok\n       + (cache_creation − 5m − 1h) × cost_cache_write_1h_per_mtok\n"
+            "       + ephemeral_1h × cost_cache_write_1h_per_mtok\n       + GREATEST(cache_creation − 5m − 1h, 0) × cost_cache_write_5m_per_mtok\n"
             "       + cache_read × cost_cache_read_per_mtok ) / 1000000.0\nEND")
     sql2 = ("LEFT JOIN model_pricing mp\n  ON c.model = mp.model\n AND (mp.tenant_id IS NULL OR mp.tenant_id = c.tenant_id)\n"
             " AND c.ts >= mp.valid_from\n AND c.ts <= COALESCE(CAST(mp.valid_to AS TIMESTAMP), '9999-12-31')\n"
@@ -961,231 +1092,271 @@ def build():
         seedrows.append(["(empty = global)" if m == want[0] else "(empty)", m, r["provider"], r["cost_input_per_mtok"], r["cost_output_per_mtok"],
                          r["cost_cache_write_5m_per_mtok"], r["cost_cache_write_1h_per_mtok"], r["cost_cache_read_per_mtok"],
                          r["valid_from"], r["valid_to"] or "(empty)"])
+    CASE = at(FMC, r"^\s+CASE\s*$", r"END AS calculated_cost")
     r91 = exset([
-        ex("ok", "TYPICAL", "Append two lines", [("file", "uuid-inc-1, uuid-inc-2"), ("then append", "uuid-inc-3, uuid-inc-4")],
-           "`count(*) = 2`, then `4`; checkpoint `cp2 > cp1`", "from watcher/tests/test_main.py:122-182"),
-        ex("edge", "EDGE", "Rerun the same files", [("input", "same files through `run_batched_backfill` twice")],
-           "`0 new rows` (key conflict ignored)", "from watcher/tests/test_backfill_batching.py:95"),
-        ex("edge", "EDGE", "File truncated", [("last_offset", "5000"), ("file size now", "3000 bytes")],
-           "re-read from `0`; `ingest_file_stats` overwritten, not added", "from watcher/tests/test_main.py:68; main.py:266-268"),
+        ex("ok", "TYPICAL", "Crash before checkpoint", [("flush", "Parquet files written"), ("commit_flush", "raises")],
+           "same lines re-read; `stg_lake_event_dups` marks the older copy, `stg_events` keeps one", "from %s" % at("watcher/tests/test_state.py", r"def test_crash_between_flush")),
+        ex("edge", "EDGE", "Compaction", [("partition", "3 small files, same uuid in two")],
+           "one `compacted-*.parquet`, newest `ingested_at` wins, row count verified before inputs are deleted", "from %s" % at("watcher/tests/test_lake.py", r"def test_compaction_dedups")),
+        ex("edge", "EDGE", "Count mismatch", [("compacted rows", "differ from distinct keys")],
+           "inputs kept, `watcher_errors` row source `compaction`", "from %s" % at("watcher/tests/test_lake.py", r"def test_compaction_verify_mismatch")),
         ex("edge", "EDGE", "Streamed message (dbt)", [("message_id=m1", "ts 10:00:01"), ("message_id=m1", "ts 10:00:03")],
            "only the `10:00:03` row kept in `stg_assistant_messages`; tokens counted once",
-           "derived from dbt/models/staging/stg_assistant_messages.sql:6; test dbt/models/staging/schema.yml:43")])
+           "derived from %s" % at("dbt/models/staging/stg_assistant_messages.sql", r"ROW_NUMBER\(\) OVER"))])
+    hk = ("derived from %s, %s" % (CASE, seed_line("claude-sonnet-5")))
     r92 = exset([
         ex("ok", "TYPICAL", "Sonnet call with 5m cache", [("model", "claude-sonnet-5"), ("input / output", "1000 / 2000"), ("creation", "20000 (5m 20000, 1h 0)"), ("read", "50000")],
-           "(3000 + 30000 + 75000 + 0 + 0 + 15000) / 1e6 = 0.123 → `%s`" % usd(CHECK["sonnet"]),
-           "derived from dbt/models/marts/fact_model_calls.sql:50-59, dbt/seeds/model_pricing.csv:5"),
+           "(2000 + 20000 + 50000 + 0 + 0 + 10000) / 1e6 = %.3f → `%s`" % (CHECK["sonnet"], usd(CHECK["sonnet"])), hk),
         ex("ok", "TYPICAL", "Opus call with 1h cache", [("model", "claude-opus-4-8"), ("input / output", "400 / 1000"), ("creation", "8000 (5m 0, 1h 8000)"), ("read", "100000")],
-           "(2000 + 25000 + 0 + 80000 + 0 + 50000) / 1e6 = 0.157 → `%s`" % usd(CHECK["opus"]),
-           "derived from fact_model_calls.sql:50-59, model_pricing.csv:2"),
+           "(2000 + 25000 + 0 + 80000 + 0 + 50000) / 1e6 = %.3f → `%s`" % (CHECK["opus"], usd(CHECK["opus"])), "derived from %s, %s" % (CASE, seed_line("claude-opus-4-8"))),
         ex("edge", "EDGE", "Old log without cache split", [("model", "claude-haiku-4-5"), ("output", "1000"), ("creation", "10000"), ("5m / 1h", "NULL")],
-           "residual 10000 × 2.0; (5000 + 20000) / 1e6 = 0.025 → `%s`" % usd(CHECK["haiku"]), "derived from fact_model_calls.sql:57, model_pricing.csv:8"),
+           "residual 10000 × %s (5m rate); (5000 + 12500) / 1e6 = %.4f → `%s`" % (SEED_BY["claude-haiku-4-5"]["cost_cache_write_5m_per_mtok"], CHECK["haiku"], usd(CHECK["haiku"])),
+           "derived from %s, %s" % (at(FMC, r"Residual: zero when breakdown"), seed_line("claude-haiku-4-5"))),
         ex("bad", "FAILURE", "Unknown model id", [("model", "claude-sonnet-5-20260101"), ("tokens", "any")],
-           "no seed row → `calculated_cost NULL`; `not_null` + singular test fail naming the model; `fact_turns` shows `$0.0000`. Remedy: add a row to `dbt/seeds/model_pricing.csv`.",
-           "from dbt/models/marts/fact_model_calls.sql:65-73, fact_turns.sql:34, frontend/lib/fmt.ts:13-19"),
+           "no seed row → `calculated_cost NULL`; `not_null` + singular test fail naming the model; the watcher logs `unknown_model`; `fact_turns` keeps `NULL`. Remedy: add a row to `dbt/seeds/model_pricing.csv`.",
+           "from %s, %s, %s" % (at(FMC, r"WHEN mp\.model IS NULL"), at("dbt/tests/fact_model_calls_unknown_model_pricing.sql", r"^SELECT DISTINCT"), at(DBTC, r'"unknown_model"'))),
         ex("edge", "EDGE", "SDK trace run", [("source", "sdk_trace"), ("reported_cost_usd", "0.42"), ("earlier turns", "NULL")],
-           "`0.42`; earlier turns `0`", "from fact_model_calls.sql:42-47; check scripts/verify/run_all.mjs:174")])
+           "`0.42`; earlier turns `0`", "from %s; check %s" % (at(FMC, r"WHEN c\.source = 'sdk_trace'"), at("scripts/verify/run_all.mjs", r"check: 'sdk_verbatim_cost'")))])
+    INT = "dbt/models/intermediate/int_turns.sql"
     r93 = exset([
         ex("ok", "TYPICAL", "Tool loop", [("user prompt", "10:00 'fix bug'"), ("assistant", "10:01, 10:03")],
-           "2 turns, both `user_prompt='fix bug'`, `turn_number` 1, 2", "derived from dbt/models/intermediate/int_turns.sql:127-136"),
+           "2 turns, both `user_prompt='fix bug'`, `turn_number` 1, 2", "derived from %s" % at(INT, r"ASOF LEFT JOIN")),
         ex("edge", "EDGE", "Tool result is not a prompt", [("user event", 'array content [{"type":"tool_result",…}]')],
-           "excluded from the prompt pool; the turn keeps the earlier human prompt", "derived from int_turns.sql:43-46"),
+           "excluded from the prompt pool; the turn keeps the earlier human prompt", "derived from %s" % at(INT, r"starts_with|!= '\['", r"is_sidechain = FALSE")),
         ex("edge", "EDGE", "Subagent turn", [("assistant", "sidechain assistant message at 10:05")],
-           "gets the last non-sidechain prompt 'fix bug'", "derived from dbt/models/intermediate/int_turns.sql:127-136")])
+           "gets the last non-sidechain prompt 'fix bug' (the file comment says NULL; see I-1)", "derived from %s" % at(INT, r"ASOF LEFT JOIN", r"a\.ts\s+>= u\.user_ts")),
+        ex("ok", "TYPICAL", "Prompt spans", [("prompts", "10:00, 10:20"), ("turns", "10:01, 10:05, 10:21")],
+           "span 1 gets 2 turns, span 2 gets 1; the last span is open-ended", "derived from %s" % at("dbt/models/marts/fact_prompts.sql", r"span_owners AS", r"\),"))])
     r94 = exset([
-        ex("ok", "TYPICAL", "Key = value", [("text", "config: api_key=abcd1234567890abcdef")], "`config: «REDACTED»` (key name gone too)", "from watcher/tests/test_redact.py:6-13"),
-        ex("edge", "EDGE", "Short value kept", [("text", "token=shortval")], "unchanged", "from watcher/tests/test_redact.py:41-45"),
+        ex("ok", "TYPICAL", "Key = value", [("text", "config: api_key=abcd1234567890abcdef")], "`config: «REDACTED»` (key name gone too)", "from %s" % at("watcher/tests/test_redact.py", r"def test_redact_secret_no_whitespace")),
+        ex("edge", "EDGE", "Short value kept", [("text", "token=short77")], "unchanged (value under 8 characters)", "from %s" % at("watcher/tests/test_redact.py", r"def test_redact_does_not_touch_short_values")),
         ex("edge", "EDGE", "Long blob", [("text", '"A" × 300')], "`<base64:300 bytes>`; a 199-char run stays unchanged",
-           "from test_redact.py:48-53,257"),
-        ex("edge", "EDGE", "Look-alike words", [("text", "risk-adjusted-return and desk-jockey are normal words")], "unchanged (`\\b` anchor)", "from test_redact.py:255")])
+           "from %s, %s" % (at("watcher/tests/test_redact.py", r"def test_truncate_base64\("), at("watcher/tests/test_redact.py", r"alnum_run_199_chars"))),
+        ex("edge", "EDGE", "Look-alike words", [("text", "risk-adjusted-return and desk-jockey are normal words")], "unchanged (`\\b` anchor)", "from %s" % at("watcher/tests/test_redact.py", r"code_identifier_risk")),
+        ex("edge", "EDGE", "Secret-named key", [("dict", '{"password": "<any string>"}')], "value replaced whole by `«REDACTED»`", "from %s" % at("watcher/tests/test_redact.py", r"def test_redact_obj_redacts_value_by_secret_key"))])
     S.append(sec("s9", "Business rules",
-        "<h3>9.1 Dedup key: <code>raw_events (tenant_id, uuid)</code>, first write wins</h3>"
-        + ul(["`INSERT … ON CONFLICT DO NOTHING`; nothing is ever updated — `duckdb_writer.py:225-228`.",
-              "Claude rows: `uuid` = JSONL line uuid; SDK rows: `<session>:<byte_offset>`.",
-              "Batch guard: rows whose key set differs from `events[0]` are skipped with a warning — `duckdb_writer.py:202-219`.",
-              "Message-level dedup (`message_id`) happens in dbt, not here."]) + r91
+        "<h3>9.1 Delivery and dedup: at-least-once, key <code>(tenant_id, uuid)</code></h3>"
+        + ul(["Parquet files are written first, the SQLite checkpoint commits after — `%s`." % W("ingest.py", r"^def flush", r"C5:"),
+              "A crash between the two re-reads the lines, so the lake can hold one uuid twice.",
+              "Newest `ingested_at` wins, then filename, then row number — `%s`." % at("dbt/models/staging/stg_lake_event_dups.sql", r"QUALIFY", r"> 1"),
+              "`stg_events` anti-joins the losing copies — `%s`; compaction applies the same rule — `%s`." % (at("dbt/models/staging/stg_events.sql", r"^    ANTI JOIN"), W("lake.py", r"^def _dedup_sql", r"count\(DISTINCT \(tenant_id, uuid\)\)")),
+              "Claude rows: `uuid` = JSONL line uuid; SDK rows: `<session>:<byte_offset>` — `%s`." % W("adapters/sdk_trace.py", r'uuid = f"\{session_id\}:\{byte_offset\}"'),
+              "Message-level dedup (`message_id`) happens in dbt, not in the lake."]) + r91
         + "<h3>9.2 Cost formula with pricing SCD lookup</h3>"
         + ul(["`calculated_cost` = sum(token bucket × per-Mtok rate) / 1,000,000; `sdk_trace` uses its reported cost."])
-        + '<div class="payloads">' + payload("IN", "fact_model_calls.sql:41-59", sql1, "sql") + payload("IN", "SCD join, fact_model_calls.sql:74-89", sql2, "sql") + "</div>"
+        + '<div class="payloads">' + payload("IN", "fact_model_calls.sql", sql1, "sql") + payload("IN", "SCD join, fact_model_calls.sql", sql2, "sql") + "</div>"
         + "<h3>Pricing seed (USD per Mtok)</h3>"
         + table(["tenant_id", "model", "provider", "input", "output", "5m", "1h", "read", "valid_from", "valid_to"], seedrows, mono=(1, 3, 4, 5, 6, 7, 8, 9))
-        + cite("from dbt/seeds/model_pricing.csv:1-12 (5 of %d rows)" % len(SEED))
+        + cite("from %s (5 of %d rows)" % (at(SEED_CSV, r"^tenant_id", r"<synthetic>"), len(SEED)))
         + ul(["%d rows, all global; batch rates unused." % len(SEED),
-              "No pricing row → `NULL` → `not_null` test fails — `dbt/models/marts/schema.yml:20`.",
+              "No pricing row → `NULL` → `not_null` test fails — `%s`." % at("dbt/models/marts/schema.yml", r"name: calculated_cost", r"not_null"),
               "Singular test lists unpriced models — `dbt/tests/fact_model_calls_unknown_model_pricing.sql`.",
               "Model ids match exactly; version-suffixed ids need their own row.",
-              "Cache creation without a 5m/1h split is priced at the 1h rate — `fact_model_calls.sql:57`.",
-              "Tenant row beats global row via `QUALIFY` — `fact_model_calls.sql:86-89`."]) + r92
-        + "<h3>9.3 Turn construction: one turn per deduped assistant message</h3>"
-        + ul(["Source: `stg_assistant_messages`; `turn_id = message_id` — `int_turns.sql:72`.",
-              "Prompt pool: `userType='external'`, not `isMeta`, content not starting `[`, `is_sidechain = FALSE` — `int_turns.sql:39-58`.",
-              "`ASOF LEFT JOIN … a.ts >= u.user_ts` — `int_turns.sql:127-136`.",
-              "`assistant_response` = first `type='text'` block in `content[0..19]` — `int_turns.sql:92-113`.",
-              "`turn_number` = `ROW_NUMBER` per session by assistant ts — `int_turns.sql:71`."]) + r93
-        + "<h3>9.4 Redaction: scrub payload before write</h3>"
-        + ul(["Order: `REDACT_REGEX`, `CREDENTIAL_REGEX`, `PEM_REGEX`, `BASE64_REGEX` — `redact.py:58-75`.",
-              "Claude path: `redact_obj` walks the object, then `json.dumps` — `adapters/claude.py:192`, `redact.py:78-98`.",
-              "Toggle `AURA_REDACT_PAYLOAD` (default `true`), read once at import.",
-              "Only `payload` is redacted; `cwd`, `git_branch`, `file_path` are stored raw.",
-              "`AURA_HASH_CONTENT=1` replaces `message.content` with `sha256:<hex>` for new ingests."])
+              "Residual cache creation (no split) is priced at the 5m rate — `%s`." % at(FMC, r"GREATEST\(COALESCE\(c\.cache_creation", r"cost_cache_write_5m"),
+              "Tenant row beats global row via `QUALIFY` — `%s`." % at(FMC, r"^QUALIFY ROW_NUMBER", r"^\) = 1")]) + r92
+        + "<h3>9.3 Incremental cursor and parse-once staging</h3>"
+        + ul(["Incremental models: `stg_events`, `stg_content_blocks`, `stg_tool_results`, `fact_tool_executions`, `fact_prompts`, `dim_turn_messages`.",
+              "`recent_sessions()` = sessions with lake rows ingested since the model's last `_built_at`, minus 1 h — `%s`." % at("dbt/macros/recent_sessions.sql", r"macro recent_sessions", r"endmacro"),
+              "`lake_cutoff()` limits every lake read of a cycle to `ingested_at <= aura_cutoff` — `%s`." % at("dbt/macros/lake_cutoff.sql", r"macro lake_cutoff"),
+              "`_built_at` = `LEAST(cutoff, UTC now)`, so a manual run without `--vars` cannot freeze the cursor — `%s`." % at("dbt/macros/recent_sessions.sql", r"macro built_at"),
+              "A touched session is deleted and reinserted whole, so its dedup and spans stay exact.",
+              "`stg_events` extracts the JSON fields once with one `json_extract_string` — `%s`; `stg_content_blocks` unnests content once — `%s`." % (at("dbt/models/staging/stg_events.sql", r"json_extract_string\(valid_payload"), at("dbt/models/staging/stg_content_blocks.sql", r"unnest\(items\)"))])
+        + "<h3>9.4 Turns and prompt spans</h3>"
+        + ul(["Source: `stg_assistant_messages`; `turn_id = message_id` — `%s`." % at(INT, r"a\.message_id\s+AS turn_id"),
+              "Prompt pool: `userType='external'`, not `isMeta`, content not starting `[`, `is_sidechain = FALSE` — `%s`." % at(INT, r"WHERE event_type = 'user'", r"is_sidechain = FALSE"),
+              "Turn gets the latest prompt via `ASOF LEFT JOIN … a.ts >= u.user_ts` — `%s`." % at(INT, r"ASOF LEFT JOIN", r"a\.ts\s+>= u\.user_ts"),
+              "`fact_prompts`: a prompt's span runs to the next prompt; turns, tools and messages join with `ASOF JOIN` — `%s`." % at("dbt/models/marts/fact_prompts.sql", r"span_owners AS", r"ASOF JOIN span_owners"),
+              "`assistant_response` = first `text` block in `content[0..19]` — `%s`." % at(INT, r"first_text AS", r"GROUP BY"),
+              "`turn_number` = `ROW_NUMBER` per session by assistant ts — `%s`." % at(INT, r"AS turn_number")]) + r93
+        + "<h3>9.5 Redaction: scrub payload before write</h3>"
+        + ul(["Object-level: `redact_obj` walks the parsed line, then `json.dumps`, so payloads stay valid JSON — `%s`." % W("redact.py", r"^def redact_obj", r"return o"),
+              "Order in `redact_content`: key=value, Bearer, URL credentials, known formats, PEM, then long blobs — `%s`." % W("redact.py", r"^def redact_content", r"return content"),
+              "A string under a secret-named key is replaced whole — `%s`." % W("redact.py", r"^def _secret_key"),
+              "Both adapters call `redact_obj`; SDK rows redact the object before `json.dumps` — `%s`." % W("adapters/sdk_trace.py", r"json\.dumps\(redact_obj"),
+              "Toggle `AURA_REDACT_PAYLOAD` (default `true`), read once at import — `%s`." % W("redact.py", r"^def redact_enabled"),
+              "Session titles get the same treatment — `%s`." % W("redact.py", r"^def redact_title"),
+              "`cwd`, `git_branch`, `file_path` are stored raw; `AURA_HASH_CONTENT=1` replaces conversation text with `sha256:<hex>` for new ingests."])
         + table(["Pattern", "Matches", "Replaced by"], [
-            ["`REDACT_REGEX`", "`api_key/secret/token/password` + `:`/`=` + 16+ chars", "`«REDACTED»` (whole match)"],
+            ["`REDACT_REGEX`", "`api_key/secret/token/password/…` + `:`/`=` + 8+ chars", "`«REDACTED»` (whole match)"],
+            ["`BEARER_REGEX`, `URL_CREDS_REGEX`", "`Bearer <16+ chars>`, `scheme://user:pass@`", "`«REDACTED»`"],
             ["`CREDENTIAL_REGEX`", "`AKIA…`, `ASIA…`, `ghp_…`, `github_pat_…`, `sk-…`, `xox?-…`, JWT `eyJ…`", "`«REDACTED»`"],
             ["`PEM_REGEX`", "`-----BEGIN … PRIVATE KEY-----` … END", "`«REDACTED»`"],
             ["`BASE64_REGEX`", "`[A-Za-z0-9+/]{200,}`", "`<base64:N bytes>`"]])
-        + cite("from watcher/src/aura_watcher/redact.py:29-56") + r94
-        + "<h3>9.5 App and project from cwd</h3>"
-        + ul(["`cwd` is split on `/`; the segment after `apps`, `services` or `packages` is the app, the one before it the project — `dim_apps.sql:21,41-52`.",
+        + cite("from %s" % W("redact.py", r"^_KEYWORD = ", r"^PEM_REGEX")) + r94
+        + "<h3>9.6 App and project from cwd</h3>"
+        + ul(["`cwd` is split on `/`; the segment after `apps`, `services` or `packages` is the app, the one before it the project — `%s`." % at("dbt/models/marts/dim_apps.sql", r"apps.*services.*packages"),
               "No such segment: app and project are both the last path segment."])
         + exset([
-            ex("ok", "TYPICAL", "Monorepo app", [("cwd", "<repo>/apps/web")], "app `web`, project `<repo>`", "derived from dbt/models/marts/dim_apps.sql:41-52"),
-            ex("edge", "EDGE", "Plain folder", [("cwd", "<user-home>/notes")], "app `notes`, project `notes`", "derived from dbt/models/marts/dim_apps.sql:41-52")])))
+            ex("ok", "TYPICAL", "Monorepo app", [("cwd", "<repo>/apps/web")], "app `web`, project `<repo>`", "derived from %s" % at("dbt/models/marts/dim_apps.sql", r"apps.*services.*packages")),
+            ex("edge", "EDGE", "Plain folder", [("cwd", "<user-home>/notes")], "app `notes`, project `notes`", "derived from %s" % at("dbt/models/marts/dim_apps.sql", r"apps.*services.*packages"))])))
 
     # ---- 10
     cfg = [
-        ["`CLAUDE_LOGS_DIR`", "`<user-home>/.claude/projects`", "same", "Host transcripts dir, mounted ro at `/logs/claude`"],
+        ["`AURA_USER`", "OS user name", "`${AURA_USER:-${USERNAME:-${USER:-local}}}`", "Selects `data/<user>/`"],
+        ["`CLAUDE_LOGS_DIR`", "`~/.claude/projects`", "same", "Host transcripts dir, mounted ro at `/logs/claude`"],
         ["`AURA_LOGS_DIR`", "`/logs/claude`", "`/logs/claude`", "Where the watcher looks for `.jsonl`"],
-        ["`AURA_DB_PATH`", "`/data/aura.duckdb`", "`/data/aura.duckdb`", "Write DB (watcher + dbt)"],
-        ["`AURA_READ_DB_PATH`", "`/data/read/aura.duckdb`", "same (watcher + frontend)", "Read snapshot; basename must be `aura.duckdb`"],
-        ["`AURA_SNAPSHOT_INTERVAL`", "`2` s", "`600`", "Seconds between snapshot copies"],
-        ["`AURA_DBT_RUN_INTERVAL_MINUTES`", "`5`", "`25`", "Sleep after each dbt cycle; `<= 0` disables"],
-        ["`AURA_DBT_THREADS`", "set in dbt profile (file not opened)", "`2`", "dbt models built concurrently"],
-        ["`AURA_DBT_DUCKDB_THREADS`", "set in dbt profile (file not opened)", "`2`", "DuckDB threads per query"],
-        ["`AURA_DBT_MEMORY_LIMIT`", "set in dbt profile (file not opened)", "`4000MB`", "DuckDB pool for dbt; keep ~1 GB below `mem_limit 5g`"],
-        ["`AURA_BACKFILL_BATCH_SIZE`", "`200`", "`100`", "Files per backfill lock hold"],
-        ["`AURA_BACKFILL_BATCH_SECONDS`", "`120`", "not set", "Max seconds per backfill batch"],
-        ["`AURA_SWEEP_INTERVAL_SECONDS`", "`600`", "not set", "Missed-bytes re-scan; `<= 0` disables"],
-        ["`AURA_COVERAGE_INTERVAL`", "`300`", "not set", "Coverage JSON refresh"],
-        ["`AURA_ARTIFACTS_DIR`", "`/data/artifacts`", "not set", "Artifacts dir for coverage JSON"],
-        ["`AURA_EXTRA_TRACE_DIRS`", "empty", "`/data/sdk-traces` (illustrative)", "Extra comma-separated dirs to ingest"],
-        ["`AURA_VERDICTS_INBOX`", "`/data/verdicts-inbox.jsonl`", "not set", "Verdict hand-off file"],
+        ["`AURA_DATA_DIR`", "`/data`", "`/data`", "Root of lake, state, work, read, inbox, artifacts"],
+        ["`AURA_RUN_MODE`", "`unknown`", "`compose` (scripts: `native`)", "Mode guard compares it (exit 2 on clash)"],
+        ["`AURA_LAKE_DIR`", "`<data>/lake`", "not set", "Parquet lake"],
+        ["`AURA_STATE_DB`", "`<data>/state/aura_state.sqlite`", "not set", "Checkpoints, file stats, meta"],
+        ["`AURA_DB_PATH`", "`<data>/work/aura.duckdb`", "`/data/work/aura.duckdb`", "dbt work DB; basename must stay `aura.duckdb`"],
+        ["`AURA_READ_DIR`", "`<data>/read`", "not set", "Published read DBs + `CURRENT`"],
+        ["`AURA_ARTIFACTS_DIR`", "`<data>/artifacts`", "not set", "Status JSON, dbt artifacts, ndjson logs"],
+        ["`AURA_VERDICTS_INBOX`", "`<data>/inbox/verdicts-inbox.jsonl`", "same path in both services", "Frontend appends, dbt reads"],
+        ["`AURA_EXTRA_TRACE_DIRS`", "empty", "not set", "Comma-separated extra dirs with SDK traces"],
+        ["`AURA_OBSERVER`", "`polling`", "`polling` (scripts: `native`)", "File observer type"],
+        ["`AURA_POLL_SECONDS`", "`30`", "`30`", "Polling observer interval"],
+        ["`AURA_SWEEP_INTERVAL_SECONDS`", "`600`", "not set (scripts: `60`)", "Re-scan for missed bytes; `<= 0` disables"],
+        ["`AURA_FLUSH_SECONDS` / `AURA_FLUSH_MAX_ROWS`", "`30` / `20000`", "not set", "Lake flush interval / early-flush row count"],
+        ["`AURA_COMPACT_MIN_FILES`", "`50`", "not set", "Compact today's partition at this many files"],
+        ["`AURA_COVERAGE_INTERVAL`", "`300`", "not set", "Ingest coverage report"],
+        ["`AURA_DBT_RUN_INTERVAL_MINUTES`", "`5`", "`5`", "dbt cycle, start to start; `<= 0` disables"],
+        ["`AURA_DBT_TIMEOUT_SECONDS`", "`1800`", "not set", "Timeout per dbt command"],
+        ["`AURA_DBT_DIR` / `AURA_VERIFY_SCRIPT`", "`/app/dbt` / `/app/scripts/verify/run_all.mjs`", "`/app/dbt` / not set", "dbt project dir / number-check script"],
+        ["`AURA_DBT_THREADS` / `AURA_DBT_DUCKDB_THREADS`", "set in dbt profile (file not opened)", "`2` / `2` (scripts: threads `1`)", "Models built concurrently / DuckDB threads per query"],
+        ["`AURA_DBT_MEMORY_LIMIT`", "set in dbt profile (file not opened)", "`4000MB` (scripts: `6GB`)", "DuckDB pool for dbt; keep ~1 GB below `mem_limit 5g`"],
         ["`AURA_REDACT_PAYLOAD`", "`true`", "`true`", "Secret/base64 redaction on payload"],
         ["`AURA_HASH_CONTENT`", "off", "empty", "`1`/`true` hashes conversation text at ingest"],
-        ["`AURA_MODEL_WINDOWS_JSON`", "empty", '`{"claude-opus-5-20260601":1000000}`', "Override context window sizes"],
-        ["`AURA_DEFAULT_PERSON_ID`", "OS username", "`${AURA_DEFAULT_PERSON_ID:-local}`", "Person id instead of container `root`"],
-        ["`AURA_DEFAULT_PERSON_NAME`", "person id", "`${AURA_DEFAULT_PERSON_NAME:-Local User}`", "Display name"],
+        ["`AURA_MODEL_WINDOWS_JSON`", "empty", "empty", "Override context window sizes"],
+        ["`AURA_DEFAULT_PERSON_ID` / `_NAME`", "OS username", "falls back to `AURA_USER`", "Person instead of container `root`"],
         ["`AURA_QUERY_TIMEOUT_MS`", "`15000`", "not set", "Frontend per-query timeout"],
+        ["`AURA_DUCKDB_THREADS` / `AURA_DUCKDB_MEMORY_LIMIT`", "`4` / `1GB`", "not set", "Frontend DuckDB limits (container `mem_limit 1536m`)"],
         ["`NODE_ENV`", "—", "`production`", "Frontend runtime mode"]]
-    assert len(cfg) == 23
     S.append(sec("s10", "Configuration",
-        ul(["Runtime config = compose environment variables; `aura.toml` is not read by any code."])
-        + table(["Setting", "Default", "Example", "Purpose"], cfg)
-        + cite("docker-compose.yml:9-90, watcher/src/aura_watcher/main.py:979-1036, frontend/lib/db.ts:13-14")
+        ul(["Runtime config = environment variables; every path defaults under `AURA_DATA_DIR`. `aura.toml` is metadata only — `%s`." % at("aura.toml", r"Nothing in this")])
+        + table(["Setting", "Default", "Compose", "Purpose"], cfg)
+        + cite("%s, %s, %s, %s" % (at(COMPOSE, r"AURA_RUN_MODE", r"AURA_DEFAULT_PERSON_NAME"), W("main.py", r"^def load_config", r"verify_script="), at(DBJS, r"const DATA_DIR", r"QUERY_TIMEOUT_MS"), at("start.ps1", r"AURA_RUN_MODE", r"AURA_DBT_MEMORY_LIMIT")))
         + ul(["`.env` (copy of `.env.example`) feeds compose substitution; values not documented here — `<redacted>`.",
               "`dbt/profiles.yml` reads `AURA_DB_PATH` and the `AURA_DBT_*` names; file not opened.",
-              "Container limits: watcher `mem_limit 5g`, frontend `512m` — `docker-compose.yml:109,135`."])))
+              "Removed in the redesign: `AURA_READ_DB_PATH`, `AURA_SNAPSHOT_INTERVAL`, `AURA_BACKFILL_BATCH_SIZE`, `AURA_BACKFILL_BATCH_SECONDS` — `%s`." % at(README, r"^Removed:"),
+              "Container limits: watcher `mem_limit 5g`, frontend `1536m` — `%s`, `%s`." % (at(COMPOSE, r"mem_limit: 5g"), at(COMPOSE, r"mem_limit: 1536m"))])))
 
     # ---- 11
-    tree = """watcher/            Python package: adapters, writer, checkpoint, snapshot, workers
-  src/aura_watcher/ main.py · duckdb_writer.py · checkpoint.py · redact.py · snapshot.py · adapters/
-  tests/            pytest suite (14 test modules, 166 tests)
+    tree = """watcher/            Python package: ingest, lake, state, dbt cycle, publish
+  src/aura_watcher/ main.py · ingest.py · lake.py · state.py · dbt_cycle.py · read_tables.sql · redact.py · coverage.py · export_legacy.py · adapters/
+  tests/            pytest suite (%d test modules, %d tests)
 dbt/                dbt project "aura"
   models/           staging/ · intermediate/ · marts/
-  seeds/            model_pricing.csv · coverage_test.csv
-  tests/            2 singular tests
+  macros/           lake_cutoff.sql · recent_sessions.sql
+  seeds/            model_pricing.csv
+  tests/            %d singular tests
 frontend/           Next.js dashboard
-  app/              13 page routes + api/ (12 handlers)
-  lib/              db.ts · fmt.ts · range.ts · queries/
+  app/              %d page routes + api/ (%d handlers)
+  lib/              db.ts · fmt.ts · range.ts · api-safe.ts · queries/
   components/       SVG charts, tables
-scripts/verify/     run_all.mjs (automated) + Playwright scripts (manual)
-docs/               HOW-IT-WORKS.md · number-map.md · screens/ · blog/
-data/               runtime only, git-ignored: aura.duckdb · read/ · artifacts/
+scripts/verify/     run_all.mjs (run by the watcher after each cycle, and by CI)
+docs/               number-map.md · blog/ · build_overview.py · build_technical.py
+data/<user>/        runtime only, git-ignored
+  lake/             <table>/date=<d>/part-*.parquet (5 tables)
+  work/             aura.duckdb (dbt work DB) · aura.duckdb.tmp/ (spill)
+  read/             v<stamp>/aura.duckdb · CURRENT
+  state/            aura_state.sqlite · native.pids
+  inbox/            verdicts-inbox.jsonl
+  artifacts/        watcher_status.json · run_results.json · publish.ndjson · freshness.ndjson · number_verify.json
+  logs/             native mode only
 docker-compose.yml  watcher + frontend services
-.github/workflows/  ci.yml"""
-    S.append(sec("s11", "Folder tree", '<pre class="tree">%s</pre>' % esc(tree) + ul(["`data/` is git-ignored — `.gitignore:227`."])))
+start.ps1 · start.sh  native run modes
+.github/workflows/  ci.yml""" % (N_TEST_FILES, N_TESTS, n_sing, n_pages, n_api)
+    S.append(sec("s11", "Folder tree", '<pre class="tree">%s</pre>' % esc(tree) + ul([
+        "`data/` is git-ignored — `%s`." % at(".gitignore", r"^data/"),
+        "Per-user data dir `data/<user>/` — `%s`." % at(COMPOSE, r"\./data/\$\{AURA_USER"),
+        "The lake has %d tables, one directory each — `%s`." % (n_lake, W("lake.py", r"^SCHEMAS = "))])))
 
     # ---- 12
-    C = lambda *cmds: Raw("<br>".join("<code>%s</code>" % esc(c) for c in cmds))
+    C = lambda *cmds: Raw("<br>".join("<code>%s</code>" % esc(x) for x in cmds))
     S.append(sec("s12", "Commands", table(["Task", "Command", "Source"], [
-        ["First run", C("cp .env.example .env", "docker-compose up --build"), "`README.md:135-136`"],
-        ["Open dashboard", C("http://localhost:3000"), "`README.md:139`"],
-        ["Local watcher", C("cd watcher", "python -m venv .venv && source .venv/bin/activate", "pip install -e .", "python -m aura_watcher.main"), "`README.md:216-219`"],
-        ["Local dbt", C("cd dbt", "pip install dbt-duckdb", "dbt seed --profiles-dir .", "dbt run --profiles-dir .", "dbt test --profiles-dir ."), "`README.md:233-237`"],
-        ["Local frontend", C("cd frontend", "npm install", "npm run dev"), "`README.md:246-248`"],
-        ["Full refresh of fact_prompts", C("dbt run --full-refresh"), "`README.md:380` (needs the full 4 GB pool)"],
-        ["Number verify", C("cd scripts/verify && npm install && npm run verify"), "`scripts/verify/package.json:8` (set `AURA_READ_DB_PATH`, `AURA_ARTIFACTS_DIR`)"],
-        ["CI: watcher", C("python -m pip install -e ./watcher pytest ruff", "python -m ruff check watcher/src", "python -m pytest watcher/tests -q"), "`.github/workflows/ci.yml:29-45`"],
-        ["CI: dbt", C('python -m pip install "dbt-core==1.12.0" "dbt-duckdb==1.10.1" "duckdb==1.5.4"', "dbt parse --profiles-dir . --project-dir .", "dbt compile --profiles-dir . --project-dir ."), "`ci.yml:65-86`"],
-        ["CI: frontend", C("npm ci", "npm run build"), "`ci.yml:112-124`"]])
-        + ul(["Local env vars: `AURA_LOGS_DIR`, `AURA_DB_PATH`, `AURA_READ_DB_PATH` in every shell — `README.md:187-211`."])))
+        ["First run (compose)", C("cp .env.example .env", "docker compose up --build"), "`%s`" % at(README, r"^cp \.env\.example", r"^docker compose up --build")],
+        ["Open dashboard", C("http://127.0.0.1:3000"), "`%s`" % at(README, r"Then open")],
+        ["Native, Windows", C(".\\start.ps1", ".\\start.ps1 -Rebuild", ".\\start.ps1 -Stop"), "`%s`" % at("start.ps1", r"\.\\start\.ps1 ", r"-Stop")],
+        ["Native, Linux/macOS (untested)", C("./start.sh", "./start.sh --rebuild", "./start.sh stop"), "`%s`" % at("start.sh", r"\./start\.sh ", r"stop ")],
+        ["Stop compose", C("docker compose down"), "`%s`" % at(README, r"^\| Stop ")],
+        ["One sweep + one dbt cycle", C("python -m aura_watcher.main --once --with-dbt"), "`%s`" % W("main.py", r"--once", r"--with-dbt")],
+        ["dbt by hand (watcher stopped)", C("cd dbt", "dbt run --profiles-dir . --no-partial-parse"), "`%s`" % at(README, r"^dbt run --profiles-dir")],
+        ["Full refresh of fact_prompts", C("dbt run --full-refresh"), "`%s` (needs the full 4 GB pool)" % at(README, r"Known limit")],
+        ["Frontend dev", C("cd frontend", "npm run dev"), "`%s`" % at(README, r"npm run dev")],
+        ["Legacy DuckDB import (once)", C("python -m aura_watcher.export_legacy --src data/aura.duckdb --data-dir data/<user>"), "`%s`" % at(README, r"export_legacy --src")],
+        ["Number verify", C("cd scripts/verify && npm install && npm run verify"), "`%s` (set `AURA_READ_DIR`, `AURA_ARTIFACTS_DIR`)" % at("scripts/verify/package.json", r'"verify"')],
+        ["CI: watcher", C("python -m pip install -e ./watcher pytest ruff", "python -m ruff check watcher/src", "python -m pytest watcher/tests -q"), "`%s`" % at(".github/workflows/ci.yml", r"pip install -e \./watcher pytest ruff", r"pytest watcher/tests")],
+        ["CI: pipeline", C("python -m aura_watcher.main --once --with-dbt", "dbt test --profiles-dir . --no-partial-parse", "npm ci --legacy-peer-deps", "npm run build", "npm test", "node scripts/verify/run_all.mjs"), "`%s`" % at(".github/workflows/ci.yml", r"Watcher once \+ dbt cycle", r"Number checks")]])
+        + ul(["Local dbt needs absolute `AURA_DB_PATH`, `AURA_LAKE_DIR`, `AURA_VERDICTS_INBOX` and an existing inbox file — `%s`." % at(README, r"export AURA_DB_PATH", r"dbt run --profiles-dir")])))
 
     # ---- 13
     S.append(sec("s13", "Deploy and access", d_deploy()
         + key("frame = machine / container · grey = data · dashed grey = not built")
-        + notice("The only runtime environment is one developer machine; CI builds nothing that is deployed.")
+        + notice("The only runtime environment is one developer machine; CI builds no Docker image and deploys nothing.")
         + "<h3>Environments</h3>"
         + table(["Environment", "Runs", "How", "Source"], [
-            ["Local Docker (default)", "watcher + frontend containers", "`docker-compose up --build`", "`docker-compose.yml`, `README.md:128-139`"],
-            ["Local dev (no Docker)", "3 shells: watcher, dbt, frontend", "see Commands", "`README.md:178-253`"],
-            ["CI", "lint, tests, dbt parse/compile, Next build", "GitHub Actions on push to `main` and PRs", "`.github/workflows/ci.yml:3-12`"],
-            ["Staging / production / team hub", "—", "Not defined in source — confirm with owner", "`README.md:420-479` (proposal only)"]])
+            ["Local Docker (default)", "watcher + frontend containers", "`docker compose up --build`", "`%s`, `%s`" % (COMPOSE + ":1", at(README, r"^## Quick start"))],
+            ["Local native", "watcher + frontend as host processes", "`start.ps1` / `start.sh`", "`%s`" % at("start.ps1", r"^# Native")],
+            ["CI", "ruff, pytest, pipeline on fixtures, Next build, vitest", "GitHub Actions on push to `main` and PRs", "`%s`" % at(".github/workflows/ci.yml", r"^on:", r"pull_request")],
+            ["Staging / production / team hub", "—", "Not defined in source — confirm with owner", "`%s` (proposal only)" % at(README, r"## From individual to team", r"## Roadmap")]])
         + "<h3>Deploy steps</h3>"
         + "<ol><li>Install the prerequisites below.</li>"
           "<li><code>cp .env.example .env</code>; set <code>AURA_DEFAULT_PERSON_ID</code>, <code>AURA_DEFAULT_PERSON_NAME</code> (values <code>&lt;redacted&gt;</code>).</li>"
           "<li>Optional: set <code>CLAUDE_LOGS_DIR</code> if transcripts are not in <code>&lt;user-home&gt;/.claude/projects</code>.</li>"
-          "<li><code>docker-compose up --build</code></li>"
-          "<li>Wait for the first dbt cycle (~20 min) and first snapshot; both take the same lock. <code>/observability</code> shows progress.</li></ol>"
-        + ul(["Update: `git pull origin main`, then `docker-compose up --build` — pull rule from `CLAUDE.md`, rebuild from `README.md:136`."])
+          "<li><code>docker compose up --build</code></li>"
+          "<li>The first dbt cycle starts at once on whatever the lake holds; until it publishes, pages show <code>read DB not published yet</code>. <code>/observability</code> shows progress.</li></ol>"
+        + ul(["Update: `git pull origin main`, then `docker compose up --build` — pull rule from `CLAUDE.md`, rebuild from `%s`." % at(README, r"^docker compose up --build")])
         + "<h3>Roll back</h3>"
         + '<p><b>Rollback: Not defined in source — confirm with owner.</b></p>'
-        + ul(["Data in `./data/` survives rebuilds (bind mount) — `docker-compose.yml:8,123`.",
-              "Re-ingest is idempotent (byte offsets + dedup key), so a rebuilt image re-uses existing data — `README.md:152`.",
-              "Last resort for a hung stop: `docker rm -f` — `README.md:371`."])
+        + ul(["Data in `./data/<user>` survives rebuilds (bind mount) — `%s`." % at(COMPOSE, r"\./data/\$\{AURA_USER"),
+              "Re-ingest is idempotent (checkpoints + dedup), so a rebuilt image re-uses existing data — `%s`." % at(README, r"File paths are stored as logical paths"),
+              "A bloated work DB can be deleted with Aura stopped; the next cycle rebuilds it from the lake — `%s`." % at(README, r"\*\*Work DB growth\.\*\*"),
+              "A hung `docker compose stop` means `init: true` is missing — `%s`." % at(COMPOSE, r"init: true")])
         + "<h3>Prerequisites</h3>"
         + table(["Tool", "Version", "Why", "Source"], [
-            ["Docker + Docker Compose", "not pinned", "run both services", "`README.md:130`"],
-            ["Python", "3.12 (3.13/3.14 unsupported)", "local watcher/dbt", "`README.md:183`, `watcher/Dockerfile:1`"],
-            ["Node.js", "18+ local; 20 in images and CI", "frontend, verify runner", "`README.md:183`, `frontend/Dockerfile:1`, `ci.yml:106`"],
-            ["dbt-core / dbt-duckdb / duckdb", "1.12.0 / 1.10.1 / 1.5.4 (CI pin)", "transforms", "`.github/workflows/ci.yml:65`"],
-            ["`@duckdb/node-api`", "1.5.3-r.1", "frontend DB reads", "`frontend/package.json:15`"],
-            ["Claude Code transcripts", "at least 1 session in `<user-home>/.claude/projects`", "input data", "`README.md:130`"],
-            ["Config names", "`.env`: `AURA_DEFAULT_PERSON_ID`, `AURA_DEFAULT_PERSON_NAME`, `AURA_HASH_CONTENT`, `CLAUDE_LOGS_DIR`", "compose substitution", "`docker-compose.yml:9,63,72-73`"]])
+            ["Docker + Docker Compose", "not pinned", "run both services", "`%s`" % at(README, r"Requirements:")],
+            ["Python", "3.12 (3.13/3.14 unsupported)", "native watcher/dbt", "`%s`, `%s`" % (at("start.ps1", r"Python 3\.12 is required"), at("watcher/Dockerfile", r"^FROM python"))],
+            ["Node.js", "20 in images; ≥ 20 native", "frontend, verify runner", "`%s`, `%s`" % (at("frontend/Dockerfile", r"^FROM node"), at("start.ps1", r"Node >= 20 is required"))],
+            ["dbt-core / dbt-duckdb / duckdb", "%s / %s / %s (pinned)" % (PIN("dbt-core"), PIN("dbt-duckdb"), PIN("duckdb")), "transforms", "`%s`" % at("watcher/pyproject.toml", r"dependencies = \[", r"\]")],
+            ["`@duckdb/node-api`", PKG("@duckdb/node-api"), "frontend DB reads", "`%s`" % at("frontend/package.json", r"@duckdb/node-api")],
+            ["Claude Code transcripts", "at least 1 session in `<user-home>/.claude/projects`", "input data", "`%s`" % at(README, r"Requirements:")],
+            ["Config names", "`.env`: `AURA_DEFAULT_PERSON_ID`, `AURA_DEFAULT_PERSON_NAME`, `AURA_HASH_CONTENT`, `CLAUDE_LOGS_DIR`", "compose substitution", "`%s`" % at(COMPOSE, r"AURA_HASH_CONTENT")]])
         + "<h3>Access</h3>"
         + table(["What", "Where", "Notes"], [
-            ["Dashboard", "`http://localhost:3000`", "no login; port 3000 published by compose"],
-            ["Observability", "`http://localhost:3000/observability`", "polls every 10 s"],
-            ["JSON API", "`/api/dashboard`, `/api/sessions`, `/api/agents/[name]`, `/api/apps`, `/api/people`, `/api/errors`, `/api/observability`", "11 GET + 1 POST"],
-            ["Write DB", "host `data/aura.duckdb` · container `/data/aura.duckdb`", "single writer: do not open while watcher runs"],
-            ["Read DB", "host `data/read/aura.duckdb` · container `/data/read/aura.duckdb`", "open `READ_ONLY`"],
-            ["dbt artifacts", "`data/artifacts/` (`run_results.json`, `sources.json`, `manifest.json`, `history/`, `number_verify.json`, `ingest_coverage/latest.json`)", "read by `/observability`"],
-            ["Logs", "`docker compose logs -f watcher`", "`PYTHONUNBUFFERED=1` → live (`watcher/Dockerfile:6`)"],
+            ["Dashboard", "`http://127.0.0.1:3000`", "no login; published on localhost only — `%s`" % at(COMPOSE, r"127\.0\.0\.1:3000")],
+            ["Observability", "`http://127.0.0.1:3000/observability`", "polls every 10 s"],
+            ["JSON API", "`/api/dashboard`, `/api/sessions`, `/api/agents/[name]`, `/api/apps`, `/api/people`, `/api/errors`, `/api/observability`", "%d GET + 1 POST" % (n_api - 1)],
+            ["Work DB", "host `data/<user>/work/aura.duckdb`", "single writer: stop the watcher before opening"],
+            ["Read DB", "host `data/<user>/read/CURRENT` → `v<stamp>/aura.duckdb`", "open `READ_ONLY`"],
+            ["Artifacts", "`data/<user>/artifacts/` (`watcher_status.json`, `run_results.json`, `sources.json`, `manifest.json`, `publish.ndjson`, `freshness.ndjson`, `number_verify.json`, `history/`)", "read by `/observability`"],
+            ["Logs", "compose: `docker compose logs -f watcher`; native: `data/<user>/logs/`", "`PYTHONUNBUFFERED=1` → live (`%s`)" % at("watcher/Dockerfile", r"PYTHONUNBUFFERED")],
             ["Access requests / roles", "Not defined in source — confirm with owner", "—"]])
         + "<h3>Health checks</h3>"
-        + ul(["Healthy = fresh `raw_events`, a recent successful dbt run, read DB younger than 1800 s."])
+        + ul(["Healthy = fresh `watcher_status.json`, a recent successful dbt cycle with a published version, 0 errors per hour."])
         + table(["Check", "Command / place", "Healthy", "Source"], [
-            ["Container health", "`docker compose ps`", "both `healthy`", "`docker-compose.yml:91-102,129-134`"],
-            ["Watcher healthcheck rule", "read DB exists and mtime < 1800 s", "exit 0", "`docker-compose.yml:98`"],
-            ["Frontend healthcheck", "`wget -q --spider http://$(hostname):3000/`", "exit 0", "`docker-compose.yml:130`"],
-            ["Recent ingestion", "SQL below on the read DB", "count > 0 while Claude Code is in use", "project rule `CLAUDE.md` (Goal-Driven Execution)"],
-            ["Pipeline page", "`/observability` headline + bronze/dbt/error cards", "bronze < 300 s, dbt < 10 min + success, 0 errors/h", "`frontend/lib/queries/observability.ts:35-46`"],
-            ["dbt source freshness", "`sources.json` / observability table", "`raw_events` < 5 min warn, < 30 min error", "`dbt/models/staging/sources.yml:24-25`"],
-            ["Number integrity", "`data/artifacts/number_verify.json`", "`fail: 0` of `total: 8`", "`scripts/verify/run_all.mjs:72-174`"],
-            ["Watcher errors", "`SELECT source, count(*) FROM watcher_errors WHERE ts > now() - INTERVAL 1 hour GROUP BY 1`", "0 rows", "`duckdb_writer.py:144` (derived)"]])
-        + '<div class="payloads">' + payload("IN", "read DB · derived, not run", "SELECT count(*)\nFROM raw_events\nWHERE ts > now() - INTERVAL 5 minutes;", "sql") + "</div>"
-        + ul(["Run on `data/read/aura.duckdb` opened read-only; never on the write DB while the watcher runs.",
-              "The read DB lags up to 600 s; widen to `INTERVAL 15 minutes` when checking the snapshot.",
-              "`ts` is event time (`TIMESTAMP`, no zone); zero rows is normal when nobody is using Claude Code."])
-        + '<div class="payloads">' + payload("IN", "one-liner · derived, not run",
-            "docker compose exec watcher python -c \"import duckdb; print(duckdb.connect('/data/read/aura.duckdb', read_only=True).sql(\\\"SELECT max(ts), count(*) FILTER (WHERE ts > now() - INTERVAL 15 minutes) FROM raw_events\\\").fetchall())\"") + "</div>"
+            ["Container health", "`docker compose ps`", "both `healthy`", "`%s`, `%s`" % (at(COMPOSE, r"healthcheck:", r"start_period"), at(COMPOSE, r"fetch\('http://127"))],
+            ["Watcher healthcheck rule", "`watcher_status.json` mtime < 120 s", "exit 0", "`%s`" % at(COMPOSE, r"watcher_status\.json")],
+            ["Recent ingestion", "`last_flush_at` and `max_event_ts` in `watcher_status.json`; or SQL below on the lake", "advancing while Claude Code is in use", "`%s`; `%s`" % (W("main.py", r"^def write_status", r"\"dbt\": dict"), at("CLAUDE.md", r"read_parquet"))],
+            ["Pipeline page", "`/observability` headline + bronze/dbt/error cards", "bronze < 300 s, dbt < 10 min + success, 0 errors/h", "`%s`" % at("frontend/lib/queries/observability.ts", r"^function bronzeStatus", r"^function errorBasedHealth")],
+            ["dbt source freshness", "`sources.json` / observability table", "`raw_events` < 5 min warn, < 30 min error", "`%s`" % at("dbt/models/staging/sources.yml", r"warn_after", r"error_after")],
+            ["Number integrity", "`artifacts/number_verify.json`", "`fail: 0` of `total: 8`", "`%s`" % at("scripts/verify/run_all.mjs", r"check: 'session_cost_reconciles'", r"check: 'sdk_verbatim_cost'")],
+            ["Freshness lag", "`artifacts/freshness.ndjson`", "median under 5 min (target, not yet measured warm)", "`%s`; `%s`" % (at(DBTC, r"^def freshness_lag"), at(README, r"The target is a median"))]])
+        + '<div class="payloads">' + payload("IN", "lake · from CLAUDE.md (Goal-Driven Execution)", "SELECT count(*)\nFROM read_parquet('data/<user>/lake/raw_events/*/*.parquet')\nWHERE ingested_at > (now() AT TIME ZONE 'UTC') - INTERVAL 5 minutes;", "sql") + "</div>"
+        + ul(["`ingested_at` is flush time in naive UTC; zero rows is normal when nobody is using Claude Code.",
+              "Do not open the work DB while the watcher runs; open read DBs `READ_ONLY`."])
         + "<h3>Observability thresholds</h3>"
         + table(["Signal", "Green", "Yellow", "Red"], [
             ["bronze age", "< 300 s", "300-1800 s", "≥ 1800 s"],
             ["dbt run", "< 10 min and success", "10-60 min or failed", "> 60 min or no `run_results.json`"],
-            ["watcher errors / hour", "0", "1-10", "> 10"]]) + cite("from frontend/lib/queries/observability.ts:35-46")
-        + '<div class="payloads">' + payload("OUT", "healthy log excerpt · from main.py:615-670 print strings", "Invoking dbt seed...\nInvoking dbt run...\nInvoking dbt test...") + "</div>"))
+            ["watcher errors / hour", "0", "1-10", "> 10"]]) + cite("from %s" % at("frontend/lib/queries/observability.ts", r"^function bronzeStatus", r"^function errorBasedHealth"))
+        + '<div class="payloads">' + payload("OUT", "healthy log excerpt · from dbt_cycle.py print strings", "[dbt] seed\n[dbt] run\n[dbt] test") + "</div>"))
 
     # ---- 14
     S.append(sec("s14", "Operational gotchas", table(["#", "Symptom", "Cause", "What to do", "Source"], cls="cards", rows=[
-        ["1", "`raw_events` hours stale", "dbt cycle and snapshot copy hold `_snapshot_lock` back to back", "Keep dbt interval (25 min) above cycle time; snapshot interval (600 s) above copy time", "`README.md:365-367`, `docker-compose.yml:17-36`"],
-        ["2", "`Out of Memory … 16383.9 PiB used`", "Orphan spill files after unclean shutdown", "Startup purge handles it; else empty `data/aura.duckdb.tmp/` with watcher stopped", "`main.py:33-90`, `README.md:369`"],
-        ["3", "Real OOM in `fact_prompts` full refresh", "Needs the full 4 GB pool", "Keep `AURA_DBT_MEMORY_LIMIT=4000MB` under `mem_limit 5g`; lower dbt threads first", "`README.md:369,380`, `docker-compose.yml:81-109`"],
-        ["4", "Turns show `$0.0000`, tests fail on a model", "New model id not in seed", "Add row to `dbt/seeds/model_pricing.csv`", "`fact_model_calls.sql:65-73`"],
-        ["5", "Ingestion stops on Windows", "inotify drops events on bind mounts", "Polling observer used; `sweep_worker` re-scans every 600 s", "`main.py:1179-1181,761`"],
-        ["6", "dbt views fail on read DB (\"catalog not found\")", "Read DB basename is not `aura.duckdb`", "Keep `read/aura.duckdb`; local dbt copies also named `aura.duckdb`", "`snapshot.py:11-18`, `main.py:981-985`"],
-        ["7", "Empty dashboard right after start", "Default range `today`; first snapshot ≤ 600 s, first dbt ~20 min", "Use `?range=30d`; watch `/observability`", "`README.md:141-146`, `frontend/lib/range.ts:3-23`"],
-        ["8", "Frontend errors on first run", "Starts before the first snapshot exists (`depends_on` has no health condition)", "Wait for watcher `healthy`", "`docker-compose.yml:127-128`"]])
-        + ul(["Windows checkouts: `.gitattributes` forces LF so containers start — `.gitattributes:5-21`.",
-              "Code defaults (2 s snapshot, 5 min dbt) are for tests; run with compose values."])))
+        ["1", "Numbers stop advancing", "A failed or timed-out dbt cycle (or failed publish) keeps the previous read DB live", "Check dbt status on `/observability`; error is in the watcher log and `watcher_status.json`", "`%s`, `%s`" % (at(README, r"Numbers stop advancing"), at(DBTC, r'status\["error"\] = "publish failed"'))],
+        ["2", "`Out of Memory … 16383.9 PiB used`", "Orphan spill files after an unclean shutdown; DuckDB 1.5.4 temp accounting underflows, so every spill is refused (spurious OOM)", "The watcher purges `work/aura.duckdb.tmp/` at startup and before each dbt command; else empty it with the watcher stopped", "`%s`, `%s`" % (at(DBTC, r"^def purge_duckdb_spill_dir", r'"""$'), at(README, r"16383\.9 PiB"))],
+        ["3", "Real OOM, e.g. `3.7 GiB/3.7 GiB used`", "`fact_prompts` full refresh needs the full 4 GB pool", "Keep `AURA_DBT_MEMORY_LIMIT` ≥ 4 GB and ~1 GB under `mem_limit`; lower dbt threads first", "`%s`, `%s`" % (at(README, r"Known limit"), at(COMPOSE, r"Keep ~1 GB below"))],
+        ["4", "Live ingestion silently stops", "PollingObserver freeze (suspected hung stat on the Windows bind mount): `max_event_ts` stuck at the last backfill, no traceback, no `watcher_errors` row, dbt keeps cycling. Cause not reproduced in code", "Compare `max_event_ts` and `files_pending` in `watcher_status.json`; the sweep re-queues files whose size != offset every 600 s; restart the watcher", "`%s`, `%s`" % (W("ingest.py", r"^def sweep", r"ctx\.last_sweep = files"), W("main.py", r"^def write_status", r"files_pending"))],
+        ["5", "Dashboard says `read DB not published yet`, panels empty", "No dbt cycle has published yet, so `read/CURRENT` is missing", "Wait for the first cycle; watch `/observability` or the watcher log", "`%s`, `%s`" % (at(DBJS, r"read DB not published yet"), at(README, r"read DB not published yet"))],
+        ["6", "Costs show `$—`, tests fail on a model", "New model id not in the seed; the watcher logs `unknown_model`", "Add a row to `dbt/seeds/model_pricing.csv`", "`%s`, `%s`" % (at(FMC, r"WHEN mp\.model IS NULL"), at(DBTC, r'"unknown_model"'))],
+        ["7", "dbt views fail (\"catalog not found\")", "Work DB basename is not `aura.duckdb`", "Keep `work/aura.duckdb`; local copies must also be named `aura.duckdb`", "`%s`" % at(DBTC, r"dbt bakes the catalog")],
+        ["8", "`another Aura watcher … is running`, exit 2", "The other run mode wrote its status in the last 120 s", "Stop it (`docker compose down`, `start.ps1 -Stop`) or wait", "`%s`" % W("main.py", r"^def mode_guard", r"return None$")],
+        ["9", "`docker compose stop` hangs", "dbt child not reaped without an init process", "Keep `init: true` on the watcher service", "`%s`" % at(COMPOSE, r"init: true")],
+        ["10", "Extra `read/v*` dirs on Windows", "A version the frontend still has open cannot be deleted", "A later cycle removes it", "`%s`" % at(DBTC, r"^def prune", r"retried next cycle|PermissionError")]])
+        + ul(["Windows checkouts: `.gitattributes` forces LF so containers start — `%s`." % at(".gitattributes", r"eol=lf"),
+              "A native stop is a hard kill; up to 30 s of buffered rows are re-read at the next start — `%s`." % at("start.ps1", r"A stop is a hard kill"),
+              "Code defaults match compose (5 min dbt, 30 s flush); native mode sweeps every 60 s."])))
 
     # ---- 15
     def st(x):
@@ -1194,69 +1365,37 @@ docker-compose.yml  watcher + frontend services
     def wh(*paths):
         return Raw(" ".join("<code>%s</code>" % esc(p) for p in paths))
     I = [
-        ("I-1", "`turn_stats` joins turns by session only; multi-cwd session cost lands on every app", wh("dbt/models/marts/dim_apps.sql:68-87"), "`SUM(dim_apps.total_cost)` ~6x spend; `/apps`, top apps, `dim_projects`", "C", "Carry cwd and join on `(tenant_id, session_id, cwd)`"),
-        ("I-2", "Tool calls on non-winning streamed events miss their turn", wh("dbt/models/staging/stg_tool_calls.sql:8-30", "dbt/models/marts/fact_turns.sql:36-37", "dbt/models/marts/fact_errors.sql:41-51", "dbt/models/marts/fact_session_files.sql:57"), "~18% executions: tool counts, error turn, file cost low", "C", "Add `message_id` to `stg_tool_calls`; join on it"),
-        ("I-3", "Apps total sums all `entity_type` rows", wh("frontend/lib/queries/apps.ts:42-45"), "`/apps` total 2.24x", "C", "Add `entity_type = 'app'`"),
-        ("I-4", "All-time projection divisor capped at 14 days", wh("frontend/app/page.tsx:93-97", "frontend/lib/queries/dashboard.ts:5,68"), "30-day projection 6.2x", "C", "Divide by real day span"),
-        ("I-5", "Verdict route appends to read-only `/data`", wh("frontend/app/api/sessions/[id]/verdict/route.ts:51", "docker-compose.yml:123"), "Every verdict POST 500 under compose", "C", "Shared rw inbox mount + `AURA_VERDICTS_INBOX` on both"),
-        ("I-6", "Observability layer probes use non-existent ts columns; empty catch blanks counts", wh("frontend/lib/queries/observability.ts:921-926,976-1000"), "Gold ages and row counts blank", "C", "Fix 4 column names; split try blocks"),
-        ("I-7", "SDK redaction on serialised string", wh("watcher/src/aura_watcher/adapters/sdk_trace.py:177-178"), "Invalid JSON payload; dbt parse fails", "C", "`json.dumps(redact_obj(raw))`"),
-        ("I-8", "Range rollups sum session counts per model call", wh("frontend/lib/queries/agents.ts:85-89", "frontend/lib/queries/apps.ts:76-80", "frontend/lib/queries/people.ts:78-82"), "Range turn/tool counts inflated; cost correct", "C", "Aggregate calls per session first"),
-        ("I-9", "Joins use `dim_apps.cwd` (one ANY_VALUE cwd)", wh("frontend/lib/queries/sessions.ts:49", "frontend/lib/queries/dashboard.ts:235"), "Sessions drop out or duplicate", "C", "Join `int_app_cwd_lookup`"),
-        ("I-10", "Prompts tab effect cancels its own fetch", wh("frontend/components/SessionTabs.tsx:714-724"), "Enriched prompt data never shown", "C", "Drop `enrichedLoading` from deps"),
-        ("I-11", "Half-written last line passes the checkpoint", wh("watcher/src/aura_watcher/main.py:294-296,356-357,926-927"), "One event lost per torn read", "N", "Stop before unterminated line on parse failure"),
-        ("I-12", "`int_entity_spend` app tools/commits grouped without `project_id`", wh("dbt/models/intermediate/int_entity_spend.sql:96-132"), "Doubled counts for apps in 2 projects", "C", "Add `project_id` to group/join"),
-        ("I-13", "`fact_prompts.app_id` from `dim_apps.cwd`", wh("dbt/models/marts/fact_prompts.sql:397-401"), "~14% prompts NULL app", "C", "Use `dim_sessions.app_id`"),
-        ("I-14", "`/api/errors` ignores `since`", wh("frontend/app/api/errors/route.ts:4-6"), "Range pills do nothing on `/errors`", "C", "Pass validated `since`"),
-        ("I-15", "Unanswered prompts tiered as model tier 1", wh("dbt/models/marts/fact_prompts.sql:429-436,477-487"), "False overkill, NULL reason", "C", "NULL model → NULL tier"),
-        ("I-16", "Dispatch tool list `('TaskCreate','Agent')` vs `('Task','Agent')`", wh("dbt/models/marts/fact_prompts.sql:255", "dbt/models/intermediate/int_event_agent.sql:27"), "Legacy dispatches missed", "C", "Use `('Task','Agent')`"),
-        ("I-17", "Observability headline ignores `dbt_status`", wh("frontend/app/observability/PipelineLive.tsx:281-401"), "Stale dbt shows \"All systems nominal\"", "C", "Add dbt status to verdict"),
-        ("I-18", "dbt subprocesses have no timeout under the lock", wh("watcher/src/aura_watcher/main.py:614,627,649,669"), "Hung dbt freezes all ingestion", "C", "Add timeout; log after release"),
-        ("I-19", "`fact_session_files.edit_count` counts Reads; duration not divided by k", wh("dbt/models/marts/fact_session_files.sql:21,64-67"), "File metrics overstated", "C", "Count Edit/Write only; divide by k"),
-        ("I-20", "Lifetime agent cost by session's mode agent; range by call", wh("dbt/models/marts/dim_agents.sql:22-27", "dbt/models/intermediate/int_entity_spend.sql:136-147"), "`/agents` differs by range", "C", "See decision D-1"),
-        ("I-21", "Residual cache creation priced at 1h rate", wh("dbt/models/marts/fact_model_calls.sql:55-59"), "Old-log cost overstated", "C", "See decision D-4"),
-        ("I-22", "`dim_sessions.status` never `active`", wh("dbt/models/marts/dim_sessions.sql:254"), "No live-session status", "C", "Derive from last activity"),
-        ("I-23", "`dbt_worker` hard-codes `/data/artifacts`", wh("watcher/src/aura_watcher/main.py:679"), "`AURA_ARTIFACTS_DIR` splits artifacts", "C", "Pass `artifacts_dir` to `dbt_worker`"),
-        ("I-24", "Coverage counts workflow journals", wh("watcher/src/aura_watcher/main.py:746-752"), "Coverage never reaches full", "C", "Apply `is_workflow_journal` filter"),
-        ("I-25", "`session_id` fallback: folder vs file stem", wh("watcher/src/aura_watcher/adapters/claude.py:131-134", "watcher/src/aura_watcher/main.py:407"), "Rare files split across 2 ids", "C", "One stem-based helper"),
-        ("I-26", "`int_turns` header says sidechain prompt NULL; code attaches it", wh("dbt/models/intermediate/int_turns.sql:11-12,133-136"), "Code vs docs mismatch", "C", "Fix comment or add CASE"),
-        ("I-27", "Parse errors logged outside the lock", wh("watcher/src/aura_watcher/main.py:322,329,344"), "Error rows lost while dbt runs", "C", "Log inside write block"),
-        ("I-28", "Frontend port on all interfaces, no auth", wh("docker-compose.yml:120-121"), "LAN can read transcripts", "C", "See decision D-3"),
-        ("I-29", "Image deps lower-bound only; CI pins", wh("watcher/pyproject.toml:12-17"), "Rebuild may change DuckDB file format", "C", "See decision D-5"),
-        ("I-30", "CI runs dbt parse/compile only", wh(".github/workflows/ci.yml:47-95"), "dbt tests and Docker builds unchecked", "C", "Add fixture ingest + `dbt build`"),
-        ("I-31", "Docs drift: dbt 5 min / snapshot 2 s / backfill order / Streamlit", wh("README.md:222", "docs/HOW-IT-WORKS.md:22-24", "CLAUDE.md:3"), "Operators misled", "C", "Align docs to compose values"),
-        ("I-32", "Truncated file not picked by backfill/sweep (`offset < size`)", wh("watcher/src/aura_watcher/main.py:168-175"), "Rotated files missed if observer freezes", "N", "Use `!=` if truncation happens"),
-        ("I-33", "Naive-UTC `ts` vs session `CURRENT_DATE`/`NOW()`", wh("dbt/models/marts/fact_hourly_activity.sql:24-25", "dbt/models/marts/fact_spend_pace.sql:25,103"), "Day/hour shift if TZ not UTC", "N", "`SET TimeZone='UTC'`"),
-        ("I-34", "musl image + `@duckdb/node-api` native module", wh("frontend/Dockerfile:1-17"), "Frontend may fail first query", "N", "Build and load `/`; else `node:20-slim`"),
-    ]
-    assert len(I) == 34 and sum(1 for r in I if r[4] == "N") == 4
+        ("I-1", "`int_turns` header says sidechain turns get `user_prompt = NULL`; the ASOF join attaches the last non-sidechain prompt", wh(at(INT, r"Sidechain assistant turns now receive"), at(INT, r"ASOF LEFT JOIN", r"a\.ts\s+>= u\.user_ts")), "Code vs comment mismatch; sidechain turns show a parent prompt", "C", "Fix the comment or add a `CASE` on `is_sidechain`"),
+        ("I-2", "`int_entity_spend` agent rows mix definitions: spend per event agent, tools and commits per session's mode agent", wh(at("dbt/models/intermediate/int_entity_spend.sql", r"fmc\.agent,"), at("dbt/models/intermediate/int_entity_spend.sql", r"COALESCE\(ds\.agent, 'main'\)")), "Agent spend, tools and commits can disagree for mixed-agent sessions", "C", "See decision D-2"),
+        ("I-3", "Footer price table hard-coded and stale vs the seed (Opus $15/$75, Gemini 1.5)", wh(at("frontend/components/atoms.tsx", r"Anthropic Pricing", r"Gemini 1\.5 Flash"), seed_line("claude-opus-4-8")), "Footer shows rates the cost chain does not use", "C", "Read rates from the seed or remove the footer"),
+        ("I-4", "`aura.toml` is read by no code", wh(at("aura.toml", r"Nothing in this")), "Edits to it have no effect", "C", "Delete it or wire it up"),
+        ("I-5", "CI does not build Docker images or run `start.ps1`", wh(at(".github/workflows/ci.yml", r"^jobs:", r"start\.sh syntax")), "Compose and Windows native paths unchecked", "C", "Add an image-build job"),
+        ("I-6", "`fact_prompts.app_id` comes from `dim_sessions.app_id`; prompts of sessions without an app match keep NULL", wh(at("dbt/models/marts/fact_prompts.sql", r"ds\.app_id")), "Some prompts missing from per-app views", "N", "Measure the NULL share, then decide"),
+        ("I-7", "`/observability` layer ages probe timestamp columns by name; not re-checked against the current marts", wh(at("frontend/lib/queries/observability.ts", r"^export async function getMedallionLayers")), "Age or row-count cells may be blank", "N", "Run against a published read DB and compare"),
+        ("I-8", "`fact_prompts` full refresh needs the full 4 GB pool", wh(at(README, r"Known limit")), "First boot or `--full-refresh` can OOM below 4 GB", "C", "Keep the dbt limit ≥ 4 GB")]
+    assert len(I) == 8 and sum(1 for r in I if r[4] == "N") == 2
     ihead = ["#", "Issue", "Where (path:line)", "Impact", "Status", "Suggested fix"]
     irows = lambda rs: [[r[0], r[1], r[2], r[3], st(r[4]), r[5]] for r in rs]
-    issues = (table(ihead, irows(I[:10]), "issues")
-              + "<details><summary>24 more issues (I-11 to I-34)</summary>" + table(ihead, irows(I[10:]), "issues") + "</details>")
     asm = [
-        ["Compose (`docker-compose.yml`) is the supported deployment", "All intervals, limits and paths here are compose values, not code defaults"],
-        ["Single tenant `local`", "`fact_errors` and pricing tenant logic untested for more tenants"],
-        ["Container process time zone is UTC", "Daily/hourly rollups and `rangeSince` assume it"],
-        ["Claude Code only appends to transcripts", "Truncation handling (I-32) matters only if files shrink"],
-        ["Issue sizes are from a 2026-08-21 snapshot", "Current ratios may differ; re-measure before quoting"],
-        ["JSONL schema is undocumented", "Parsing rules reflect observed fields; new event types may be dropped"]]
-    dec = ["**D-1 Agent cost attribution:** per model call (recommended) or session's dominant agent — until then `/agents` lifetime and range totals differ.",
-           "**D-2 Verdict inbox location:** shared rw mount `./data/inbox` (recommended) or drop verdicts — until then every verdict save fails under compose.",
-           "**D-3 Dashboard binding:** `127.0.0.1:3000` (recommended) or LAN with auth — until then anyone on the network can read transcripts.",
-           "**D-4 Residual cache-write rate:** 5m rate (recommended, default TTL) or keep 1h — until then old-log cost stays overstated.",
-           "**D-5 Version pinning:** pin `duckdb==1.5.4` + CI dbt versions in the image (recommended) or keep lower bounds — until then a rebuild can break reader compatibility.",
-           "**D-6 `/sessions` totals:** label \"sessions started in range\" (recommended) or switch to spend-in-range — until then `/sessions` and the dashboard disagree on boundary days."]
+        ["Compose (`docker-compose.yml`) is the supported deployment", "All intervals, limits and paths here are compose values; native mode differs (sweep 60 s, 1 dbt thread)"],
+        ["Single tenant `local`", "Pricing tenant logic untested for more tenants"],
+        ["Time zone is UTC", "dbt sets `SET GLOBAL TimeZone = 'UTC'`; the watcher passes `TZ=UTC` to dbt — `%s`, `%s`" % (at("dbt/dbt_project.yml", r"SET GLOBAL TimeZone"), at(DBTC, r'"TZ": "UTC"'))],
+        ["Warm 5-min cycle time is unknown", "The under-5-minute freshness target is not demonstrated; only the cold build (1347 s) is measured, and that figure is owner-reported"],
+        ["JSONL schema is undocumented", "Parsing rules reflect observed fields; unknown event types are counted in `file_stats.dropped_unknown`"],
+        ["Native `start.sh` untested", "Only `bash -n` runs in CI — `%s`" % at(".github/workflows/ci.yml", r"bash -n start\.sh")]]
+    dec = ["**D-1 Footer prices:** read from the seed (recommended) or remove the footer — until then it shows rates the pipeline does not use.",
+           "**D-2 Agent attribution:** per model call for spend, tools and commits (recommended) or session mode for all — until then agent rows mix definitions.",
+           "**D-3 `aura.toml`:** delete (recommended) or wire into config — until then it suggests settings that do nothing.",
+           "**D-4 CI scope:** add a Docker image build job (recommended) or document that compose is untested in CI."]
     decl = "<ul>" + "".join("<li>%s</li>" % re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", md(d)) for d in dec) + "</ul>"
     S.append(sec("s15", "Known issues, assumptions, and decisions needed",
-        ul(["Status: Confirmed = kept as must/should after the 2026-11-10 review's verification; Not verified = marked plausible or a question there, or inferred in the graph review.",
-            "Sizes measured on a read snapshot dated 2026-08-21."])
-        + "<h3>Issues</h3>" + issues + cite("from reviews/review-2026-11-10-1853.html (must/should/question items)")
-        + ul(["The review asked whether the frontend has a memory limit; compose sets `mem_limit 512m` (`docker-compose.yml:135`). Open part: DuckDB threads/memory are not set (`frontend/lib/db.ts:42`) — Not verified."])
+        ul(["Status: Confirmed = checked in code at the cited lines; Not verified = listed as not re-checked in the graph rebuild of 2026-11-11."])
+        + "<h3>Issues</h3>" + table(ihead, irows(I), "issues") + cite("from the knowledge graph's known-issues list and the CONFIRMED notes in its dbt logic pages, re-checked at the cited lines")
         + "<h3>Assumptions</h3>" + table(["Assumption", "Why it matters"], asm)
         + "<h3>Decisions needed</h3>" + decl))
 
     return S, n_edges, (0, 0, scale)
+
 
 
 EXTRA_CSS = """
@@ -1321,56 +1460,56 @@ table.issues td:first-child,table.cards td:first-child{font-weight:600}
 
 
 def otabs():
-    P = [("Does", ["`watcher` ingests Claude Code and SDK-trace JSONL into DuckDB `raw_events`, oldest file first.",
+    P = [("Does", ["`watcher` parses Claude Code and SDK-trace JSONL into a Parquet lake, oldest file first, flushing every 30 s.",
                    "`redact.py` scrubs secrets from `payload` before write; optional SHA-256 content hashing.",
-                   "`dbt_worker` builds 29 dbt models every cycle; cost priced per model call.",
-                   "`snapshot_worker` publishes a read-only copy `data/read/aura.duckdb` every 600 s.",
-                   "`frontend` serves 13 pages and 12 API handlers on `:3000`; `/observability` shows pipeline health."]),
+                   "A dbt thread builds %d models every 5 min into a work DB; cost is priced per model call." % len(MODEL_FILES),
+                   "Each successful run publishes a read-only DB `read/v<stamp>`; `CURRENT` switches atomically.",
+                   "`frontend` serves %d pages and %d API handlers on `127.0.0.1:3000`; `/observability` shows pipeline health."
+                   % (len(list((ROOT / "frontend/app").rglob("page.tsx"))), len(list((ROOT / "frontend/app/api").rglob("route.ts"))))]),
          ("Doesn't", ["Doesn't change or delete transcripts — logs mounted read-only (`/logs/claude:ro`).",
                       "Doesn't authenticate users or manage access — no login, no roles.",
                       "Doesn't fetch prices — only `dbt/seeds/model_pricing.csv`.",
-                      "Doesn't use cron or Airflow — dbt runs as a watcher subprocess.",
+                      "Doesn't use cron or Airflow — dbt runs on a watcher thread.",
                       "Doesn't deploy anywhere — CI checks only; Gemini/Codex adapters not built."]),
-         ("Limitations", ["Dashboard lags: snapshot every 600 s plus dbt cycle (~20 min run, 25 min sleep).",
-                          "One writer: dbt holds `_snapshot_lock` for its whole run; ingestion waits.",
-                          "Incremental models reprocess only sessions touched in the last 24 h.",
-                          "dbt test failures don't block model refresh (`dbt run`, not `dbt build`).",
+         ("Limitations", ["Dashboard lags: one flush (30 s) + the wait for the next 5-min cycle + run and publish time.",
+                          "Warm cycle time is not measured; the last full cold build took 1347 s (PASS=155, ERROR=0).",
+                          "Incremental models rebuild only sessions with new lake rows.",
+                          "dbt test failures don't block publish (`dbt run`, not `dbt build`).",
                           "One machine, one tenant (`local`); dbt pool 4000 MB inside a 5 GB container."]),
-         ("Top issues", ["`dim_apps` puts a session's full cost under every app it touched (~6x spend) — Confirmed",
-                         "Tool calls on earlier streamed events miss their turn (~18% of executions) — Confirmed",
-                         "`/apps` total sums app, agent and person rows of `int_entity_spend` (2.24x) — Confirmed",
-                         "All-time 30-day projection divides by at most 14 days (6.2x) — Confirmed",
-                         "Verdict POST cannot write: frontend mounts `/data` read-only — Confirmed",
-                         "`/observability` gold-layer ages and row counts always blank — Confirmed",
-                         "SDK-trace redaction can produce invalid JSON payloads — Confirmed",
-                         "Range views multiply session turn/tool counts by calls per session — Confirmed",
-                         "Session Prompts tab discards its enriched fetch — Confirmed",
-                         "Half-written last line can be skipped by the checkpoint — Not verified"])]
+         ("Top issues", ["`int_turns` comment says sidechain turns get no prompt; code gives them the parent prompt — Confirmed",
+                         "`int_entity_spend` agent rows mix per-event spend with per-session tools and commits — Confirmed",
+                         "Footer price table is stale against the pricing seed — Confirmed",
+                         "`aura.toml` is read by no code — Confirmed",
+                         "CI builds no Docker image and does not run `start.ps1` — Confirmed",
+                         "`fact_prompts` full refresh needs the full 4 GB pool — Confirmed",
+                         "Prompts of sessions without an app match keep `app_id` NULL — Not verified",
+                         "`/observability` layer ages not re-checked against current marts — Not verified"])]
     h = '<div class="otabs">'
     for n, (t, _) in enumerate(P, 1):
         h += '<input type="radio" name="ot" id="ot%d"%s><label for="ot%d">%s</label>' % (n, " checked" if n == 1 else "", n, esc(t))
     for n, (t, items) in enumerate(P, 1):
         lis = "".join("<li>%s</li>" % md(x) for x in items)
         h += '<div class="op" id="op%d"><h3 class="pt">%s</h3>%s</div>' % (n, esc(t), ("<ol>%s</ol>" if n == 4 else "<ul>%s</ul>") % lis)
-    return h + "</div>" + cite("Top issues: full detail in section 15. Status rule: Confirmed = kept after the 2026-11-10 review's verification pass; Not verified = marked plausible or a question there.")
+    return h + "</div>" + cite("Top issues: full detail in section 15. Status rule: Confirmed = checked in code at the cited lines; Not verified = listed as not re-checked in the graph rebuild of 2026-11-11.")
 
 
 def main():
     S, n_edges, lin = build()
     ex_css = EXAMPLE.read_text(encoding="utf-8")
     css = re.search(r"<style>(.*?)</style>", ex_css, re.S).group(1) + EXTRA_CSS
-    titles = ["Big picture", "Architecture", "Flow: ingest and backfill", "Flow: dbt cycle and snapshot", "Flow: page load",
+    titles = ["Big picture", "Architecture", "Flow: ingest and backfill", "Flow: dbt cycle and publish", "Flow: page load",
               "Flow: cost calculation", "Data model", "dbt lineage", "Business rules", "Configuration", "Folder tree", "Commands",
               "Deploy and access", "Operational gotchas", "Known issues, assumptions, and decisions needed"]
     assert len(S) == len(titles)
     S = [re.sub(r"<h2>", "<h2>%d · " % (i + 1), x, count=1) for i, x in enumerate(S)]
     toc = "".join('<li><a href="#s%d">%s</a></li>' % (i + 1, t) for i, t in enumerate(titles))
-    chips = "".join("<span>%s</span>" % esc(c) for c in ["watcher · Python 3.12", "dbt-core 1.12.0 / dbt-duckdb 1.10.1 (CI pin)", "duckdb 1.5.4 (CI pin)",
-                    "Next.js 14.2.3", "@duckdb/node-api 1.5.3-r.1", "docker compose: 2 services"])
+    chips = "".join("<span>%s</span>" % esc(x) for x in ["watcher · Python 3.12", "dbt-core %s / dbt-duckdb %s (pinned)" % (PIN("dbt-core"), PIN("dbt-duckdb")),
+                    "duckdb %s (pinned)" % PIN("duckdb"), "Next.js %s" % PKG("next"), "@duckdb/node-api %s" % PKG("@duckdb/node-api"), "docker compose: 2 services"])
     head = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
             '<meta name="generator" content="darshan-singh-meel-docs"><title>Aura technical</title><style>%s</style></head><body><main>' % css)
     top = ('<div class="eyebrow">Technical document</div><h1>Aura technical</h1>%s<div class="chips">%s</div>'
-           '<p class="cite">pins from .github/workflows/ci.yml:65, frontend/package.json:12,15</p><nav class="toc"><ol>%s</ol></nav>' % (otabs(), chips, toc))
+           '<p class="cite">pins from %s, %s</p><nav class="toc"><ol>%s</ol></nav>'
+           % (otabs(), chips, at("watcher/pyproject.toml", r"dependencies = \[", r"\]"), at("frontend/package.json", r'"@duckdb/node-api"', r'"next"'), toc))
     OUT.write_text(head + top + chr(10).join(S) + "</main></body></html>", encoding="utf-8")
     print("wrote", OUT.relative_to(ROOT), OUT.stat().st_size, "bytes; lineage edges", n_edges)
 
