@@ -134,14 +134,14 @@ first_prompt_raw AS (
         e.session_id,
         e.ts                                                        AS prompt_ts,
         e.is_sidechain,
-        json_extract_string(e.payload, '$.message.content')         AS prompt_text
+        e.content_text                                              AS prompt_text
     FROM {{ ref('stg_events') }} e
     WHERE e.event_type = 'user'
-      AND json_extract_string(e.payload, '$.userType') = 'external'
-      AND COALESCE(json_extract_string(e.payload, '$.isMeta'), 'false') != 'true'
+      AND e.user_type = 'external'
+      AND COALESCE(e.is_meta, 'false') != 'true'
       -- Exclude tool_result events (array content); only string content is a prompt
-      AND substr(trim(json_extract_string(e.payload, '$.message.content')), 1, 1) != '['
-      AND json_extract_string(e.payload, '$.message.content') IS NOT NULL
+      AND substr(trim(e.content_text), 1, 1) != '['
+      AND e.content_text IS NOT NULL
 ),
 first_prompt AS (
     SELECT

@@ -31,14 +31,14 @@ WITH task_dispatches AS (
 dispatch_agent_ids AS (
     SELECT
         td.tenant_id,
-        json_extract_string(e.payload, '$.toolUseResult.agentId') AS agent_id,
+        e.tool_use_result_agent_id AS agent_id,
         td.subagent_type
     FROM task_dispatches td
     JOIN {{ ref('stg_tool_results') }} tr
         ON tr.tenant_id = td.tenant_id AND tr.tool_use_id = td.tool_use_id
     JOIN {{ ref('stg_events') }} e
         ON e.tenant_id = tr.tenant_id AND e.uuid = tr.event_uuid
-    WHERE json_extract_string(e.payload, '$.toolUseResult.agentId') IS NOT NULL
+    WHERE e.tool_use_result_agent_id IS NOT NULL
     QUALIFY row_number() OVER (PARTITION BY td.tenant_id, agent_id ORDER BY td.subagent_type) = 1
 ),
 sidechain_events AS (

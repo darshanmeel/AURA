@@ -3,7 +3,7 @@
 WITH ranked AS (
     SELECT
         *,
-        ROW_NUMBER() OVER (PARTITION BY tenant_id, message_id ORDER BY ts DESC, byte_offset DESC) as rn
+        ROW_NUMBER() OVER (PARTITION BY tenant_id, message_id ORDER BY ts DESC, byte_offset DESC, uuid DESC) as rn
     FROM {{ ref('stg_events') }}
     WHERE event_type = 'assistant' AND message_id IS NOT NULL
 )

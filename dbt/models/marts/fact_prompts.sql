@@ -75,14 +75,10 @@ external_user_events AS (
         e.ts                AS prompt_ts,
         e.parent_uuid,
         e.is_sidechain,
-        e.payload,
-        json_extract_string(e.payload, '$.userType')   AS user_type,
-        json_extract_string(e.payload, '$.isMeta')     AS is_meta,
         -- Only string content is a real prompt; array content = tool_result
         CASE
-            WHEN substr(trim(json_extract_string(e.payload, '$.message.content')), 1, 1) = '['
-            THEN NULL
-            ELSE json_extract_string(e.payload, '$.message.content')
+            WHEN substr(trim(e.content_text), 1, 1) = '[' THEN NULL
+            ELSE e.content_text
         END                                            AS prompt_text
     FROM {{ ref('stg_events') }} e
     {% if is_incremental() %}
@@ -91,8 +87,8 @@ external_user_events AS (
         AND rs.session_id = e.session_id
     {% endif %}
     WHERE e.event_type = 'user'
-      AND json_extract_string(e.payload, '$.userType') = 'external'
-      AND COALESCE(json_extract_string(e.payload, '$.isMeta'), 'false') != 'true'
+      AND e.user_type = 'external'
+      AND COALESCE(e.is_meta, 'false') != 'true'
       -- Sidechain user events are subagent dispatch payloads, not human prompts;
       -- counting them would split the parent prompt's span (and its cost).
       AND e.is_sidechain = FALSE
@@ -159,17 +155,21 @@ span_turn_agg AS (
         AND ea.tenant_id  = ts.tenant_id
     GROUP BY ts.tenant_id, ts.prompt_id
 ),
--- Text for the span's last turn only, extracted from the session-scoped
--- assistant messages by message_id (turn_id), so an incremental run never
--- reads text outside its recent sessions.
+-- Text for the span's last turn: the first text block (positions 0-19) of
+-- the turn's winning assistant event.
 span_last_text AS (
     SELECT
         sta.prompt_id,
-        {{ assistant_text('am.payload') }} AS last_assistant_response
+        arg_min(cb.text, cb.block_idx) AS last_assistant_response
     FROM span_turn_agg sta
     JOIN joined_stg_assistant_messages am
         ON  am.tenant_id  = sta.tenant_id
         AND am.message_id = sta.last_turn_id
+    JOIN {{ ref('stg_content_blocks') }} cb
+        ON  cb.tenant_id  = am.tenant_id
+        AND cb.event_uuid = am.uuid
+    WHERE cb.block_type = 'text' AND cb.text IS NOT NULL AND cb.block_idx < 20
+    GROUP BY sta.prompt_id
 ),
 -- One span assignment of fact_tool_executions feeds every tool aggregate.
 span_fte_joined AS (

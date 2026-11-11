@@ -13,8 +13,7 @@
 --
 -- user_prompt extraction: plain-string content only. A prompt whose content
 -- is an array (a text block next to an image or attachment) is dropped by the
--- '[' shape filter below, so the content[N].text fallbacks never fire today;
--- fact_prompts drops the same prompts (Q4). Measure the share before changing
+-- '[' shape filter below; fact_prompts drops the same prompts (Q4). Measure the share before changing
 -- it (spec §6.2); if it is > 1 %, take the first text block of array content:
 --   SELECT avg(CASE WHEN json_type(payload, '$.message.content') = 'ARRAY'
 --                    AND list_contains(json_extract_string(payload, '$.message.content[*].type'), 'text')
@@ -26,31 +25,14 @@ WITH real_user_prompts AS (
     SELECT
         tenant_id,
         session_id,
-        uuid    AS user_event_uuid,
-        ts      AS user_ts,
-        COALESCE(
-            CASE
-                WHEN NOT starts_with(
-                    COALESCE(json_extract_string(payload, '$.message.content'), ''), '[')
-                THEN json_extract_string(payload, '$.message.content')
-            END,
-            json_extract_string(payload, '$.message.content[0].text'),
-            json_extract_string(payload, '$.message.content[1].text'),
-            json_extract_string(payload, '$.message.content[2].text'),
-            json_extract_string(payload, '$.message.content[3].text'),
-            json_extract_string(payload, '$.message.content[4].text'),
-            json_extract_string(payload, '$.message.content[5].text'),
-            json_extract_string(payload, '$.message.content[6].text'),
-            json_extract_string(payload, '$.message.content[7].text')
-        ) AS user_prompt
+        uuid         AS user_event_uuid,
+        ts           AS user_ts,
+        content_text AS user_prompt
     FROM {{ ref('stg_events') }}
     WHERE event_type = 'user'
-      AND json_extract_string(payload, '$.userType') = 'external'
-      AND COALESCE(json_extract_string(payload, '$.isMeta'), 'false') != 'true'
-      AND substr(
-            trim(COALESCE(json_extract_string(payload, '$.message.content'), '')),
-            1, 1
-          ) != '['
+      AND user_type = 'external'
+      AND COALESCE(is_meta, 'false') != 'true'
+      AND substr(trim(COALESCE(content_text, '')), 1, 1) != '['
       -- Exclude sidechain user events from the ASOF JOIN pool.
       -- When MAIN dispatches a subagent, the dispatch payload is written as a
       -- sidechain user event (is_sidechain=true). Including it in real_user_prompts
@@ -63,6 +45,19 @@ WITH real_user_prompts AS (
       -- prompt instead; sidechain turns receive user_prompt = NULL (no bubble),
       -- which is correct — the dispatch is already visible as the parent's tool call.
       AND is_sidechain = FALSE
+    -- Prompts sharing a ts: keep one (the same one fact_prompts gives the span).
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY tenant_id, session_id, ts ORDER BY uuid DESC
+    ) = 1
+),
+
+-- First text block of each assistant event (positions 0-19, as before).
+first_text AS (
+    SELECT tenant_id, event_uuid, arg_min(text, block_idx) AS assistant_response
+    FROM {{ ref('stg_content_blocks') }}
+    WHERE event_type = 'assistant' AND block_type = 'text'
+      AND text IS NOT NULL AND block_idx < 20
+    GROUP BY tenant_id, event_uuid
 )
 
 -- turns_base: one row per assistant turn with user prompt attached via ASOF JOIN.
@@ -75,7 +70,7 @@ WITH real_user_prompts AS (
         a.tenant_id,
         a.session_id,
         a.project_id,
-        ROW_NUMBER() OVER (PARTITION BY a.tenant_id, a.session_id ORDER BY a.ts) AS turn_number,
+        ROW_NUMBER() OVER (PARTITION BY a.tenant_id, a.session_id ORDER BY a.ts, a.message_id) AS turn_number,
         a.message_id                    AS turn_id,
         u.user_event_uuid,
         a.uuid                          AS assistant_event_uuid,
@@ -90,9 +85,6 @@ WITH real_user_prompts AS (
         -- excluded by the shape filter, yielding NULL for every turn.
         -- ASOF JOIN resolves the correct "which human prompt does this turn answer"
         -- even across long tool-use chains.
-        u.user_prompt,
-        -- assistant_response: first text block (macros/assistant_text.sql).
-        {{ assistant_text('a.payload') }} AS assistant_response,
         a.cwd,
         a.git_branch,
         a.claude_version,
@@ -112,36 +104,17 @@ WITH real_user_prompts AS (
     -- (`a.ts >= u.user_ts`). Writing it as `u.user_ts <= a.ts` parses but
     -- matches nothing — verified by direct test where flipping the operands
     -- went from 0/4591 to 4591/4591 matched turns.
-    ASOF LEFT JOIN real_user_prompts u
+    ASOF LEFT JOIN (SELECT tenant_id, session_id, user_event_uuid, user_ts FROM real_user_prompts) u
         ON  u.tenant_id  = a.tenant_id
         AND u.session_id = a.session_id
         AND a.ts        >= u.user_ts
 )
 
-SELECT
-    tenant_id,
-    session_id,
-    project_id,
-    turn_number,
-    turn_id,
-    user_event_uuid,
-    assistant_event_uuid,
-    user_ts,
-    assistant_ts,
-    user_prompt,
-    assistant_response,
-    cwd,
-    git_branch,
-    claude_version,
-    model,
-    input_tokens,
-    output_tokens,
-    cache_creation_input_tokens,
-    ephemeral_5m_input_tokens,
-    ephemeral_1h_input_tokens,
-    cache_read_input_tokens,
-    context_pct,
-    is_sidechain,
+-- Window functions run on narrow rows; the prompt and response text join last
+-- (sorting rows with the text took ~280 s on a full build).
+, turns AS (
+    SELECT
+        *,
     -- compaction_inferred: visual marker (BOOLEAN) set when the model's context
     -- window appears to have been compacted between this turn and the previous
     -- turn in the same session. Heuristic: input_tokens dropped to less than
@@ -152,11 +125,45 @@ SELECT
     (
         input_tokens < 0.5 * LAG(input_tokens) OVER (
             PARTITION BY tenant_id, session_id
-            ORDER BY assistant_ts
+            ORDER BY assistant_ts, turn_id
         )
         AND LAG(input_tokens) OVER (
             PARTITION BY tenant_id, session_id
-            ORDER BY assistant_ts
+            ORDER BY assistant_ts, turn_id
         ) > 50000
     )::BOOLEAN AS compaction_inferred
-FROM turns_base
+    FROM turns_base
+)
+
+SELECT
+    t.tenant_id,
+    t.session_id,
+    t.project_id,
+    t.turn_number,
+    t.turn_id,
+    t.user_event_uuid,
+    t.assistant_event_uuid,
+    t.user_ts,
+    t.assistant_ts,
+    p.user_prompt,
+    ft.assistant_response,
+    t.cwd,
+    t.git_branch,
+    t.claude_version,
+    t.model,
+    t.input_tokens,
+    t.output_tokens,
+    t.cache_creation_input_tokens,
+    t.ephemeral_5m_input_tokens,
+    t.ephemeral_1h_input_tokens,
+    t.cache_read_input_tokens,
+    t.context_pct,
+    t.is_sidechain,
+    t.compaction_inferred
+FROM turns t
+LEFT JOIN real_user_prompts p
+    ON  p.tenant_id       = t.tenant_id
+    AND p.user_event_uuid = t.user_event_uuid
+LEFT JOIN first_text ft
+    ON  ft.tenant_id  = t.tenant_id
+    AND ft.event_uuid = t.assistant_event_uuid

@@ -3,8 +3,10 @@ version: 2
 models:
   - name: stg_events
     description: >
-      View over the lake raw_events minus stg_lake_event_dups: one row per
-      (tenant_id, uuid). Further dedup (message_id, tool_use_id) happens in
+      Incremental table (per session) over the lake raw_events minus
+      stg_lake_event_dups: one row per (tenant_id, uuid), with the JSON fields
+      the models filter on extracted once (user_type, is_meta, content_text,
+      toolUseResult fields). Further dedup (message_id, tool_use_id) happens in
       downstream staging models.
     tests:
       - unique:
@@ -61,8 +63,7 @@ models:
   - name: stg_tool_calls
     description: >
       One row per tool_use block inside an assistant message content array.
-      Exploded from stg_events WHERE event_type='assistant' and the payload
-      contains a tool_use content item. tool_use_id and event_uuid are always
+      tool_use blocks of assistant events, from stg_content_blocks. tool_use_id and event_uuid are always
       present after the WHERE filter.
     columns:
       - name: tool_use_id
@@ -77,6 +78,16 @@ models:
           Always present — sourced from stg_events.uuid which is not_null.
         tests:
           - not_null
+
+  - name: stg_content_blocks
+    description: >
+      One row per message.content block of a user or assistant event, parsed
+      once (block_type, tool_use_id, tool_name, tool_input, result_text,
+      is_error, text, thinking). Incremental per session.
+    tests:
+      - unique:
+          arguments:
+            column_name: "(tenant_id || '|' || event_uuid || '|' || block_idx)"
 
   - name: stg_tool_results
     description: >
