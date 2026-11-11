@@ -17,6 +17,8 @@ RUN apt-get update \
 COPY watcher/pyproject.toml ./
 RUN mkdir -p src/aura_watcher && touch src/aura_watcher/__init__.py \
     && pip install --no-cache-dir . && pip uninstall -y aura-watcher && rm -rf src build
+# The DuckLake stage (dbt/profiles.yml attach) needs this extension at runtime.
+RUN python -c "import duckdb; duckdb.sql('INSTALL ducklake')"
 
 COPY watcher/ .
 RUN pip install --no-cache-dir --no-deps -e .

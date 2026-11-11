@@ -1,15 +1,28 @@
-{{ config(materialized='table') }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='delete+insert',
+    unique_key=['tenant_id', 'turn_id']
+) }}
+-- Incremental: each cycle rebuilds only turns of sessions with new lake rows
+-- (recent_sessions macro); a full refresh gives the same rows as the old table.
 
 -- tool_count: one assistant message is streamed as several events, each with its
 -- own uuid, and a tool_use block can repeat across them. Count distinct
 -- tool_use_id per message_id (= turn_id) so no block is missed or double counted.
-WITH tool_counts AS (
+WITH
+{% if is_incremental() %}
+recent_sessions AS ({{ recent_sessions() }}),
+{% endif %}
+tool_counts AS (
     SELECT
-        tenant_id,
-        message_id,
-        COUNT(DISTINCT tool_use_id) as tool_count
-    FROM {{ ref('stg_tool_calls') }}
-    GROUP BY tenant_id, message_id
+        tc.tenant_id,
+        tc.message_id,
+        COUNT(DISTINCT tc.tool_use_id) as tool_count
+    FROM {{ ref('stg_tool_calls') }} tc
+    {% if is_incremental() %}
+    JOIN recent_sessions rs ON rs.tenant_id = tc.tenant_id AND rs.session_id = tc.session_id
+    {% endif %}
+    GROUP BY tc.tenant_id, tc.message_id
 )
 SELECT
     t.tenant_id,
@@ -36,8 +49,12 @@ SELECT
     COALESCE(tc.tool_count, 0) as tool_count,
     -- NULL when the model has no pricing row (fail loud, same as fact_model_calls).
     mc.calculated_cost,
-    mc.stop_reason
+    mc.stop_reason,
+    {{ built_at() }} AS _built_at
 FROM {{ ref('int_turns') }} t
+    {% if is_incremental() %}
+    JOIN recent_sessions rs ON rs.tenant_id = t.tenant_id AND rs.session_id = t.session_id
+    {% endif %}
 LEFT JOIN tool_counts tc
     ON t.turn_id = tc.message_id AND t.tenant_id = tc.tenant_id
 LEFT JOIN {{ ref('fact_model_calls') }} mc

@@ -4,6 +4,7 @@ import { Eyebrow, Rule, StatBlock } from '../../components/atoms'
 import { RangeFilter } from '../../components/RangeFilter'
 import { fmt } from '../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../lib/range'
+import { getDataAsOf } from '../../lib/asof'
 import { getApps, getAppsTotalCost } from '../../lib/queries/apps'
 
 function trunc200(s: string | null | undefined): string {
@@ -15,7 +16,7 @@ export default async function AppsPage({
   searchParams,
 }: { searchParams?: { range?: string } }) {
   const range = parseRange(searchParams?.range)
-  const since = rangeSince(range)
+  const since = rangeSince(range, await getDataAsOf())
 
   let apps: any[] = [], totalCostRow: any = null
   try {

@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import React from 'react'
-import { Eyebrow, Rule, StatBlock, BarRow, ProviderTag, ModelPill, AgentLink, PersonLink, SeverityTag, TBar, StackBar, StatusDot } from '../components/atoms'
+import { Eyebrow, Rule, StatBlock, BarRow, ProviderTag, ModelPill, AgentLink, PersonLink, SeverityTag, TBar, StackBar } from '../components/atoms'
 import { ClickableRow } from '../components/ClickableRow'
 import { ClientTime } from '../components/ClientTime'
 import { DailyChart } from '../components/charts'
@@ -20,13 +20,15 @@ import {
 import { TokenSeriesChart, TOKEN_TYPE_SEGMENTS } from '../components/TokenSeriesChart'
 import { getLoudestPromptOfDay } from '../lib/queries/prompts'
 import { BurnRate } from '../components/BurnRate'
+import { getDataAsOf } from '../lib/asof'
 import { ActivityHeatmap } from '../components/ActivityHeatmap'
 
 export default async function DashboardPage({
   searchParams,
 }: { searchParams?: { range?: string } }) {
   const range = parseRange(searchParams?.range)
-  const since = rangeSince(range)
+  const asOf = await getDataAsOf()
+  const since = rangeSince(range, asOf)
 
   let kpis: any = {}, dailySpend: any[] = [], topApps: any[] = [], topProjects: any[] = [], topAgents: any[] = []
   let toolMix: any[] = [], providers: any[] = [], models: any[] = [], recentErrors: any[] = []
@@ -57,8 +59,8 @@ export default async function DashboardPage({
     safe('recentErrors',    () => getRecentErrors(since),   [] as any[]),
     safe('topFiles',        () => getTopFiles(since),       [] as any[]),
     safe('topPeople',       () => getTopPeople(since),      [] as any[]),
-    safe('loudestPrompt',   () => getLoudestPromptOfDay(),  null),
-    safe('spendPace',       () => getSpendPace(),           null),
+    safe('loudestPrompt',   () => getLoudestPromptOfDay(asOf),  null),
+    safe('spendPace',       () => getSpendPace(asOf),           null),
     safe('hourlyActivity',  () => getHourlyActivity(),      [] as any[]),
     safe('tokenSeries',     () => getTokenSeries(since, hourly), [] as any[]),
     safe('topSkills',       () => getTopSkills(since),      [] as any[]),
@@ -109,7 +111,6 @@ export default async function DashboardPage({
         <Eyebrow>{rangeLabel(range)} · {providers.length} providers · {fmt.n(kpis.total_people)} people · {fmt.n(kpis.total_apps)} apps</Eyebrow>
         <div className="strap-right">
           <RangeFilter current={range} />
-          <span className="strap-pill"><StatusDot status={kpis.last_session ? 'active' : 'completed'} label={<>pipeline live · <ClientTime ts={kpis.last_session} /></>} /></span>
           <span className="strap-pill is-muted">{fmt.n(kpis.total_sessions)} sessions · {fmt.n(kpis.total_agents ?? topAgents.length)} agents</span>
         </div>
       </section>

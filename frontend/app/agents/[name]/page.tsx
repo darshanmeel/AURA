@@ -8,6 +8,7 @@ import { ProfileBackRail } from '../../../components/panels'
 import { RangeFilter } from '../../../components/RangeFilter'
 import { fmt } from '../../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
+import { getDataAsOf } from '../../../lib/asof'
 import {
   getAgent, getAgentApps, getAgentModels, getAgentSessions, getAgentFiles, getAgentPeople,
   getAgentRangeAggregates, getAgentSkills, getAgentMcps,
@@ -34,7 +35,7 @@ export default async function AgentProfilePage({
 }: { params: { name: string }; searchParams?: { range?: string } }) {
   const name = decodeURIComponent(params.name)
   const range = parseRange(searchParams?.range)
-  const since = rangeSince(range)
+  const since = rangeSince(range, await getDataAsOf())
 
   let agent: any = null
   let apps: any[] = []

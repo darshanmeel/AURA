@@ -24,6 +24,7 @@ from aura_watcher.adapters.claude import _unknown_models_pending
 READ_TABLES_SQL = files("aura_watcher").joinpath("read_tables.sql").read_text(encoding="utf-8")
 STAMP_FORMAT = "v%Y%m%dT%H%M%SZ"
 SKIP_MAX_SECONDS = 3600
+COMPACT_SLACK = 256 << 20  # never compact a small work DB
 
 # Shared with main.py's status JSON; only the dbt thread writes it.
 status: dict = {"last_start": None, "last_end": None, "status": None, "cutoff": None, "published": None,
@@ -73,8 +74,24 @@ def dbt_exe() -> str:
     return str(p) if p.exists() else "dbt"
 
 
+def stage_dir(work_db: str) -> str:
+    """DuckLake holding the staging + intermediate models (catalog + Parquet files), next to the work DB."""
+    return os.path.join(os.path.dirname(work_db), "stage")
+
+
+def attach_stage(con, work_db: str, read_only: bool = False) -> None:
+    # dbt bakes the catalog name "stage" into view SQL, so it must be attached under that name.
+    d = stage_dir(work_db)
+    # No DATA_PATH: a new catalog defaults to stage.ducklake.files/, an existing one keeps its own;
+    # passing one that differs in spelling (slash, relative) makes ATTACH fail.
+    con.execute(f"ATTACH 'ducklake:{_sql_path(os.path.join(d, 'stage.ducklake'))}' AS stage"
+                + (" (READ_ONLY)" if read_only else ""))
+
+
 def dbt_env(cfg) -> dict:
+    os.makedirs(stage_dir(cfg.db_path), exist_ok=True)
     return {**os.environ, "AURA_DB_PATH": cfg.db_path, "AURA_LAKE_DIR": cfg.lake_dir,
+            "AURA_STAGE_DIR": stage_dir(cfg.db_path).replace("\\", "/"),
             "AURA_VERDICTS_INBOX": cfg.verdicts_inbox, "TZ": "UTC"}
 
 
@@ -170,6 +187,7 @@ def publish(work_db: str, read_dir: str, artifacts_dir: str, log_error) -> dict 
         con.execute(f"SET memory_limit = '2GB'; SET temp_directory = '{_sql_path(spill)}'")
         # dbt bakes the catalog "aura" into view SQL, so the work DB must be attached as "aura".
         con.execute(f"ATTACH '{_sql_path(work_db)}' AS aura (READ_ONLY)")
+        attach_stage(con, work_db, read_only=True)
         con.execute(f"ATTACH '{_sql_path(build)}' AS dst")
         con.execute("USE dst")
         con.execute(READ_TABLES_SQL)
@@ -202,6 +220,46 @@ def publish(work_db: str, read_dir: str, artifacts_dir: str, log_error) -> dict 
     rec["max_ts"] = max_ts
     rec["publish_dt"] = publish_dt
     return rec
+
+
+def compact(work_db: str) -> None:
+    """Copy the work DB into a fresh file and swap it in: DuckDB never shrinks a file
+    after tables are dropped or rebuilt, it only reuses the free blocks."""
+    tmp = work_db + ".compact"
+    for p in (tmp, tmp + ".wal"):
+        if os.path.exists(p):
+            os.remove(p)
+    con = duckdb.connect()
+    try:
+        con.execute(f"ATTACH '{_sql_path(work_db)}' AS aura (READ_ONLY)")
+        con.execute(f"ATTACH '{_sql_path(tmp)}' AS fresh")
+        con.execute("COPY FROM DATABASE aura TO fresh")
+    finally:
+        con.close()
+    _retry(os.replace, tmp, work_db)
+
+
+def maintain(work_db: str, log_error) -> None:
+    """After a cycle: DuckLake CHECKPOINT (flush inlined rows, expire snapshots older than
+    1 h, merge small files, delete unused ones), then compact the work DB once more
+    than half of it is free space."""
+    try:
+        con = duckdb.connect(work_db)
+        try:
+            attach_stage(con, work_db)
+            con.execute("CALL stage.set_option('expire_older_than', '1 hour')")
+            con.execute("CALL stage.set_option('delete_older_than', '1 hour')")
+            con.execute("CHECKPOINT stage")
+            used = con.execute("SELECT used_blocks * block_size FROM pragma_database_size() "
+                               "WHERE database_name = 'aura'").fetchone()[0]
+        finally:
+            con.close()
+        if os.path.getsize(work_db) > 2 * used + COMPACT_SLACK:
+            t0 = time.time()
+            compact(work_db)
+            print(f"[dbt] compacted work DB in {time.time() - t0:.0f}s", flush=True)
+    except Exception as e:
+        log_error("maintain", work_db, f"stage/work DB maintenance failed: {e}", traceback.format_exc())
 
 
 def read_current(read_dir: str) -> str | None:
@@ -325,6 +383,7 @@ def run_cycle(cfg, log_error, force: bool = False) -> str:
             run, run_out = dbt(["retry"], cfg, cutoff)
         if run == "ok":
             rec = publish(cfg.db_path, cfg.read_dir, cfg.artifacts_dir, log_error)
+            maintain(cfg.db_path, log_error)
         else:
             log_error("dbt_run", None, f"dbt run {run}: {run_out[-500:]}")
             status["error"] = run_out[-500:]

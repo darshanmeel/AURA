@@ -2,16 +2,18 @@ import type { Metadata } from 'next'
 import './globals.css'
 import { Colophon, Rule } from '@/components/atoms'
 import NavLinks from '@/components/NavLinks'
+import { getDataAsOf, asOfLabel } from '@/lib/asof'
+
+export const dynamic = 'force-dynamic'
 
 export const metadata: Metadata = {
   title: 'AURA — Spend, with receipts.',
   description: 'Local analytics for Claude Code agent transcripts',
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const now = new Date()
-  const dateStr = now.toLocaleDateString("en-GB", { timeZone: "UTC", weekday: "short", day: "2-digit", month: "short", year: "numeric" }).toUpperCase()
-  
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const asOf = await getDataAsOf()
+
   return (
     <html lang="en">
       <body>
@@ -36,11 +38,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </div>
               <NavLinks />
               <div className="masthead-meta">
-                <span className="meta-key">VOL. I</span>
-                <span className="meta-dot">·</span>
-                <span className="meta-key">NO. 14</span>
-                <span className="meta-dot">·</span>
-                <span className="meta-key" suppressHydrationWarning>{dateStr}</span>
+                <span className="meta-key" title="Newest model call in the published read DB; 'Today' on every page means this UTC day">
+                  DATA THROUGH {asOfLabel(asOf).toUpperCase()}
+                </span>
               </div>
             </div>
             <Rule weight="thick" />

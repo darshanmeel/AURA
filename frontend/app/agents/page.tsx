@@ -6,13 +6,14 @@ import { InlineLink } from '../../components/InlineLink'
 import { RangeFilter } from '../../components/RangeFilter'
 import { fmt } from '../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../lib/range'
+import { getDataAsOf } from '../../lib/asof'
 import { getAllAgents } from '../../lib/queries/agents'
 
 export default async function AgentsPage({
   searchParams,
 }: { searchParams?: { range?: string } }) {
   const range = parseRange(searchParams?.range)
-  const since = rangeSince(range)
+  const since = rangeSince(range, await getDataAsOf())
 
   let agents: any[] = []
   try {

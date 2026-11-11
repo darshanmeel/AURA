@@ -12,12 +12,12 @@ WITH file_touches AS (
         fte.tenant_id,
         fte.session_id,
         fte.message_id,
-        json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path') AS file_path,
+        fte.target_file AS file_path,
         fte.tool_name,
         fte.execution_duration_seconds
     FROM {{ ref('fact_tool_executions') }} fte
     WHERE fte.tool_name IN ('Edit', 'Write', 'Read')
-      AND json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path') IS NOT NULL
+      AND fte.target_file IS NOT NULL
 ),
 turn_file AS (
     SELECT

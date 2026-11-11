@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessions, getSessionsStats } from '../../../lib/queries/sessions'
 import { parseRange, rangeSince } from '../../../lib/range'
+import { getDataAsOf } from '../../../lib/asof'
 
 export async function GET(req: NextRequest) {
   try {
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
       q: p.get('q') ?? undefined,
     }
     const range = parseRange(p.get('range') ?? undefined)
-    const since = rangeSince(range)
+    const since = rangeSince(range, await getDataAsOf())
     const [sessions, stats] = await Promise.all([
       getSessions(filters, since),
       getSessionsStats(filters, since),

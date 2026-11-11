@@ -5,6 +5,7 @@ import {
   getRecentErrors, getTopFiles, getTopPeople,
   getSpendPace, getHourlyActivity
 } from '../../../lib/queries/dashboard'
+import { getDataAsOf } from '../../../lib/asof'
 import { safe as _safe } from '../../../lib/api-safe'
 
 // Force dynamic: at build time /data is not mounted, so the DB cannot be
@@ -20,6 +21,7 @@ function safe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 export async function GET() {
+  const asOf = await getDataAsOf()
   const [kpis, dailySpend, topApps, topAgents, toolMix, providers, models, recentErrors, topFiles, topPeople, spendPace, hourlyActivity] =
     await Promise.all([
       safe('kpis',            () => getDashboardKPIs(),    null),
@@ -32,7 +34,7 @@ export async function GET() {
       safe('recentErrors',    () => getRecentErrors(),     [] as any[]),
       safe('topFiles',        () => getTopFiles(),         [] as any[]),
       safe('topPeople',       () => getTopPeople(),        [] as any[]),
-      safe('spendPace',       () => getSpendPace(),        null),
+      safe('spendPace',       () => getSpendPace(asOf),    null),
       safe('hourlyActivity',  () => getHourlyActivity(),   [] as any[]),
     ])
   return NextResponse.json({ kpis, dailySpend, topApps, topAgents, toolMix, providers, models, recentErrors, topFiles, topPeople, spendPace, hourlyActivity })

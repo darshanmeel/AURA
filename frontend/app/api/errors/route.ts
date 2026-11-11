@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getErrors } from '../../../lib/queries/errors'
-import { assertTs } from '../../../lib/queries/_helpers'
+import { parseRange, rangeSince } from '../../../lib/range'
+import { getDataAsOf } from '../../../lib/asof'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
-  const raw = new URL(req.url).searchParams.get('since')
-  let since: string | null = null
-  if (raw) {
-    try { since = assertTs(raw) } catch {
-      return NextResponse.json({ error: 'Invalid since' }, { status: 400 })
-    }
-  }
   try {
+    const since = rangeSince(parseRange(new URL(req.url).searchParams.get('range') ?? undefined), await getDataAsOf())
     return NextResponse.json({ errors: await getErrors(since) })
   } catch (e) {
     console.error('[api/errors] GET failed:', e)

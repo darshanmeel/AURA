@@ -1,5 +1,13 @@
-{{ config(materialized='table') }}
-
+{{ config(
+    materialized='incremental',
+    incremental_strategy='delete+insert',
+    unique_key=['tenant_id', 'model_call_id']
+) }}
+-- Incremental: each cycle rebuilds only calls of sessions with new lake rows
+-- (recent_sessions macro); a full refresh gives the same rows as the old table.
+{% if is_incremental() %}
+WITH recent_sessions AS ({{ recent_sessions() }})
+{% endif %}
 SELECT
     c.tenant_id,
     c.uuid as event_uuid,
@@ -61,8 +69,12 @@ SELECT
                 * COALESCE(mp.cost_cache_write_5m_per_mtok, 0.0) +
             COALESCE(c.cache_read_input_tokens, 0) * COALESCE(mp.cost_cache_read_per_mtok, 0.0)
         ) / 1000000.0
-    END AS calculated_cost
+    END AS calculated_cost,
+    {{ built_at() }} AS _built_at
 FROM {{ ref('stg_assistant_messages') }} c
+    {% if is_incremental() %}
+    JOIN recent_sessions rs ON rs.tenant_id = c.tenant_id AND rs.session_id = c.session_id
+    {% endif %}
 LEFT JOIN {{ ref('int_event_agent') }} ea
     ON ea.tenant_id = c.tenant_id
    AND ea.event_uuid = c.uuid

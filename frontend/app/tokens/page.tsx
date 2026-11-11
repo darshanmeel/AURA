@@ -6,6 +6,7 @@ import { RangeFilter } from '../../components/RangeFilter'
 import { TokenSeriesChart, TOKEN_TYPE_SEGMENTS, pivotByDim } from '../../components/TokenSeriesChart'
 import { fmt } from '../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../lib/range'
+import { getDataAsOf } from '../../lib/asof'
 import {
   getTokenSeries, getTokenSeriesByModel,
   getTokenSeriesByProvider, getTokenByAgent,
@@ -15,7 +16,7 @@ export default async function TokensPage({
   searchParams,
 }: { searchParams?: { range?: string } }) {
   const range = parseRange(searchParams?.range)
-  const since = rangeSince(range)
+  const since = rangeSince(range, await getDataAsOf())
   const hourly = range === 'today'
 
   const safe = async <T,>(fn: () => Promise<T>, fallback: T): Promise<T> => {

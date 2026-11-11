@@ -1,10 +1,10 @@
 'use client'
 
-import React, { Suspense, useState, useEffect, useMemo } from 'react'
+import React, { Suspense, useState, useEffect } from 'react'
 import { Eyebrow, Rule, StatBlock, SeverityTag, AgentLink } from '../../components/atoms'
 import { RangeFilter } from '../../components/RangeFilter'
 import { fmt } from '../../lib/fmt'
-import { parseRange, rangeSince, rangeLabel } from '../../lib/range'
+import { parseRange, rangeLabel } from '../../lib/range'
 import { useSearchParams } from 'next/navigation'
 
 function unwrapTitle(raw: string | null | undefined): string {
@@ -38,17 +38,14 @@ interface ErrorRow {
 function ErrorsPageInner() {
   const searchParams = useSearchParams()
   const range = parseRange(searchParams?.get('range') ?? undefined)
-  // Memoised: rangeSince returns a new string per call, which would refire the effect.
-  const since = useMemo(() => rangeSince(range), [range])
 
   const [allErrors, setAllErrors] = useState<ErrorRow[]>([])
   const [loading, setLoading]     = useState(true)
   const [activeKind, setActiveKind] = useState<string>('All')
 
   useEffect(() => {
-    const params = new URLSearchParams()
-    if (since) params.append('since', since)
-    fetch(`/api/errors?${params.toString()}`)
+    // The server anchors the range to the newest data (lib/asof).
+    fetch(`/api/errors?range=${range}`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json()
@@ -60,7 +57,7 @@ function ErrorsPageInner() {
         setLoading(false)
       })
       .catch(() => setLoading(false))
-  }, [since])
+  }, [range])
 
   // ── Derived counts ─────────────────────────────────────────────────────────
   const bySev: Record<string, number> = {}

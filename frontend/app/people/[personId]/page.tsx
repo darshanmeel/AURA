@@ -10,6 +10,7 @@ import { RangeFilter } from '../../../components/RangeFilter'
 import { PromptText } from '../../../components/PromptText'
 import { fmt } from '../../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
+import { getDataAsOf } from '../../../lib/asof'
 import {
   getPerson, getPersonSessions, getPersonAgents, getPersonApps, getPersonPrompts,
   getPersonRangeAggregates,
@@ -25,7 +26,7 @@ export default async function PersonProfilePage({
 }: { params: { personId: string }; searchParams?: { range?: string } }) {
   const personId = decodeURIComponent(params.personId)
   const range = parseRange(searchParams?.range)
-  const since = rangeSince(range)
+  const since = rangeSince(range, await getDataAsOf())
 
   let person: any = null
   let sessions: any[] = []

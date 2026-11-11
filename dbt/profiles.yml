@@ -43,3 +43,10 @@ aura:
         # fact_model_calls frozen, new models show "(no pricing)"). DuckDB spills
         # to its default location beside the DB file instead — slower on the
         # Windows bind-mount but correct.
+      # Staging + intermediate models live in a DuckLake (Parquet data files plus
+      # a small catalog) so the work DB holds only marts. AURA_STAGE_DIR is set
+      # by dbt_cycle.dbt_env next to the work DB; the folder must exist. No data_path
+      # option: DuckLake stores it in the catalog (see dbt_cycle.attach_stage).
+      attach:
+        - path: "ducklake:{{ env_var('AURA_STAGE_DIR', '/data/work/stage') }}/stage.ducklake"
+          alias: stage

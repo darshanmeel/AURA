@@ -177,10 +177,8 @@ span_fte_joined AS (
         w.prompt_id,
         fte.tool_name,
         fte.is_error,
-        json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.file_path')
-            AS file_path,
-        json_extract_string(CAST(fte.input_payload AS VARCHAR), '$.subagent_type')
-            AS subagent_type_val
+        fte.target_file   AS file_path,
+        fte.subagent_type AS subagent_type_val
     FROM joined_fact_tool_executions fte
     ASOF JOIN span_owners w
         ON  w.tenant_id  = fte.tenant_id
@@ -259,7 +257,8 @@ spans AS (
         w.is_sidechain,
         SUBSTR(w.prompt_text, 1, 200)
             || CASE WHEN length(w.prompt_text) > 200 THEN '…' ELSE '' END   AS prompt_text_200,
-        w.prompt_text                                                       AS prompt_text_full,
+        -- ~2,000 words; the full prompt stays in the stage (int_turns).
+        left(w.prompt_text, 12000)                                          AS prompt_text_full,
         length(w.prompt_text)                                               AS prompt_chars,
         sta.model_primary,
         SUBSTR(slt.last_assistant_response, 1, 200)

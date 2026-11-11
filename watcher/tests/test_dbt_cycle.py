@@ -2,6 +2,7 @@
 import glob
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -64,7 +65,7 @@ EXPECTED = {
 EXTRA = {  # columns the work DB has but the read DB must not
     "dim_projects": ["all_cwds"], "fact_model_calls": ["model_call_id"], "fact_prompts": ["sub_agents_dispatched"],
     "fact_turns": ["user_prompt", "assistant_response"], "dim_turn_messages": ["user_event_uuid"],
-    "fact_tool_executions": ["input_payload", "output_text"], "stg_session_meta": ["ingested_at"],
+    "fact_tool_executions": ["command", "output_text"], "stg_session_meta": ["ingested_at"],
     "recent_events": ["payload", "file_path"],
 }
 TYPES = {"ts": "TIMESTAMP", "date": "DATE"}
@@ -78,19 +79,15 @@ def make_work_db(path, drop=None):
         if read == "int_app_cwd_lookup":
             continue
         src = SOURCE.get(read, read)
-        extracted = ("target_file", "subagent_type", "skill_name")
-        all_cols = [c for c in cols if not (read == "fact_tool_executions" and c in extracted)]
-        all_cols += EXTRA.get(read, [])
+        all_cols = cols + EXTRA.get(read, [])
         con.execute(f"CREATE TABLE {src} (" + ", ".join(f'"{c}" {TYPES.get(c, "VARCHAR")}' for c in all_cols) + ")")
         con.execute(f"INSERT INTO {src} (tenant_id) VALUES ('local')" if "tenant_id" in all_cols
                     else f"INSERT INTO {src} (ts) VALUES (now())" if "ts" in all_cols
                     else f"INSERT INTO {src} (day_of_week) VALUES ('1')")
-    con.execute("CREATE VIEW int_app_cwd_lookup AS SELECT tenant_id, cwd, app_id FROM aura.main.dim_apps")
     con.execute("UPDATE fact_prompts SET prompt_text_full = repeat('p', 30000)")
     con.execute("UPDATE dim_turn_messages SET user_prompt = repeat('u', 30000), assistant_response = 'a'")
     con.execute("UPDATE fact_git_commands SET output_text = repeat('g', 1000)")
-    con.execute("UPDATE fact_tool_executions SET input_payload = '{\"file_path\": \"/a.py\", \"subagent_type\": \"x\"}',"
-                " output_text = repeat('o', 1000)")
+    con.execute("UPDATE fact_tool_executions SET target_file = '/a.py', subagent_type = 'x', output_text = repeat('o', 1000)")
     con.execute("UPDATE fact_model_calls SET ts = TIMESTAMP '2026-11-01 10:00:00'")
     con.execute("DELETE FROM stg_events")
     con.execute("INSERT INTO stg_events (uuid, \"date\", ts, payload) VALUES "
@@ -98,6 +95,14 @@ def make_work_db(path, drop=None):
     con.execute("CREATE TABLE stg_tool_results (x VARCHAR); CREATE TABLE raw_x (x VARCHAR)")
     if drop:
         con.execute(f"DROP TABLE {drop}")
+    # Staging + intermediate tables live in the DuckLake stage, like dbt builds them.
+    shutil.rmtree(dbt_cycle.stage_dir(path), ignore_errors=True)
+    os.makedirs(dbt_cycle.stage_dir(path))
+    dbt_cycle.attach_stage(con, path)
+    for (t,) in con.execute("SELECT table_name FROM duckdb_tables() WHERE database_name = 'aura' AND "
+                            "(table_name LIKE 'stg%' OR table_name LIKE 'int%' OR table_name = 'dim_turn_messages')").fetchall():
+        con.execute(f"CREATE TABLE stage.main.{t} AS SELECT * FROM aura.main.{t}; DROP TABLE aura.main.{t}")
+    con.execute("CREATE VIEW stage.main.int_app_cwd_lookup AS SELECT tenant_id, cwd, app_id FROM aura.main.dim_apps")
     con.close()
 
 
@@ -142,8 +147,8 @@ def test_publish_contents(cfg):
     for t, cols in EXPECTED.items():
         got = [r[0] for r in con.execute(f"DESCRIBE {t}").fetchall()]
         assert sorted(got) == sorted(cols), t
-    assert con.execute("SELECT max(length(prompt_text_full)) FROM fact_prompts").fetchone()[0] == 20000
-    assert con.execute("SELECT max(length(user_prompt)) FROM dim_turn_messages").fetchone()[0] == 20000
+    assert con.execute("SELECT max(length(prompt_text_full)) FROM fact_prompts").fetchone()[0] == 12000
+    assert con.execute("SELECT max(length(user_prompt)) FROM dim_turn_messages").fetchone()[0] == 12000
     assert con.execute("SELECT max(length(output_text)) FROM fact_git_commands").fetchone()[0] == 80
     assert con.execute("SELECT target_file, subagent_type FROM fact_tool_executions").fetchone() == ("/a.py", "x")
     assert con.execute("SELECT uuid FROM recent_events").fetchall() == [("recent",)]
@@ -305,3 +310,21 @@ def test_purge_spill_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(dbt_cycle.os, "remove", stuck)
     assert dbt_cycle.purge_duckdb_spill_dir(db) == (1, 10)  # one stuck file never aborts the walk
     assert not spill.exists()
+
+
+def test_maintain_compacts_bloated_work_db(cfg, monkeypatch):
+    monkeypatch.setattr(dbt_cycle, "COMPACT_SLACK", 0)
+    con = duckdb.connect(cfg.db_path)
+    con.execute("CREATE TABLE big AS SELECT range AS r, md5(range::VARCHAR) AS s FROM range(1000000)")
+    con.execute("CHECKPOINT")
+    # Written after `big`, so dropping `big` leaves free blocks mid-file (not truncated).
+    con.execute("CREATE TABLE tail AS SELECT md5(range::VARCHAR) AS s FROM range(300000)")
+    con.execute("CHECKPOINT")
+    con.execute("DROP TABLE big")
+    con.execute("CHECKPOINT")
+    con.close()
+    before = os.path.getsize(cfg.db_path)
+    errors = Errors()
+    dbt_cycle.maintain(cfg.db_path, errors)
+    assert errors == [] and os.path.getsize(cfg.db_path) < before / 2
+    assert dbt_cycle.publish(cfg.db_path, cfg.read_dir, cfg.artifacts_dir, errors) is not None

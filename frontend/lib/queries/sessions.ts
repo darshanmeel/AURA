@@ -570,8 +570,8 @@ export async function getSessionThinkingBlocks(_id: string): Promise<Array<{
 
 /**
  * Skills actually invoked (used) in a session = calls of the `Skill` tool;
- * the skill name is `input_payload.skill`, extracted at publish as
- * `skill_name` (read_tables.sql). Different from dim_sessions.skills_loaded
+ * the skill name is `input_payload.skill`, extracted in dbt as
+ * `fact_tool_executions.skill_name`. Different from dim_sessions.skills_loaded
  * (the catalog loaded at session start).
  */
 export async function getSessionSkillsUsed(id: string): Promise<Array<{

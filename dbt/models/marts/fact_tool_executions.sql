@@ -54,8 +54,13 @@ SELECT
     tr.ts as tool_result_ts,
     tc.model,
     tc.tool_name,
-    tc.input_payload,
-    tr.output_text,
+    -- Marts keep only what downstream reads; the full tool input and output
+    -- stay in the stage (stg_tool_calls / stg_tool_results, Parquet).
+    json_extract_string(CAST(tc.input_payload AS VARCHAR), '$.file_path')     AS target_file,
+    json_extract_string(CAST(tc.input_payload AS VARCHAR), '$.subagent_type') AS subagent_type,
+    json_extract_string(CAST(tc.input_payload AS VARCHAR), '$.skill')         AS skill_name,
+    left(json_extract_string(CAST(tc.input_payload AS VARCHAR), '$.command'), 12000) AS command,
+    left(tr.output_text, 12000)                                               AS output_text,
     COALESCE(tr.is_error, FALSE) as is_error,
     date_diff('millisecond', tc.ts, tr.ts) / 1000.0 as execution_duration_seconds,
     {{ built_at() }} AS _built_at

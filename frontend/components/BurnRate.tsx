@@ -2,13 +2,10 @@ import React from 'react'
 import { fmt } from '../lib/fmt'
 
 interface SpendPace {
+  day: string
   today_cost: number | null
   today_pace_hourly: number | null
   avg_30d_cost: number | null
-  avg_30d_turns: number | null
-  avg_30d_tools: number | null
-  today_turn_count: number | null
-  hours_elapsed_today: number | null
 }
 
 interface BurnRateProps {
@@ -39,9 +36,11 @@ export function BurnRate({ pace }: BurnRateProps) {
     ? { color: 'var(--accent)' }
     : { color: 'var(--ink-2)' }
 
+  const dayStr = new Date(pace.day + 'T00:00:00Z').toLocaleDateString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short' })
+
   return (
     <div className="burn-rate">
-      <span className="burn-label">Today</span>
+      <span className="burn-label">Today · {dayStr} UTC</span>
       <span className="burn-sep">·</span>
       <span className="burn-value">{fmt.usd(todayCost)}</span>
       <span className="burn-sep">·</span>

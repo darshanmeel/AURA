@@ -27,11 +27,15 @@ clean-targets:
 
 models:
   aura:
+    # Staging and intermediate go to the DuckLake "stage" (profiles.yml attach);
+    # only marts are DuckDB tables in the work DB.
     staging:
       +tags: ["staging"]
+      +database: stage
       materialized: view
     intermediate:
       +tags: ["intermediate"]
+      +database: stage
       materialized: view
     marts:
       +tags: ["marts"]

@@ -53,11 +53,12 @@ export async function getAgentPrompts(agent: string, limit = 6, since: string | 
   `, [agent, limit])
 }
 
-export async function getLoudestPromptOfDay() {
+// `asOf` = newest data timestamp (lib/asof), so "of day" follows the data, not the clock.
+export async function getLoudestPromptOfDay(asOf: Date) {
   return query(`
     SELECT prompt_text_200, agent, app_id, model_primary, output_tokens_total
     FROM fact_prompts
-    WHERE prompt_ts >= CURRENT_DATE - INTERVAL '1 day'
+    WHERE prompt_ts >= DATE '${asOf.toISOString().slice(0, 10)}' - INTERVAL '1 day'
       AND prompt_origin = 'human'
     ORDER BY output_tokens_total DESC
     LIMIT 1

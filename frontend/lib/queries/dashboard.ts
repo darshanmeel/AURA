@@ -391,20 +391,24 @@ export async function getTopPeople(since: string | null = null) {
   `)
 }
 
-export async function getSpendPace() {
-  return queryOne(`
+// Spend for the data's own "today" (UTC day of `asOf`, the newest call) with the
+// same source as the hero (fact_daily_spend), so the strip and the hero always
+// agree. 30d avg = mean over active days in the 30 days before that day.
+export async function getSpendPace(asOf: Date) {
+  const day = asOf.toISOString().slice(0, 10)
+  const hours = Math.max((asOf.getTime() - Date.parse(day + 'T00:00:00Z')) / 3.6e6, 1 / 60)
+  const r = await queryOne<{ today_cost: number | null; avg_30d_cost: number | null }>(`
+    WITH d AS (
+      SELECT date, SUM(daily_cost) AS cost FROM fact_daily_spend
+      WHERE date BETWEEN DATE '${day}' - INTERVAL 30 DAYS AND DATE '${day}'
+      GROUP BY date
+    )
     SELECT
-      today_cost,
-      today_pace_hourly,
-      avg_30d_cost,
-      avg_30d_turns,
-      avg_30d_tools,
-      today_turn_count,
-      hours_elapsed_today
-    FROM fact_spend_pace
-    WHERE tenant_id = 'local'
-    LIMIT 1
+      (SELECT cost FROM d WHERE date = DATE '${day}')     AS today_cost,
+      (SELECT AVG(cost) FROM d WHERE date < DATE '${day}') AS avg_30d_cost
   `)
+  const today = r?.today_cost ?? null
+  return { day, today_cost: today, today_pace_hourly: today == null ? null : today / hours, avg_30d_cost: r?.avg_30d_cost ?? null }
 }
 
 // Top skills loaded across sessions in the range. Counts distinct sessions per

@@ -7,6 +7,7 @@ import { RangeFilter } from '../../../components/RangeFilter'
 import { ClickableRow } from '../../../components/ClickableRow'
 import { fmt } from '../../../lib/fmt'
 import { parseRange, rangeSince, rangeLabel } from '../../../lib/range'
+import { getDataAsOf } from '../../../lib/asof'
 import {
   getApp, getAppSessions, getProjectApps, getAppPeople,
   getAppRangeAggregates, getAppSkills, getAppMcps, getAppAgents,
@@ -25,7 +26,7 @@ export default async function AppProfilePage({
 }: { params: { appId: string }; searchParams?: { range?: string } }) {
   const appId = decodeURIComponent(params.appId)
   const range = parseRange(searchParams?.range)
-  const since = rangeSince(range)
+  const since = rangeSince(range, await getDataAsOf())
 
   let app: any = null
   let sessions: any[] = []

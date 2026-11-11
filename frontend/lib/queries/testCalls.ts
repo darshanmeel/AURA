@@ -56,7 +56,7 @@ export function allCalls(ids: Ids): Record<string, Array<() => unknown>> {
     'dashboard.getRecentErrors': each(s => dashboard.getRecentErrors(s)),
     'dashboard.getTopFiles': each(s => dashboard.getTopFiles(s)),
     'dashboard.getTopPeople': each(s => dashboard.getTopPeople(s)),
-    'dashboard.getSpendPace': once(() => dashboard.getSpendPace()),
+    'dashboard.getSpendPace': once(() => dashboard.getSpendPace(new Date())),
     'dashboard.getTopSkills': each(s => dashboard.getTopSkills(s)),
     'dashboard.getTopMcps': each(s => dashboard.getTopMcps(s)),
     'dashboard.getHourlyActivity': once(() => dashboard.getHourlyActivity()),
@@ -86,7 +86,7 @@ export function allCalls(ids: Ids): Record<string, Array<() => unknown>> {
     'prompts.getAppPrompts': each(s => prompts.getAppPrompts(ids.app, 6, s)),
     'prompts.getAppAllPrompts': each(s => prompts.getAppAllPrompts(ids.app, 200, s)),
     'prompts.getAgentPrompts': each(s => prompts.getAgentPrompts(ids.agent, 6, s)),
-    'prompts.getLoudestPromptOfDay': once(() => prompts.getLoudestPromptOfDay()),
+    'prompts.getLoudestPromptOfDay': once(() => prompts.getLoudestPromptOfDay(new Date())),
     'sessions.getSessions': [...each(s => sessions.getSessions({}, s)), () => sessions.getSessions(filters, sinces[1])],
     'sessions.getSessionsStats': [...each(s => sessions.getSessionsStats({}, s)), () => sessions.getSessionsStats(filters, sinces[1])],
     // an unknown id also exercises the recent_events fallbacks
